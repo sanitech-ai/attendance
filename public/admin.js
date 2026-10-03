@@ -28,7 +28,7 @@ function loginShell(title, subtitle, fields, submitLabel, onSubmit) {
   const btn = h('button', { class: 'btn btn-primary btn-block', type: 'submit' }, submitLabel);
   const inputs = fields.map((f) => h('input', { id: f.name, name: f.name, type: f.type || 'text', autocomplete: f.autocomplete || 'off', required: true, placeholder: f.placeholder }));
   const form = h('form', { class: 'form card login-card' },
-    h('img', { src: '/icon.svg', alt: '', class: 'logo' }), h('h1', {}, title), h('p', { class: 'muted' }, subtitle),
+    h('img', { src: '/logo.svg', alt: 'Sanitech Engineers & Consultants', class: 'logo' }), h('h1', {}, title), h('p', { class: 'muted' }, subtitle),
     fields.map((f, i) => h('div', { class: 'field' }, h('label', { for: f.name }, f.label), inputs[i], f.hint ? h('div', { class: 'hint' }, f.hint) : '')),
     btn);
   form.addEventListener('submit', async (e) => {
@@ -109,6 +109,7 @@ async function route() {
   const { page, params } = parseHash();
   const content = h('main', { class: 'content' });
   const sidebar = h('aside', { class: 'sidebar' },
+    h('img', { src: '/logo.svg', alt: '', class: 'brand-logo' }),
     h('div', { class: 'brand' }, A.me.settings.company_name),
     h('nav', {}, PAGES.map(([key, label, countKey]) =>
       h('a', { href: `#/${key}`, class: key === page ? 'active' : '', onclick: () => sidebar.classList.remove('open') },

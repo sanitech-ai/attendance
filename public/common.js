@@ -315,7 +315,7 @@ table{width:100%;border-collapse:collapse;font-size:14px}td{padding:6px 4px;bord
 .cols{display:grid;grid-template-columns:1fr 1fr;gap:24px}@media(max-width:600px){.cols,.grid{grid-template-columns:1fr}}
 button{margin-top:24px;padding:8px 16px;font-size:14px}.prov{margin-top:6px;color:#9a5b00;font-size:13px;font-weight:600}@media print{button{display:none}}
 </style></head><body>
-<div class="head"><div><h1>${esc(company)}</h1><div>${opts.provisional ? 'Salary statement (provisional)' : 'Payslip'} for ${esc(fmtMonth(month))}</div>${opts.provisional ? `<div class="prov">Not final — calculated from attendance up to ${esc(fmtDateTime(opts.asOf))}. It can change until salary is finalized.</div>` : ''}</div><div>${esc(row.branch_name)}</div></div>
+<div class="head"><div style="display:flex;gap:14px;align-items:center"><img src="${location.origin}/logo.svg" alt="" style="width:86px"><div><h1>${esc(company)}</h1><div>${opts.provisional ? 'Salary statement (provisional)' : 'Payslip'} for ${esc(fmtMonth(month))}</div>${opts.provisional ? `<div class="prov">Not final — calculated from attendance up to ${esc(fmtDateTime(opts.asOf))}. It can change until salary is finalized.</div>` : ''}</div></div><div>${esc(row.branch_name)}</div></div>
 <h2>Employee</h2>
 <div class="grid"><div>Name: <b>${esc(row.name)}</b></div><div>Employee ID: <b>${esc(row.code)}</b></div>
 <div>Designation: ${esc(row.designation || '-')}</div><div>Salary: ${esc(rate)}</div><div>Shift: ${esc(row.shift)}</div></div>

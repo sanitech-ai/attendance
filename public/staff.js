@@ -78,7 +78,7 @@ function showLogin() {
   const pin = h('input', { id: 'pin', type: 'password', autocomplete: 'current-password', required: true, placeholder: 'Staff: 4–6 digit PIN' });
   const btn = h('button', { class: 'btn btn-primary btn-block', type: 'submit' }, 'Log in');
   const form = h('form', { class: 'form card login-card' },
-    h('img', { src: '/icon.svg', alt: '', class: 'logo' }),
+    h('img', { src: '/logo.svg', alt: 'Sanitech Engineers & Consultants', class: 'logo' }),
     h('h1', {}, 'Sanitech'),
     h('div', { class: 'muted', style: { marginBottom: '8px' } }, 'Staff attendance'),
     h('p', { class: 'muted' }, 'Staff: log in with the Employee ID and PIN given by your manager. Admins: use your username and password.'),

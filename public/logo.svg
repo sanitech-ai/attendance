@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 760" role="img" aria-label="Sanitech Engineers &amp; Consultants">
+  <title>Sanitech Engineers &amp; Consultants</title>
+  <!-- triangle -->
+  <path d="M480 22 L948 596 H12 Z" fill="#770504" stroke="#770504" stroke-width="14" stroke-linejoin="round"/>
+  <!-- s -->
+  <path d="M372 318 C372 290 348 276 322 276 C292 276 270 294 270 322 C270 350 292 360 322 368 C352 376 376 388 376 418 C376 446 352 462 322 462 C292 462 268 446 268 418" fill="none" stroke="#fff" stroke-width="30" stroke-linecap="butt"/>
+  <!-- E -->
+  <path d="M398 148 H566 V178 H430 V338 H546 V368 H430 V530 H566 V560 H398 Z" fill="#fff"/>
+  <!-- c -->
+  <path d="M694 318 C694 292 672 276 644 276 C612 276 588 300 588 334 V404 C588 438 612 462 644 462 C672 462 694 446 694 420" fill="none" stroke="#fff" stroke-width="30"/>
+  <!-- registered mark -->
+  <circle cx="606" cy="62" r="40" fill="#fff" stroke="#111" stroke-width="8"/>
+  <text x="606" y="84" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-weight="700" font-size="58" fill="#111">R</text>
+  <!-- band -->
+  <rect x="14" y="618" width="932" height="128" fill="#fff" stroke="#111" stroke-width="10"/>
+  <text x="480" y="706" text-anchor="middle" textLength="860" lengthAdjust="spacingAndGlyphs" font-family="'Arial Narrow', 'Roboto Condensed', Arial, sans-serif" font-weight="700" font-size="78" fill="#111">ENGINEERS &amp; CONSULTANTS</text>
+</svg>
