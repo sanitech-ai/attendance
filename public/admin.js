@@ -427,8 +427,8 @@ function employeeForm(e) {
     { name: 'salary_type', label: 'Salary type', type: 'select', value: e?.salary_type || 'monthly',
       options: [{ value: 'monthly', label: 'Monthly' }, { value: 'daily', label: 'Daily wage' }, { value: 'hourly', label: 'Hourly' }] },
     { name: 'salary', label: 'Salary amount (₹)', type: 'number', step: '0.01', min: 0, required: true, value: e ? e.salary_paise / 100 : '', hint: 'Per month, per day or per hour depending on salary type. Overtime is paid at the same hourly rate.' },
-    { name: 'shift_start', label: 'Shift start', type: 'time', required: true, value: e?.shift_start || '09:30' },
-    { name: 'shift_end', label: 'Shift end', type: 'time', required: true, value: e?.shift_end || '18:30' },
+    { name: 'shift_start', label: 'Shift start', type: 'time', required: true, value: e?.shift_start || '09:00' },
+    { name: 'shift_end', label: 'Shift end', type: 'time', required: true, value: e?.shift_end || '18:00' },
     { name: 'weekly_offs', label: 'Weekly off days', type: 'checks', value: e ? e.weekly_offs.split(',').filter(Boolean) : ['0'], options: WEEKDAYS.map((d, i) => ({ value: String(i), label: d })) },
     isNew
       ? { name: 'pin', label: 'Login PIN (4–6 digits)', type: 'text', inputmode: 'numeric', required: true, maxlength: 6, value: String(Math.floor(1000 + Math.random() * 9000)), hint: 'Share this with the employee. They can change it later.' }
@@ -680,7 +680,7 @@ async function pagePayroll(el, params) {
         h('li', {}, 'Daily wage: daily rate × (present + ½ × half days + paid leave). Week offs and holidays are unpaid.'),
         h('li', {}, 'Hourly: rate × hours worked (paid leave counts as one full shift).'),
         h('li', {}, 'Overtime: approved OT hours × the same hourly rate (monthly: per-day ÷ shift hours; daily: daily rate ÷ shift hours).'),
-        h('li', {}, `Full day needs ${A.me.settings.full_day_hours} h worked, half day ${A.me.settings.half_day_hours} h (change in Settings). A missing punch-out counts as a half day until you correct it.`),
+        h('li', {}, `Full day = the employee’s shift length minus the ${A.me.settings.grace_minutes}-minute grace (9:00–18:00 → ${fmtMinutes(540 - A.me.settings.grace_minutes)} worked). Half day needs ${A.me.settings.half_day_hours} h. A missing punch-out counts as a half day until you correct it.`),
         h('li', {}, 'Net = base + OT + additions − deductions − advances.'))));
 }
 
@@ -789,7 +789,7 @@ async function pageSettings(el, params) {
   const form = h('div', { class: 'card', style: { maxWidth: '560px' } },
     h('dl', { class: 'kv' },
       h('dt', {}, 'Company'), h('dd', {}, s.company_name),
-      h('dt', {}, 'Full day'), h('dd', {}, `${s.full_day_hours} hours worked`),
+      h('dt', {}, 'Full day'), h('dd', {}, `Shift length minus grace (9:00–18:00 → ${fmtMinutes(540 - s.grace_minutes)} worked)`),
       h('dt', {}, 'Half day'), h('dd', {}, `${s.half_day_hours} hours worked`),
       h('dt', {}, 'Late after'), h('dd', {}, `${s.grace_minutes} minutes past shift start`),
       h('dt', {}, 'GPS accuracy'), h('dd', {}, `Flag punches worse than ±${s.max_accuracy_m} m`),
@@ -798,9 +798,8 @@ async function pageSettings(el, params) {
       title: 'Edit settings',
       fields: [
         { name: 'company_name', label: 'Company name', required: true, value: s.company_name },
-        { name: 'full_day_hours', label: 'Hours for a full day', type: 'number', step: '0.25', min: 0.5, max: 24, required: true, value: s.full_day_hours },
         { name: 'half_day_hours', label: 'Hours for a half day', type: 'number', step: '0.25', min: 0.5, max: 24, required: true, value: s.half_day_hours, hint: 'Less than this counts as absent.' },
-        { name: 'grace_minutes', label: 'Late grace period (minutes)', type: 'number', min: 0, max: 240, required: true, value: s.grace_minutes },
+        { name: 'grace_minutes', label: 'Late grace period (minutes)', type: 'number', min: 0, max: 240, required: true, value: s.grace_minutes, hint: 'Also sets the full day: shift length minus this grace.' },
         { name: 'max_accuracy_m', label: 'Flag punches with GPS accuracy worse than (metres)', type: 'number', min: 10, max: 5000, required: true, value: s.max_accuracy_m },
         { name: 'ot_requires_approval', label: 'Overtime needs admin approval', type: 'checkbox', value: s.ot_requires_approval },
       ],

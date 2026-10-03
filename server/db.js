@@ -38,8 +38,8 @@ CREATE TABLE IF NOT EXISTS employees (
   branch_id     INTEGER NOT NULL REFERENCES branches(id),
   salary_type   TEXT NOT NULL CHECK (salary_type IN ('monthly', 'daily', 'hourly')),
   salary_paise  INTEGER NOT NULL,
-  shift_start   TEXT NOT NULL DEFAULT '09:30',
-  shift_end     TEXT NOT NULL DEFAULT '18:30',
+  shift_start   TEXT NOT NULL DEFAULT '09:00',
+  shift_end     TEXT NOT NULL DEFAULT '18:00',
   weekly_offs   TEXT NOT NULL DEFAULT '0',
   joined_on     TEXT NOT NULL,
   pin_hash      TEXT NOT NULL,
@@ -174,10 +174,9 @@ CREATE TABLE IF NOT EXISTS audit_log (
 `;
 
 const DEFAULT_SETTINGS = {
-  company_name: 'My Company',
-  full_day_hours: '7',
+  company_name: 'Sanitech',
   half_day_hours: '4',
-  grace_minutes: '10',
+  grace_minutes: '15',
   max_accuracy_m: '100',
   ot_requires_approval: '1',
 };
@@ -208,7 +207,6 @@ function getSettings(db) {
   const s = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   return {
     company_name: s.company_name,
-    full_day_hours: Number(s.full_day_hours),
     half_day_hours: Number(s.half_day_hours),
     grace_minutes: Number(s.grace_minutes),
     max_accuracy_m: Number(s.max_accuracy_m),

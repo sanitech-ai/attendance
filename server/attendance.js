@@ -89,8 +89,13 @@ function pairPunches(list) {
   };
 }
 
-function statusFromMinutes(minutes, settings) {
-  if (minutes >= settings.full_day_hours * 60) return 'present';
+/** Full day = the employee's shift length minus the late grace (9:00-18:00 with 15 min grace -> 8h45m). */
+function fullDayMinutes(emp, settings) {
+  return Math.max(settings.half_day_hours * 60, shiftMinutes(emp.shift_start, emp.shift_end) - settings.grace_minutes);
+}
+
+function statusFromMinutes(minutes, settings, emp) {
+  if (minutes >= fullDayMinutes(emp, settings)) return 'present';
   if (minutes >= settings.half_day_hours * 60) return 'half_day';
   return 'absent';
 }
@@ -136,7 +141,7 @@ function computeDay(emp, date, ctx, settings, today) {
     if (p.openIn !== null && date >= today) {
       day.status = 'working';
     } else {
-      day.status = statusFromMinutes(p.regularMinutes, settings);
+      day.status = statusFromMinutes(p.regularMinutes, settings, emp);
       if (p.openIn !== null) {
         flags.push('missing_out');
         // Came in but never punched out: give half a day until an admin corrects it.

@@ -17,7 +17,7 @@ Similar in spirit to PagarBook, self-hosted, with no per-employee fees.
 |---|---|
 | Time | Server time in IST is used for every punch, so changing the phone clock does nothing. |
 | Branches / geofence | Each branch has a GPS point and radius. Staff may punch at **any** active branch. Outside every radius, the punch is **flagged** for review or **blocked**, depending on the employee's home-branch setting. Poor GPS accuracy (default > 100 m) is also flagged. |
-| Regular attendance | IN → OUT pairs (several per day allowed). Full day ≥ 7 h, half day ≥ 4 h, less = absent (configurable). Late if first IN is more than the grace period (10 min) after shift start. A missing punch-out counts as a half day until an admin corrects it. Overnight shifts are supported: an OUT after midnight belongs to the day the shift started. |
+| Regular attendance | IN → OUT pairs (several per day allowed). Default shift 9:00 AM – 6:00 PM. Late if the first IN is more than 15 minutes after shift start. Full day = the employee's shift length minus the grace period (9–6 → 8 h 45 m worked, so arriving at 9:15 and leaving at 6 PM is still a full day); half day ≥ 4 h; less = absent. Grace and half-day hours are editable in Settings; shift times are set per employee. A missing punch-out counts as a half day until an admin corrects it. Overnight shifts are supported: an OUT after midnight belongs to the day the shift started. |
 | Overtime | Separate **Start Overtime / End Overtime** punches, each with selfie + GPS. OT is paid at the **same hourly rate** as regular work, and only after admin approval (can be turned off in Settings). Admins can approve part of the recorded OT. |
 | Salary | **Monthly**: salary ÷ days in month × paid days (present + ½ half days + paid leave + week offs + holidays). **Daily**: rate × (present + ½ half days + paid leave). **Hourly**: rate × hours worked. Hourly rate for OT = per-day ÷ shift hours. Net = base + OT + additions − deductions − advances. |
 | Payroll lock | Finalizing a past month stores a snapshot, locks that month's attendance edits and publishes payslips to staff. It can be reopened. |
@@ -53,7 +53,7 @@ sudo mkdir -p /var/lib/attendance
 # create /opt/attendance/.env from .env.example and fill APP_SECRET
 # run it with systemd (EnvironmentFile=/opt/attendance/.env, ExecStart=/usr/bin/npm start)
 # /etc/caddy/Caddyfile:
-#   attendance.yourcompany.com {
+#   attendance.sanitech.in {
 #     reverse_proxy localhost:3000
 #   }
 ```
@@ -67,6 +67,18 @@ docker run -d --restart=always -p 3000:3000 -v attendance-data:/data -e APP_SECR
 
 Then point a domain at it and put HTTPS in front (Caddy, Nginx + Let's Encrypt, or your platform's built-in TLS).
 Platforms such as Render or Railway also work if you attach a persistent volume and set `DATA_DIR` to it.
+
+### Domain: attendance.sanitech.in
+
+Keep the main website on `sanitech.in` as it is and run the app on a sub-domain, e.g. **attendance.sanitech.in**.
+In the DNS settings wherever `sanitech.in` is registered (GoDaddy, Hostinger, Cloudflare, etc.), add:
+
+| Type | Name | Value |
+|---|---|---|
+| A | `attendance` | the public IP address of your server |
+
+Caddy (Option A) then gets the HTTPS certificate automatically. Staff use `https://attendance.sanitech.in`
+and admins `https://attendance.sanitech.in/admin`. You can also add a "Staff login" link on sanitech.in pointing there.
 
 ### Backups
 

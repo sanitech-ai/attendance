@@ -215,3 +215,33 @@ test('overnight shift: OUT after midnight counts for the day the shift started',
   const pay = (await admin('GET', '/api/admin/payroll?month=2026-09')).data.rows[0];
   assert.equal(pay.base_paise, 80000, '8 hours x Rs 100');
 });
+
+test('default rules: 9-to-6 shift, 15-minute grace, full day within grace', async (t) => {
+  const s = await startServer(ist('2026-09-01', '08:00'));
+  t.after(() => s.close());
+  const admin = s.client();
+  await admin('POST', '/api/admin/setup', { username: 'owner', password: 'password123', name: 'Owner' });
+  const settings = (await admin('GET', '/api/admin/settings')).data;
+  assert.equal(settings.company_name, 'Sanitech');
+  assert.equal(settings.grace_minutes, 15);
+  const b = await admin('POST', '/api/admin/branches', { name: 'HQ', ...OFFICE, radius_m: 150, geofence_mode: 'flag' });
+  await admin('POST', '/api/admin/employees', {
+    code: 'D1', name: 'Default', branch_id: b.data.id, salary_type: 'monthly', salary: 30000, shift_start: '09:00', shift_end: '18:00', weekly_offs: ['0'], joined_on: '2026-09-01', pin: '1234',
+  });
+  const staff = s.client();
+  await staff('POST', '/api/employee/login', { code: 'D1', pin: '1234' });
+  const punch = async (date, time, kind) => {
+    s.clock.now = ist(date, time);
+    const r = await staff('POST', '/api/employee/punch', { kind, ...OFFICE, accuracy: 10, selfie: JPEG });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+  };
+  await punch('2026-09-01', '09:14', 'IN');
+  await punch('2026-09-01', '18:00', 'OUT');
+  await punch('2026-09-02', '09:20', 'IN');
+  await punch('2026-09-02', '18:00', 'OUT');
+  const days = (await staff('GET', '/api/employee/attendance?month=2026-09')).data.days;
+  assert.equal(days[0].status, 'present', '09:14-18:00 is a full day');
+  assert.equal(days[0].late_minutes, 0, 'within the 15-minute grace');
+  assert.equal(days[1].late_minutes, 20);
+  assert.equal(days[1].status, 'half_day', '8h40m is below 8h45m');
+});
