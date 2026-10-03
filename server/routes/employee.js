@@ -230,6 +230,95 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
   });
 
   // ---- payslips (only finalized months) ----
+  // ---- managers: check what the app flagged for their team (read + verify only, no changes) ----
+  function teamOf(manager) {
+    if (!manager.is_manager) throw new HttpError(403, 'Only managers can see this');
+    const rows = manager.manager_scope === 'all'
+      ? db.prepare('SELECT e.*, b.name AS branch_name FROM employees e JOIN branches b ON b.id = e.branch_id WHERE e.active = 1 AND e.id != ?').all(manager.id)
+      : db.prepare('SELECT e.*, b.name AS branch_name FROM employees e JOIN branches b ON b.id = e.branch_id WHERE e.active = 1 AND e.id != ? AND e.branch_id = ?').all(manager.id, manager.branch_id);
+    return new Map(rows.map((e) => [e.id, e]));
+  }
+
+  function verificationMap(kind) {
+    return new Map(db.prepare('SELECT ref, verdict, note, at FROM verifications WHERE kind = ?').all(kind).map((v) => [v.ref, v]));
+  }
+
+  /** Pending very-late days and pending overtime for the team, current and previous month. */
+  function teamDayFlags(team) {
+    const now = ctx.now();
+    const today = istDate(now);
+    const settings = getSettings(db);
+    const prev = new Date(`${today.slice(0, 7)}-01T00:00:00Z`);
+    prev.setUTCMonth(prev.getUTCMonth() - 1);
+    const from = prev.toISOString().slice(0, 10);
+    const late = [];
+    const overtime = [];
+    for (const e of team.values()) {
+      for (const d of computeRange(db, e, from, today, settings, now)) {
+        const who = { employee_id: e.id, code: e.code, name: e.name, branch_name: e.branch_name, date: d.date };
+        if (d.late_review === 'pending') late.push({ ...who, first_in: d.first_in, last_out: d.last_out, late_minutes: d.late_minutes, worked_minutes: d.worked_minutes, shift_start: e.shift_start });
+        if (d.ot_status === 'pending') overtime.push({ ...who, ot_start: d.ot_start, ot_end: d.ot_end, ot_minutes: d.ot_minutes });
+      }
+    }
+    return { late, overtime };
+  }
+
+  r.get('/team', (req, res) => {
+    const team = teamOf(req.employee);
+    const ids = [...team.keys()];
+    const punches = ids.length
+      ? db.prepare(
+        `SELECT p.id, p.employee_id, p.kind, p.at, p.work_date, p.lat, p.lng, p.accuracy_m, p.distance_m, p.flag_reason, b.name AS near_branch
+         FROM punches p LEFT JOIN branches b ON b.id = p.branch_id
+         WHERE p.status = 'flagged' AND p.employee_id IN (${ids.map(() => '?').join(',')}) ORDER BY p.at DESC LIMIT 200`,
+      ).all(...ids)
+      : [];
+    const pv = verificationMap('punch');
+    const lv = verificationMap('late');
+    const ov = verificationMap('overtime');
+    const { late, overtime } = teamDayFlags(team);
+    res.json({
+      scope: req.employee.manager_scope,
+      team_size: team.size,
+      punches: punches.map((p) => ({ ...p, name: team.get(p.employee_id).name, code: team.get(p.employee_id).code, verification: pv.get(String(p.id)) || null })),
+      late: late.map((x) => ({ ...x, verification: lv.get(`${x.employee_id}:${x.date}`) || null })).reverse(),
+      overtime: overtime.map((x) => ({ ...x, verification: ov.get(`${x.employee_id}:${x.date}`) || null })).reverse(),
+    });
+  });
+
+  r.get('/team/punches/:id/selfie', (req, res) => {
+    const team = teamOf(req.employee);
+    const p = db.prepare('SELECT employee_id, selfie_file FROM punches WHERE id = ?').get(Number(req.params.id));
+    if (!p || !team.has(p.employee_id)) throw notFound();
+    sendStoredFile(ctx, res, p.selfie_file, 'image/jpeg', `selfie-${req.params.id}.jpg`);
+  });
+
+  r.post('/team/verify', (req, res) => {
+    const team = teamOf(req.employee);
+    const { kind, punch_id: punchId, employee_id: empId, date, verdict, note } = req.body || {};
+    if (!['ok', 'doubt'].includes(verdict)) throw bad('Choose "Looks fine" or "Doubtful"');
+    let ref;
+    if (kind === 'punch') {
+      const p = db.prepare("SELECT id, employee_id FROM punches WHERE id = ? AND status = 'flagged'").get(Number(punchId));
+      if (!p || !team.has(p.employee_id)) throw notFound('This punch is not waiting for a check');
+      ref = String(p.id);
+    } else if (kind === 'late' || kind === 'overtime') {
+      requireDate(date);
+      if (!team.has(Number(empId))) throw notFound('Not in your team');
+      const flags = teamDayFlags(new Map([[Number(empId), team.get(Number(empId))]]));
+      if (!flags[kind].some((x) => x.date === date)) throw notFound('This day is not waiting for a check');
+      ref = `${Number(empId)}:${date}`;
+    } else {
+      throw bad('Unknown item');
+    }
+    db.prepare(
+      `INSERT INTO verifications (kind, ref, verdict, note, manager_id, at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (kind, ref) DO UPDATE SET verdict = excluded.verdict, note = excluded.note, manager_id = excluded.manager_id, at = excluded.at`,
+    ).run(kind, ref, verdict, String(note || '').slice(0, 300), req.employee.id, ctx.now());
+    ctx.audit(req, 'manager.verified', { kind, ref, verdict });
+    res.json({ ok: true });
+  });
+
   // Salary for any month up to now: the final payslip once payroll is finalized, otherwise a live
   // statement calculated from attendance so far (it changes as days are punched and approved).
   r.get('/salary', (req, res) => {

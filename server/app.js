@@ -101,7 +101,7 @@ function createApp({ dataDir, secret, secureCookies = false, now = () => Date.no
         && db.prepare('SELECT * FROM sessions WHERE token_hash = ? AND kind = ? AND expires_at > ?').get(sha256(token), kind, now());
       if (!sess) throw new HttpError(401, 'Please log in');
       if (kind === 'admin') {
-        const admin = db.prepare('SELECT id, username, name FROM admins WHERE id = ?').get(sess.user_id);
+        const admin = db.prepare('SELECT id, username, name, can_edit_attendance FROM admins WHERE id = ?').get(sess.user_id);
         if (!admin) throw new HttpError(401, 'Please log in');
         req.admin = admin;
       } else {

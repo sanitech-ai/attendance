@@ -134,7 +134,9 @@ const TABS = [
 
 function renderShell() {
   const main = h('main', { class: 'app-main' });
-  const bar = h('nav', { class: 'tabbar' }, TABS.map(([key, ico, label]) =>
+  // Managers get a Team tab to check what the app flagged for their team.
+  const tabs = S.me.employee.is_manager ? [...TABS.slice(0, 4), ['team', '👥', 'Team'], TABS[4]] : TABS;
+  const bar = h('nav', { class: 'tabbar', style: { gridTemplateColumns: `repeat(${tabs.length}, 1fr)` } }, tabs.map(([key, ico, label]) =>
     h('button', { class: S.tab === key ? 'active' : '', onclick: () => { S.tab = key; renderShell(); } },
       h('span', { class: 'ico', 'aria-hidden': 'true' }, ico), label)));
   root.replaceChildren(
@@ -144,7 +146,7 @@ function renderShell() {
       h('div', { class: 'small muted' }, S.me.company_name)),
     main, bar);
   clearInterval(S.clockTimer);
-  ({ home: renderHome, attendance: renderAttendance, salary: renderSalary, leaves: renderLeaves, more: renderMore })[S.tab](main);
+  ({ home: renderHome, attendance: renderAttendance, salary: renderSalary, leaves: renderLeaves, team: renderTeam, more: renderMore })[S.tab](main);
 }
 
 // ---------------------------------------------------------------- today / punch
@@ -457,6 +459,52 @@ async function renderMore(main) {
     h('div', { class: 'card row' },
       h('button', { class: 'btn', onclick: changePin }, 'Change PIN'),
       PREVIEW_ID ? '' : h('button', { class: 'btn', onclick: async () => { await run(() => api('POST', `${EMP}/logout`)); showLogin(); } }, 'Log out')));
+}
+
+// ---------------------------------------------------------------- team (managers)
+
+async function renderTeam(main) {
+  main.replaceChildren(h('div', { class: 'empty' }, 'Loading…'));
+  const t = await run(() => api('GET', `${EMP}/team`));
+  if (!t) return;
+  const verify = (body, label) => formDialog({
+    title: label,
+    fields: [{ name: 'note', label: 'Note for the admin (optional)', type: 'textarea', placeholder: 'e.g. He was at the site office, I saw him' }],
+    submitLabel: 'Send',
+    async onSubmit(v) {
+      await api('POST', `${EMP}/team/verify`, { ...body, note: v.note });
+      toast('Sent to the admin. Thank you!');
+      renderTeam(main);
+      return true;
+    },
+  });
+  const actions = (body, v) => h('div', { class: 'row', style: { marginTop: '8px' } },
+    v ? h('div', { class: `badge badge-${v.verdict === 'ok' ? 'ok' : 'bad'}`, style: { whiteSpace: 'normal', width: '100%' } },
+      v.verdict === 'ok' ? `You marked: looks fine${v.note ? ` · ${v.note}` : ''}` : `You marked: doubtful${v.note ? ` · ${v.note}` : ''}`) : '',
+    h('button', { class: 'btn btn-sm btn-ok', onclick: () => verify({ ...body, verdict: 'ok' }, 'Looks fine') }, '✓ Looks fine'),
+    h('button', { class: 'btn btn-sm', onclick: () => verify({ ...body, verdict: 'doubt' }, 'Doubtful') }, '⚠ Doubtful'));
+  const section = (title, items, render, empty) => h('div', { class: 'card' }, h('h2', {}, `${title} (${items.length})`),
+    items.length ? h('ul', { class: 'timeline' }, items.map(render)) : h('p', { class: 'muted' }, empty));
+
+  main.replaceChildren(
+    h('div', { class: 'card' }, h('h1', {}, 'Team checks'),
+      h('p', { class: 'small muted' }, `Things the app flagged for your team (${t.team_size} people, ${t.scope === 'all' ? 'all branches' : 'your branch'}). Tell the admin if each looks fine or doubtful — the admin makes the final decision. You can't change attendance from here.`)),
+    section('Punches from outside the site / weak GPS', t.punches, (p) => h('li', { style: { alignItems: 'flex-start' } },
+      h('img', { src: `${EMP}/team/punches/${p.id}/selfie`, alt: 'Selfie', loading: 'lazy', style: { width: '64px', height: '64px', borderRadius: '10px' } }),
+      h('div', { style: { flex: 1 } },
+        h('div', {}, h('strong', {}, p.name), ` · ${PUNCH_LABEL[p.kind]}`),
+        h('div', { class: 'small muted' }, `${fmtDateTime(p.at)} · ${p.flag_reason || ''} · `, mapLink(p.lat, p.lng, 'Map')),
+        actions({ kind: 'punch', punch_id: p.id }, p.verification))), 'Nothing flagged. 👍'),
+    section('Very late arrivals', t.late, (x) => h('li', { style: { alignItems: 'flex-start' } },
+      h('div', { style: { flex: 1 } },
+        h('div', {}, h('strong', {}, x.name), ` · ${fmtDate(x.date)}`),
+        h('div', { class: 'small muted' }, `Shift ${x.shift_start} · came ${x.first_in} (${fmtMinutes(x.late_minutes)} late) · left ${x.last_out || '—'}`),
+        actions({ kind: 'late', employee_id: x.employee_id, date: x.date }, x.verification))), 'No very late arrivals waiting.'),
+    section('Overtime waiting for approval', t.overtime, (x) => h('li', { style: { alignItems: 'flex-start' } },
+      h('div', { style: { flex: 1 } },
+        h('div', {}, h('strong', {}, x.name), ` · ${fmtDate(x.date)}`),
+        h('div', { class: 'small muted' }, `${x.ot_start || '—'} – ${x.ot_end || '—'} · ${fmtMinutes(x.ot_minutes)}`),
+        actions({ kind: 'overtime', employee_id: x.employee_id, date: x.date }, x.verification))), 'No overtime waiting.'));
 }
 
 // ---------------------------------------------------------------- salary (live + finalized)

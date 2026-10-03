@@ -98,6 +98,17 @@ CREATE TABLE IF NOT EXISTS late_decisions (
   PRIMARY KEY (employee_id, work_date)
 );
 
+-- A manager's check of something the app flagged. ref is the punch id, or "employee_id:date".
+CREATE TABLE IF NOT EXISTS verifications (
+  kind        TEXT NOT NULL CHECK (kind IN ('punch', 'late', 'overtime')),
+  ref         TEXT NOT NULL,
+  verdict     TEXT NOT NULL CHECK (verdict IN ('ok', 'doubt')),
+  note        TEXT NOT NULL DEFAULT '',
+  manager_id  INTEGER NOT NULL REFERENCES employees(id),
+  at          INTEGER NOT NULL,
+  PRIMARY KEY (kind, ref)
+);
+
 CREATE TABLE IF NOT EXISTS day_overrides (
   employee_id    INTEGER NOT NULL REFERENCES employees(id),
   work_date      TEXT NOT NULL,
@@ -226,6 +237,25 @@ function migrate(db) {
     db.exec('ALTER TABLE branches ADD COLUMN location_set INTEGER NOT NULL DEFAULT 1');
   }
   if (!cols.includes('maps_link')) db.exec("ALTER TABLE branches ADD COLUMN maps_link TEXT NOT NULL DEFAULT ''");
+
+  const adminCols = db.prepare('PRAGMA table_info(admins)').all().map((c) => c.name);
+  if (!adminCols.includes('can_edit_attendance')) {
+    // Only some admins may change attendance markings. On upgrade, give it to firefueled and
+    // amitsharma (amit.sharma etc.); if neither exists, to the first admin so someone has it.
+    db.exec('ALTER TABLE admins ADD COLUMN can_edit_attendance INTEGER NOT NULL DEFAULT 0');
+    const granted = db.prepare(
+      `UPDATE admins SET can_edit_attendance = 1
+       WHERE lower(replace(replace(replace(username, '.', ''), '_', ''), '-', '')) IN ('firefueled', 'amitsharma')`,
+    ).run().changes;
+    if (!granted) db.exec('UPDATE admins SET can_edit_attendance = 1 WHERE id = (SELECT MIN(id) FROM admins)');
+  }
+
+  const empCols = db.prepare('PRAGMA table_info(employees)').all().map((c) => c.name);
+  if (!empCols.includes('is_manager')) {
+    // Managers can mark app-flagged items as verified/doubtful; they cannot change anything.
+    db.exec('ALTER TABLE employees ADD COLUMN is_manager INTEGER NOT NULL DEFAULT 0');
+    db.exec("ALTER TABLE employees ADD COLUMN manager_scope TEXT NOT NULL DEFAULT 'branch'");
+  }
 }
 
 function tx(db, fn) {

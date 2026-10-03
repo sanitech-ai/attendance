@@ -133,6 +133,14 @@ function lateText(day, warnings) {
     : `${late} · ${ord(day.late_mark)} late this month (every ${ord(warnings + 1)} is a half day)`;
 }
 
+/** "✓ Naresh (manager): looks fine — note" shown next to items a manager has checked. */
+function verifBadge(v) {
+  if (!v) return '';
+  return h('div', { class: 'small', style: { marginTop: '4px' } },
+    badge(`${v.verdict === 'ok' ? '✓' : '⚠'} ${v.manager_name || 'Manager'}: ${v.verdict === 'ok' ? 'looks fine' : 'doubtful'}`, v.verdict === 'ok' ? 'ok' : 'bad'),
+    v.note ? h('span', { class: 'muted' }, ` “${v.note}”`) : '');
+}
+
 function lateKind(day) {
   return day.flags.includes('late_penalty') || day.late_review === 'half_day' ? 'bad' : day.late_review === 'present' ? 'ok' : 'warn';
 }

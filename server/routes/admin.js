@@ -49,7 +49,7 @@ module.exports = function adminRoutes(ctx) {
     tx(db, () => {
       if (db.prepare('SELECT 1 FROM admins LIMIT 1').get()) throw new HttpError(409, 'Setup is already complete');
       const adminId = db
-        .prepare('INSERT INTO admins (username, name, password_hash, created_at) VALUES (?, ?, ?, ?)')
+        .prepare('INSERT INTO admins (username, name, password_hash, can_edit_attendance, created_at) VALUES (?, ?, ?, 1, ?)')
         .run(username.trim(), name.trim(), hashSecret(password), ctx.now()).lastInsertRowid;
       if (company_name) db.prepare("UPDATE settings SET value = ? WHERE key = 'company_name'").run(String(company_name).slice(0, 100));
       ctx.startSession(res, 'admin', Number(adminId));
@@ -101,7 +101,28 @@ module.exports = function adminRoutes(ctx) {
     res.json(getSettings(db));
   });
 
-  r.get('/admins', (req, res) => res.json(db.prepare('SELECT id, username, name, created_at FROM admins ORDER BY id').all()));
+  r.get('/admins', (req, res) => res.json(db.prepare('SELECT id, username, name, can_edit_attendance, created_at FROM admins ORDER BY id').all()));
+
+  /** Changing attendance markings (corrections, bulk marking) is limited to admins with this permission. */
+  function requireAttendanceEditor(req) {
+    if (!req.admin.can_edit_attendance) {
+      throw new HttpError(403, 'Only admins with permission to change the attendance register can do this.');
+    }
+  }
+
+  r.put('/admins/:id/permissions', (req, res) => {
+    requireAttendanceEditor(req);
+    const target = db.prepare('SELECT id, username, can_edit_attendance FROM admins WHERE id = ?').get(id(req.params.id));
+    if (!target) throw notFound();
+    const allow = req.body?.can_edit_attendance ? 1 : 0;
+    if (!allow && target.can_edit_attendance
+      && db.prepare('SELECT COUNT(*) AS n FROM admins WHERE can_edit_attendance = 1').get().n <= 1) {
+      throw bad('At least one admin must be able to change the attendance register');
+    }
+    db.prepare('UPDATE admins SET can_edit_attendance = ? WHERE id = ?').run(allow, target.id);
+    ctx.audit(req, allow ? 'admin.attendance_permission_granted' : 'admin.attendance_permission_removed', { username: target.username });
+    res.json({ ok: true });
+  });
 
   r.post('/admins', (req, res) => {
     const { username, password, name } = req.body || {};
@@ -281,6 +302,7 @@ module.exports = function adminRoutes(ctx) {
       phone: String(b.phone || '').slice(0, 20), designation: String(b.designation || '').slice(0, 60),
       shift_start: b.shift_start, shift_end: b.shift_end, weekly_offs: [...new Set(offs.map(String))].sort().join(','),
       joined_on: joinedOn, active: b.active === false ? 0 : 1,
+      is_manager: b.is_manager ? 1 : 0, manager_scope: b.manager_scope === 'all' ? 'all' : 'branch',
     };
   }
 
@@ -290,10 +312,10 @@ module.exports = function adminRoutes(ctx) {
     const newId = db
       .prepare(
         `INSERT INTO employees (code, name, phone, designation, branch_id, salary_type, salary_paise, shift_start, shift_end,
-           weekly_offs, joined_on, active, pin_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           weekly_offs, joined_on, active, is_manager, manager_scope, pin_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(v.code, v.name, v.phone, v.designation, v.branch_id, v.salary_type, v.salary_paise, v.shift_start, v.shift_end,
-        v.weekly_offs, v.joined_on, v.active, hashSecret(pin), ctx.now()).lastInsertRowid;
+        v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, hashSecret(pin), ctx.now()).lastInsertRowid;
     ctx.audit(req, 'employee.created', { id: Number(newId), code: v.code });
     res.json({ ok: true, id: Number(newId) });
   });
@@ -305,9 +327,9 @@ module.exports = function adminRoutes(ctx) {
     const v = employeeInput(req.body || {});
     db.prepare(
       `UPDATE employees SET code = ?, name = ?, phone = ?, designation = ?, branch_id = ?, salary_type = ?, salary_paise = ?,
-         shift_start = ?, shift_end = ?, weekly_offs = ?, joined_on = ?, active = ? WHERE id = ?`,
+         shift_start = ?, shift_end = ?, weekly_offs = ?, joined_on = ?, active = ?, is_manager = ?, manager_scope = ? WHERE id = ?`,
     ).run(v.code, v.name, v.phone, v.designation, v.branch_id, v.salary_type, v.salary_paise, v.shift_start, v.shift_end,
-      v.weekly_offs, v.joined_on, v.active, empId);
+      v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, empId);
     if (!v.active) ctx.endAllSessions('employee', empId);
     const changed = Object.keys(v).filter((k) => String(before[k]) !== String(v[k]));
     ctx.audit(req, 'employee.updated', { id: empId, changed });
@@ -336,6 +358,7 @@ module.exports = function adminRoutes(ctx) {
       for (const table of ['punches', 'documents', 'leave_requests', 'day_overrides', 'ot_decisions', 'late_decisions', 'advances', 'adjustments', 'pay_items']) {
         db.prepare(`DELETE FROM ${table} WHERE employee_id IN (${marks})`).run(...ids);
       }
+      db.prepare(`DELETE FROM verifications WHERE manager_id IN (${marks})`).run(...ids);
       db.prepare(`DELETE FROM sessions WHERE kind = 'employee' AND user_id IN (${marks})`).run(...ids);
       db.prepare(`DELETE FROM employees WHERE id IN (${marks})`).run(...ids);
     });
@@ -376,6 +399,14 @@ module.exports = function adminRoutes(ctx) {
     ctx.audit(req, 'staff.reset', { employees: ids.length, branches });
     res.json({ ok: true, employees: ids.length, branches });
   });
+
+  /** Manager checks keyed by ref, with the manager's name, for showing next to flagged items. */
+  function verificationsFor(kind) {
+    return new Map(db.prepare(
+      `SELECT v.ref, v.verdict, v.note, v.at, e.name AS manager_name FROM verifications v
+       JOIN employees e ON e.id = v.manager_id WHERE v.kind = ?`,
+    ).all(kind).map((v) => [v.ref, v]));
+  }
 
   /** Days with an arrival later than late_max_minutes that nobody has decided yet (active staff). */
   function pendingLateCount() {
@@ -551,7 +582,8 @@ module.exports = function adminRoutes(ctx) {
        LEFT JOIN branches b ON b.id = p.branch_id JOIN branches hb ON hb.id = e.branch_id
        ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY p.at DESC LIMIT 500`,
     ).all(...params);
-    res.json(rows);
+    const checks = verificationsFor('punch');
+    res.json(rows.map((p) => ({ ...p, verification: checks.get(String(p.id)) || null })));
   });
 
   r.get('/punches/:id/selfie', (req, res) => {
@@ -606,6 +638,7 @@ module.exports = function adminRoutes(ctx) {
   });
 
   r.put('/attendance/override', (req, res) => {
+    requireAttendanceEditor(req);
     const { employee_id, date, status, worked_minutes, note } = req.body || {};
     requireDate(date);
     const empId = id(employee_id);
@@ -673,6 +706,8 @@ module.exports = function adminRoutes(ctx) {
       }
     }
     out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.name.localeCompare(b.name)));
+    const checks = verificationsFor('overtime');
+    for (const row of out) row.verification = checks.get(`${row.employee_id}:${row.date}`) || null;
     res.json({ month, requires_approval: settings.ot_requires_approval, rows: out });
   });
 
@@ -718,6 +753,8 @@ module.exports = function adminRoutes(ctx) {
     }
     // Undecided first, then newest first.
     out.sort((a, b) => (b.late_review === 'pending') - (a.late_review === 'pending') || (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    const checks = verificationsFor('late');
+    for (const row of out) row.verification = checks.get(`${row.employee_id}:${row.date}`) || null;
     res.json({ month, late_max_minutes: settings.late_max_minutes, rows: out });
   });
 
@@ -742,6 +779,7 @@ module.exports = function adminRoutes(ctx) {
 
   // Mark a range of days for all (or one branch's) active staff, e.g. before the app went live.
   r.post('/attendance/bulk-override', (req, res) => {
+    requireAttendanceEditor(req);
     const { from, to, status, note, branch_id: branchId, include_week_offs: includeOffs } = req.body || {};
     requireDate(from, 'from');
     requireDate(to, 'to');

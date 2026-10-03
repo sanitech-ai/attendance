@@ -33,7 +33,13 @@ test('manage admins: edit, reset password, remove', async (t) => {
   // Records approved by an admin survive their removal
   const b = await amit('POST', '/api/admin/branches', { name: 'HQ', lat: 17.41, lng: 78.44, radius_m: 150, geofence_mode: 'flag' });
   const e = await amit('POST', '/api/admin/employees', { code: 'E1', name: 'A', branch_id: b.data.id, salary_type: 'monthly', salary: 1000, shift_start: '09:00', shift_end: '18:00', joined_on: '', pin: '1234' });
-  await amit('PUT', '/api/admin/attendance/override', { employee_id: e.data.id, date: '2026-10-01', status: 'present', note: 'ok' });
+  // Only admins with the attendance permission may change markings
+  let o = await amit('PUT', '/api/admin/attendance/override', { employee_id: e.data.id, date: '2026-10-01', status: 'present', note: 'ok' });
+  assert.equal(o.status, 403);
+  assert.equal((await amit('PUT', `/api/admin/admins/${amitId}/permissions`, { can_edit_attendance: true })).status, 403, "can't grant it to yourself");
+  assert.equal((await owner('PUT', `/api/admin/admins/${amitId}/permissions`, { can_edit_attendance: true })).status, 200);
+  o = await amit('PUT', '/api/admin/attendance/override', { employee_id: e.data.id, date: '2026-10-01', status: 'present', note: 'ok' });
+  assert.equal(o.status, 200);
 
   // Remove: not yourself, needs password
   assert.equal((await owner('DELETE', `/api/admin/admins/${s.db.prepare("SELECT id FROM admins WHERE username='owner'").get().id}`, { password: 'password123' })).status, 400);

@@ -178,6 +178,7 @@ tr.row-flag td { background: var(--warn-bg); }
 .punch-btn { min-height: 64px; font-size: 18px; border-radius: 14px; }
 .punch-btn.ot { background: var(--ot); border-color: var(--ot); color: #fff; }
 .timeline { list-style: none; padding: 0; margin: 0; }
+.timeline li > div { min-width: 0; overflow-wrap: anywhere; }
 .timeline li { display: flex; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); }
 .timeline li:last-child { border-bottom: 0; }
 .timeline img { width: 44px; height: 44px; object-fit: cover; border-radius: 50%; background: var(--surface-2); }

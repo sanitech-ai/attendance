@@ -252,7 +252,7 @@ async function pagePunches(el, params) {
       { label: 'Punch', render: (p) => h('div', {}, PUNCH_LABEL[p.kind], h('div', { class: 'small muted' }, `${fmtDateTime(p.at)}`)) },
       { label: 'Location', render: (p) => h('div', {}, p.inside_geofence ? `At ${p.branch_name}` : p.branch_name ? `${p.distance_m} m from ${p.branch_name}` : 'Unknown',
         h('div', { class: 'small muted' }, p.accuracy_m !== null ? `±${Math.round(p.accuracy_m)} m · ` : '', mapLink(p.lat, p.lng))) },
-      { label: 'Status', render: (p) => h('div', {}, badge(p.status, statusKind[p.status]), p.flag_reason ? h('div', { class: 'small muted' }, p.flag_reason) : '') },
+      { label: 'Status', render: (p) => h('div', {}, badge(p.status, statusKind[p.status]), p.flag_reason ? h('div', { class: 'small muted' }, p.flag_reason) : '', verifBadge(p.verification)) },
       { label: '', render: (p) => reviewButtons(p) },
     ], rows, { empty: 'No punches match these filters.', rowClass: (p) => (p.status === 'flagged' ? 'row-flag' : null) }),
     rows.length === 500 ? h('p', { class: 'small muted' }, 'Showing the latest 500 punches. Use filters to narrow down.') : '');
@@ -311,7 +311,7 @@ async function pageAttendance(el, params) {
 
   el.replaceChildren(
     pageHead('Attendance register',
-      h('button', { class: 'btn', onclick: bulkMark }, 'Mark days for everyone'),
+      A.me.admin.can_edit_attendance ? h('button', { class: 'btn', onclick: bulkMark }, 'Mark days for everyone') : '',
       h('a', { class: 'btn', href: `/api/admin/attendance.csv?month=${month}${branchId ? `&branch_id=${branchId}` : ''}` }, 'Download Excel (CSV)')),
     h('div', { class: 'toolbar' },
       monthPicker(month, (m) => go('attendance', { month: m, branch_id: branchId })),
@@ -343,6 +343,17 @@ function bulkMark() {
 }
 
 function editDay(r, d, finalized) {
+  if (!A.me.admin.can_edit_attendance) {
+    modal(`${r.name} · ${fmtDate(d.date)}`, h('div', {},
+      h('dl', { class: 'kv' },
+        h('dt', {}, 'Status'), h('dd', {}, STATUS_LABEL[d.status] || d.status),
+        h('dt', {}, 'In / Out'), h('dd', {}, `${d.first_in || '—'} / ${d.last_out || '—'}`),
+        h('dt', {}, 'Worked'), h('dd', {}, fmtMinutes(d.worked_minutes)),
+        d.late_minutes ? [h('dt', {}, 'Late'), h('dd', {}, lateText(d, A.me.settings.late_warnings))] : '',
+        d.override ? [h('dt', {}, 'Corrected'), h('dd', {}, d.override.note || 'Yes')] : ''),
+      h('p', { class: 'small muted', style: { marginTop: '12px' } }, 'Only admins with permission to change the attendance register can correct this day.')));
+    return;
+  }
   if (finalized) return toast('This month is finalized. Reopen payroll to edit.', 'error');
   const info = h('dl', { class: 'kv', style: { marginBottom: '14px' } },
     h('dt', {}, 'Calculated'), h('dd', {}, STATUS_LABEL[d.status] || d.status),
@@ -394,7 +405,7 @@ async function pageOvertime(el, params) {
       { label: 'OT start – end', render: (r) => `${r.ot_start || '—'} – ${r.ot_end || (r.flags.includes('missing_ot_out') ? 'not ended' : '—')}` },
       { label: 'Recorded', class: 'num', render: (r) => fmtMinutes(r.ot_minutes) },
       { label: 'Paid', class: 'num', render: (r) => fmtMinutes(r.ot_payable_minutes) },
-      { label: 'Status', render: (r) => (r.ot_status ? badge(r.ot_status, statusKind[r.ot_status]) : badge('incomplete', 'bad')) },
+      { label: 'Status', render: (r) => h('div', {}, r.ot_status ? badge(r.ot_status, statusKind[r.ot_status]) : badge('incomplete', 'bad'), verifBadge(r.verification)) },
       { label: '', render: (r) => (data.requires_approval && r.ot_minutes ? h('div', { class: 'row' },
         r.ot_status !== 'approved' ? h('button', { class: 'btn btn-sm btn-ok', onclick: () => decide(r, 'approved') }, 'Approve') : '',
         h('button', { class: 'btn btn-sm', onclick: () => formDialog({
@@ -431,7 +442,7 @@ async function pageLate(el, params) {
       { label: 'In / Out', render: (r) => `${r.first_in || '—'} / ${r.last_out || (r.status === 'working' ? 'working' : '—')}` },
       { label: 'Late by', class: 'num', render: (r) => fmtMinutes(r.late_minutes) },
       { label: 'Worked', class: 'num', render: (r) => fmtMinutes(r.worked_minutes) },
-      { label: 'Decision', render: (r) => badge(label[r.late_review], kind[r.late_review]) },
+      { label: 'Decision', render: (r) => h('div', {}, badge(label[r.late_review], kind[r.late_review]), verifBadge(r.verification)) },
       { label: '', render: (r) => h('div', { class: 'row' },
         r.late_review !== 'present' ? h('button', { class: 'btn btn-sm btn-ok', onclick: () => decide(r, 'present') }, 'Full day') : '',
         r.late_review !== 'half_day' ? h('button', { class: 'btn btn-sm', onclick: () => decide(r, 'half_day') }, 'Half day') : '',
@@ -480,7 +491,7 @@ async function pageEmployees(el) {
       h('button', { class: 'btn btn-primary', onclick: () => employeeForm() }, '+ Add employee')),
     !A.branches.length ? h('div', { class: 'card' }, 'Add a ', h('a', { href: '#/branches' }, 'branch'), ' first — every employee belongs to a branch.') : '',
     table([
-      { label: 'Employee', render: (e) => h('div', {}, h('strong', {}, e.name), h('div', { class: 'small muted' }, `${e.code}${e.designation ? ` · ${e.designation}` : ''}${e.phone ? ` · ${e.phone}` : ''}`)) },
+      { label: 'Employee', render: (e) => h('div', {}, h('strong', {}, e.name), e.is_manager ? [' ', badge(e.manager_scope === 'all' ? 'Manager · all branches' : 'Manager', 'info')] : '', h('div', { class: 'small muted' }, `${e.code}${e.designation ? ` · ${e.designation}` : ''}${e.phone ? ` · ${e.phone}` : ''}`)) },
       { label: 'Branch', render: (e) => e.branch_name },
       { label: 'Salary', render: (e) => rate(e) },
       { label: 'Shift', render: (e) => `${e.shift_start}–${e.shift_end}` },
@@ -513,6 +524,10 @@ function employeeForm(e) {
     { name: 'shift_start', label: 'Shift start', type: 'time', required: true, value: e?.shift_start || '09:00' },
     { name: 'shift_end', label: 'Shift end', type: 'time', required: true, value: e?.shift_end || '18:00' },
     { name: 'weekly_offs', label: 'Weekly off days', type: 'checks', value: e ? e.weekly_offs.split(',').filter(Boolean) : ['0'], options: WEEKDAYS.map((d, i) => ({ value: String(i), label: d })) },
+    { type: 'heading', label: 'Manager' },
+    { name: 'is_manager', label: 'Manager — can check what the app flags for their team (no power to change anything)', type: 'checkbox', value: !!e?.is_manager },
+    { name: 'manager_scope', label: 'Manager covers', type: 'select', value: e?.manager_scope || 'branch',
+      options: [{ value: 'branch', label: 'Staff of their own branch' }, { value: 'all', label: 'Staff of all branches' }] },
     isNew
       ? { name: 'pin', label: 'Login PIN (4–6 digits)', type: 'text', inputmode: 'numeric', required: true, maxlength: 6, value: String(Math.floor(1000 + Math.random() * 9000)), hint: 'Share this with the employee. They can change it later.' }
       : { name: 'active', label: 'Active (can log in and is included in payroll)', type: 'checkbox', value: !!e.active },
@@ -1042,6 +1057,15 @@ async function pageSettings(el, params) {
       table([
         { label: 'Name', render: (a) => h('span', {}, a.name, a.id === A.me.admin.id ? h('span', { class: 'muted' }, ' (you)') : '') },
         { label: 'Username', render: (a) => a.username },
+        { label: 'Can change attendance register', render: (a) => (A.me.admin.can_edit_attendance
+          ? h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!a.can_edit_attendance, onchange: async (ev) => {
+            const want = ev.target.checked;
+            const ok = await run(() => api('PUT', `/api/admin/admins/${a.id}/permissions`, { can_edit_attendance: want }));
+            if (!ok) { ev.target.checked = !want; return; }
+            toast(`${a.name} ${want ? 'can now' : 'can no longer'} change the attendance register`);
+            route();
+          } }), a.can_edit_attendance ? 'Yes' : 'No')
+          : (a.can_edit_attendance ? badge('Yes', 'ok') : badge('No', 'neutral'))) },
         { label: 'Added', render: (a) => fmtDateTime(a.created_at) },
         { label: '', render: (a) => h('div', { class: 'row' },
           h('button', { class: 'btn btn-sm', onclick: () => formDialog({
