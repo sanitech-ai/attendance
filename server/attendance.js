@@ -1,0 +1,217 @@
+'use strict';
+const { istDate, istTime, istMs, weekday, shiftMinutes } = require('./util');
+
+/**
+ * Loads everything needed to compute day-by-day attendance for one employee
+ * over [from, to] (inclusive IST dates).
+ */
+function loadContext(db, emp, from, to) {
+  const punches = new Map();
+  const rows = db
+    .prepare(
+      `SELECT id, kind, at, work_date, status, flag_reason FROM punches
+       WHERE employee_id = ? AND work_date BETWEEN ? AND ? AND status != 'rejected'
+       ORDER BY at`,
+    )
+    .all(emp.id, from, to);
+  for (const p of rows) {
+    if (!punches.has(p.work_date)) punches.set(p.work_date, []);
+    punches.get(p.work_date).push(p);
+  }
+
+  const overrides = new Map(
+    db
+      .prepare('SELECT * FROM day_overrides WHERE employee_id = ? AND work_date BETWEEN ? AND ?')
+      .all(emp.id, from, to)
+      .map((o) => [o.work_date, o]),
+  );
+
+  const leaves = db
+    .prepare(
+      `SELECT from_date, to_date, leave_type FROM leave_requests
+       WHERE employee_id = ? AND status = 'approved' AND to_date >= ? AND from_date <= ?`,
+    )
+    .all(emp.id, from, to);
+
+  const holidays = new Map(
+    db
+      .prepare('SELECT date, name FROM holidays WHERE date BETWEEN ? AND ? AND (branch_id IS NULL OR branch_id = ?)')
+      .all(from, to, emp.branch_id)
+      .map((h) => [h.date, h.name]),
+  );
+
+  const ot = new Map(
+    db
+      .prepare('SELECT * FROM ot_decisions WHERE employee_id = ? AND work_date BETWEEN ? AND ?')
+      .all(emp.id, from, to)
+      .map((d) => [d.work_date, d]),
+  );
+
+  return { punches, overrides, leaves, holidays, ot };
+}
+
+/** Pairs IN->OUT and OT_IN->OT_OUT punches; open sessions are reported, not counted. */
+function pairPunches(list) {
+  let regularMs = 0;
+  let otMs = 0;
+  let openIn = null;
+  let openOt = null;
+  let firstIn = null;
+  let lastOut = null;
+  let otStart = null;
+  let otEnd = null;
+  for (const p of list) {
+    if (p.kind === 'IN' && openIn === null) {
+      openIn = p.at;
+      if (firstIn === null) firstIn = p.at;
+    } else if (p.kind === 'OUT' && openIn !== null) {
+      regularMs += p.at - openIn;
+      lastOut = p.at;
+      openIn = null;
+    } else if (p.kind === 'OT_IN' && openOt === null) {
+      openOt = p.at;
+      if (otStart === null) otStart = p.at;
+    } else if (p.kind === 'OT_OUT' && openOt !== null) {
+      otMs += p.at - openOt;
+      otEnd = p.at;
+      openOt = null;
+    }
+  }
+  return {
+    regularMinutes: Math.floor(regularMs / 60000),
+    otMinutes: Math.floor(otMs / 60000),
+    openIn,
+    openOt,
+    firstIn,
+    lastOut,
+    otStart,
+    otEnd,
+  };
+}
+
+function statusFromMinutes(minutes, settings) {
+  if (minutes >= settings.full_day_hours * 60) return 'present';
+  if (minutes >= settings.half_day_hours * 60) return 'half_day';
+  return 'absent';
+}
+
+function computeDay(emp, date, ctx, settings, today) {
+  const list = ctx.punches.get(date) || [];
+  const p = pairPunches(list);
+  const flags = [];
+  if (list.some((x) => x.status === 'flagged')) flags.push('flagged_punch');
+
+  const day = {
+    date,
+    status: null,
+    worked_minutes: p.regularMinutes,
+    first_in: p.firstIn ? istTime(p.firstIn) : null,
+    last_out: p.lastOut ? istTime(p.lastOut) : null,
+    late_minutes: 0,
+    ot_minutes: p.otMinutes,
+    ot_start: p.otStart ? istTime(p.otStart) : null,
+    ot_end: p.otEnd ? istTime(p.otEnd) : null,
+    ot_status: null,
+    ot_payable_minutes: 0,
+    holiday: ctx.holidays.get(date) || null,
+    override: null,
+    flags,
+  };
+
+  const leave = ctx.leaves.find((l) => l.from_date <= date && l.to_date >= date);
+  const isWeekOff = emp.weekly_offs
+    .split(',')
+    .filter(Boolean)
+    .map(Number)
+    .includes(weekday(date));
+  const override = ctx.overrides.get(date);
+
+  if (date < emp.joined_on) {
+    day.status = 'not_joined';
+  } else if (override) {
+    day.status = override.status;
+    day.override = { note: override.note, worked_minutes: override.worked_minutes };
+    if (override.worked_minutes !== null) day.worked_minutes = override.worked_minutes;
+  } else if (p.firstIn !== null) {
+    if (p.openIn !== null && date >= today) {
+      day.status = 'working';
+    } else {
+      day.status = statusFromMinutes(p.regularMinutes, settings);
+      if (p.openIn !== null) {
+        flags.push('missing_out');
+        // Came in but never punched out: give half a day until an admin corrects it.
+        if (day.status === 'absent') day.status = 'half_day';
+      } else if (day.status === 'absent') {
+        flags.push('short_hours');
+      }
+    }
+  } else if (leave) {
+    day.status = leave.leave_type === 'paid' ? 'paid_leave' : 'unpaid_leave';
+  } else if (day.holiday) {
+    day.status = 'holiday';
+  } else if (isWeekOff) {
+    day.status = 'week_off';
+  } else if (date > today) {
+    day.status = 'upcoming';
+  } else if (date === today) {
+    day.status = 'not_marked';
+  } else {
+    day.status = 'absent';
+  }
+
+  if (p.firstIn !== null && emp.shift_start) {
+    const lateBy = Math.floor((p.firstIn - istMs(date, emp.shift_start)) / 60000);
+    if (lateBy > settings.grace_minutes) day.late_minutes = lateBy;
+  }
+
+  if (p.openOt !== null && date < today) flags.push('missing_ot_out');
+  if (p.otMinutes > 0) {
+    const decision = ctx.ot.get(date);
+    if (!settings.ot_requires_approval) {
+      day.ot_status = 'approved';
+      day.ot_payable_minutes = p.otMinutes;
+    } else if (decision) {
+      day.ot_status = decision.status;
+      day.ot_payable_minutes =
+        decision.status === 'approved' ? (decision.approved_minutes ?? p.otMinutes) : 0;
+    } else {
+      day.ot_status = 'pending';
+    }
+  }
+  return day;
+}
+
+function computeRange(db, emp, from, to, settings, nowMs = Date.now()) {
+  const ctx = loadContext(db, emp, from, to);
+  const today = istDate(nowMs);
+  const days = [];
+  for (let d = from; d <= to; ) {
+    days.push(computeDay(emp, d, ctx, settings, today));
+    const next = new Date(`${d}T00:00:00Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    d = next.toISOString().slice(0, 10);
+  }
+  return days;
+}
+
+const COUNTED = ['present', 'half_day', 'absent', 'paid_leave', 'unpaid_leave', 'week_off', 'holiday', 'not_marked', 'working'];
+
+function summarize(days) {
+  const s = Object.fromEntries(COUNTED.map((k) => [k, 0]));
+  s.worked_minutes = 0;
+  s.ot_minutes = 0;
+  s.ot_payable_minutes = 0;
+  s.ot_pending_minutes = 0;
+  s.late_days = 0;
+  for (const d of days) {
+    if (d.status in s) s[d.status]++;
+    s.worked_minutes += d.worked_minutes;
+    s.ot_minutes += d.ot_minutes;
+    s.ot_payable_minutes += d.ot_payable_minutes;
+    if (d.ot_status === 'pending') s.ot_pending_minutes += d.ot_minutes;
+    if (d.late_minutes > 0) s.late_days++;
+  }
+  return s;
+}
+
+module.exports = { computeRange, computeDay, pairPunches, summarize, shiftMinutes };
