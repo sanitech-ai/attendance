@@ -120,7 +120,7 @@ function createApp({ dataDir, secret, secureCookies = false, now = () => Date.no
   app.use((req, res, next) => {
     res.set({
       'X-Content-Type-Options': 'nosniff',
-      'X-Frame-Options': 'DENY',
+      'X-Frame-Options': 'SAMEORIGIN', // the admin's staff preview frames the staff app
       'Referrer-Policy': 'same-origin',
       'Permissions-Policy': 'camera=(self), geolocation=(self), microphone=()',
     });
@@ -130,7 +130,8 @@ function createApp({ dataDir, secret, secureCookies = false, now = () => Date.no
   // JSON-only API + SameSite=strict cookies: reject other content types to block form-based CSRF.
   app.use('/api', (req, res, next) => {
     // req.is() is null when there is no body and false when the body has another type.
-    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method) && req.is('application/json') === false) {
+    const emptyBody = req.headers['content-length'] === '0';
+    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method) && !emptyBody && req.is('application/json') === false) {
       throw new HttpError(415, 'Content-Type must be application/json');
     }
     res.set('Cache-Control', 'no-store');
@@ -145,7 +146,7 @@ function createApp({ dataDir, secret, secureCookies = false, now = () => Date.no
   app.use(express.static(pub, {
     extensions: ['html'],
     setHeaders(res) {
-      res.set('Content-Security-Policy', "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'");
+      res.set('Content-Security-Policy', "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'self'");
     },
   }));
 

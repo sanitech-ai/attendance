@@ -12,25 +12,36 @@ const {
 const PUNCH_KINDS = ['IN', 'OUT', 'OT_IN', 'OT_OUT'];
 const SELFIE_MAX_BYTES = 2 * 1024 * 1024;
 
-module.exports = function employeeRoutes(ctx) {
+/**
+ * Staff API. With { preview: true } the same handlers are mounted under the admin API so admins can see
+ * exactly what an employee sees: the caller sets req.employee, and anything but GET is refused.
+ */
+module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
   const { db } = ctx;
   const r = express.Router();
 
-  r.post('/login', (req, res) => {
-    const { code, pin } = req.body || {};
-    if (typeof code !== 'string' || typeof pin !== 'string') throw bad('Employee ID and PIN are required');
-    const emp = db.prepare('SELECT * FROM employees WHERE code = ? AND active = 1').get(code.trim());
-    ctx.checkLogin('employees', emp, pin, 'pin_hash');
-    ctx.startSession(res, 'employee', emp.id);
-    res.json({ ok: true });
-  });
+  if (preview) {
+    r.use((req, res, next) => {
+      if (req.method !== 'GET') throw new HttpError(403, 'This is a preview — nothing can be changed here.');
+      next();
+    });
+  } else {
+    r.post('/login', (req, res) => {
+      const { code, pin } = req.body || {};
+      if (typeof code !== 'string' || typeof pin !== 'string') throw bad('Employee ID and PIN are required');
+      const emp = db.prepare('SELECT * FROM employees WHERE code = ? AND active = 1').get(code.trim());
+      ctx.checkLogin('employees', emp, pin, 'pin_hash');
+      ctx.startSession(res, 'employee', emp.id);
+      res.json({ ok: true });
+    });
 
-  r.post('/logout', (req, res) => {
-    ctx.endSession(req, res, 'employee');
-    res.json({ ok: true });
-  });
+    r.post('/logout', (req, res) => {
+      ctx.endSession(req, res, 'employee');
+      res.json({ ok: true });
+    });
 
-  r.use(ctx.requireSession('employee'));
+    r.use(ctx.requireSession('employee'));
+  }
 
   r.get('/me', (req, res) => {
     const branch = db.prepare('SELECT id, name, address FROM branches WHERE id = ?').get(req.employee.branch_id);

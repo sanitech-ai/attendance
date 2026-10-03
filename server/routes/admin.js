@@ -385,6 +385,15 @@ module.exports = function adminRoutes(ctx) {
 
   r.get('/pending', (req, res) => res.json(pendingCounts()));
 
+  // ---- staff app preview (read-only, as the employee sees it) ----
+  r.use('/preview/:empId', (req, res, next) => {
+    const emp = db.prepare('SELECT * FROM employees WHERE id = ?').get(id(req.params.empId));
+    if (!emp) throw notFound();
+    req.employee = emp;
+    if (req.path === '/me') ctx.audit(req, 'employee.previewed', { code: emp.code, name: emp.name });
+    next();
+  }, require('./employee')(ctx, { preview: true }));
+
   // ---- fixed monthly pay items (PF, PT, allowances...) ----
   r.get('/employees/:id/pay-items', (req, res) => {
     res.json(db.prepare('SELECT * FROM pay_items WHERE employee_id = ? ORDER BY kind, id').all(id(req.params.id)));

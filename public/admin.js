@@ -86,6 +86,7 @@ const PAGES = [
   ['leaves', 'Leave requests', 'leaves'],
   ['payroll', 'Payroll'],
   ['employees', 'Employees'],
+  ['preview', 'Staff preview'],
   ['documents', 'Documents', 'documents'],
   ['branches', 'Branches'],
   ['holidays', 'Holidays'],
@@ -432,6 +433,7 @@ async function pageEmployees(el) {
       { label: '', render: (e) => h('div', { class: 'row' },
         h('button', { class: 'btn btn-sm', onclick: () => employeeForm(e) }, 'Edit'),
         h('button', { class: 'btn btn-sm', onclick: () => payItems(e) }, 'PF / allowances'),
+        h('a', { class: 'btn btn-sm', href: `#/preview?employee_id=${e.id}` }, 'Preview'),
         h('button', { class: 'btn btn-sm', onclick: () => resetPin(e) }, 'Reset PIN'),
         h('button', { class: 'btn btn-sm', title: 'Delete permanently', onclick: () => deleteEmployee(e) }, 'Delete')) },
     ], A.employees, { empty: 'No employees yet. Click “Add employee”.' }));
@@ -931,6 +933,22 @@ async function payrollAdjustments(el, month, head) {
     ], rows, { empty: `No bonuses or deductions for ${fmtMonth(month)}.` }));
 }
 
+// ---------------------------------------------------------------- staff app preview
+
+async function pagePreview(el, params) {
+  await loadEmployees();
+  const empId = params.get('employee_id') || A.employees.find((e) => e.active)?.id || '';
+  const emp = A.employees.find((e) => String(e.id) === String(empId));
+  const src = `/?preview=${empId}`;
+  el.replaceChildren(
+    pageHead('Staff preview', emp ? h('a', { class: 'btn', href: src, target: '_blank', rel: 'noopener' }, 'Open in new tab ↗') : ''),
+    h('div', { class: 'toolbar' }, employeeSelect(empId, (v) => go('preview', { employee_id: v }), 'Choose an employee')),
+    h('p', { class: 'small muted' }, 'This is exactly what the employee sees in their app — their attendance, leaves, documents and payslips. It is read-only: nothing can be punched or changed here. Opening a preview is recorded in the audit log.'),
+    emp
+      ? h('div', { class: 'phone' }, h('iframe', { src, title: `${emp.name}'s app`, class: 'phone-screen' }))
+      : h('div', { class: 'empty' }, 'Add employees first.'));
+}
+
 // ---------------------------------------------------------------- settings
 
 async function pageSettings(el, params) {
@@ -1065,6 +1083,7 @@ const PAGE_FNS = {
   overtime: pageOvertime,
   leaves: pageLeaves,
   employees: pageEmployees,
+  preview: pagePreview,
   documents: pageDocuments,
   branches: pageBranches,
   holidays: pageHolidays,

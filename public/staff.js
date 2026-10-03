@@ -1,12 +1,17 @@
 'use strict';
 /* Staff app: punch in/out with selfie + GPS, attendance calendar, leaves, documents, payslips. */
 
+// Admins open /?preview=<employee id> to see an employee's app read-only.
+const PREVIEW_ID = new URLSearchParams(location.search).get('preview');
+const EMP = PREVIEW_ID ? `/api/admin/preview/${encodeURIComponent(PREVIEW_ID)}` : '/api/employee';
+
 const S = { me: null, tab: 'home', month: thisMonth(), clockTimer: null };
 const root = document.getElementById('root');
 
 setUnauthorizedHandler(() => {
   S.me = null;
-  showLogin();
+  if (PREVIEW_ID) location.href = '/admin';
+  else showLogin();
 });
 
 function distanceM(lat1, lng1, lat2, lng2) {
@@ -60,9 +65,9 @@ function showLogin() {
 
 async function boot() {
   try {
-    S.me = await api('GET', '/api/employee/me');
+    S.me = await api('GET', `${EMP}/me`);
   } catch (err) {
-    if (err.status === 401) return showLogin();
+    if (err.status === 401) return PREVIEW_ID ? (location.href = '/admin') : showLogin();
     root.replaceChildren(h('div', { class: 'login-wrap' }, h('div', { class: 'card' }, `Could not connect: ${err.message}`)));
     return;
   }
@@ -82,6 +87,7 @@ function renderShell() {
     h('button', { class: S.tab === key ? 'active' : '', onclick: () => { S.tab = key; renderShell(); } },
       h('span', { class: 'ico', 'aria-hidden': 'true' }, ico), label)));
   root.replaceChildren(
+    PREVIEW_ID ? h('div', { class: 'preview-banner' }, `👁 Preview of ${S.me.employee.name}'s app · read-only`) : '',
     h('header', { class: 'app-header' },
       h('div', {}, h('div', { class: 'who' }, S.me.employee.name), h('div', { class: 'small muted' }, `${S.me.employee.code} · ${S.me.branch?.name || ''}`)),
       h('div', { class: 'small muted' }, S.me.company_name)),
@@ -97,7 +103,7 @@ async function renderHome(main) {
   S.clockTimer = setInterval(() => { clock.textContent = fmtTime(Date.now()); }, 10000);
   main.replaceChildren(h('div', { class: 'card' }, h('div', { class: 'muted' }, fmtDate(todayIST())), clock), h('div', { class: 'empty' }, 'Loading…'));
 
-  const t = await run(() => api('GET', '/api/employee/today'));
+  const t = await run(() => api('GET', `${EMP}/today`));
   if (!t) return;
   const d = t.day;
   const actions = h('div', { class: 'punch-actions' }, t.allowed.map((kind) =>
@@ -112,7 +118,7 @@ async function renderHome(main) {
 
   const timeline = t.punches.length
     ? h('ul', { class: 'timeline' }, t.punches.map((p) => h('li', {},
-      h('img', { src: `/api/employee/punches/${p.id}/selfie`, alt: 'Selfie', loading: 'lazy' }),
+      h('img', { src: `${EMP}/punches/${p.id}/selfie`, alt: 'Selfie', loading: 'lazy' }),
       h('div', { style: { flex: 1 } },
         h('div', {}, h('span', { class: 't' }, fmtTime(p.at)), ' ', PUNCH_LABEL[p.kind]),
         h('div', { class: 'small muted' },
@@ -129,6 +135,10 @@ async function renderHome(main) {
 }
 
 function punchFlow(kind, today) {
+  if (PREVIEW_ID) {
+    toast(`Preview: ${S.me.employee.name} would now take a selfie and confirm "${PUNCH_LABEL[kind]}" on their phone.`);
+    return;
+  }
   let stream = null;
   let watchId = null;
   let position = null;
@@ -258,7 +268,7 @@ function punchFlow(kind, today) {
 
   confirm.addEventListener('click', async () => {
     if (!captured || !position) return;
-    const res = await run(() => api('POST', '/api/employee/punch', {
+    const res = await run(() => api('POST', `${EMP}/punch`, {
       kind,
       lat: position.coords.latitude,
       lng: position.coords.longitude,
@@ -282,7 +292,7 @@ function punchFlow(kind, today) {
 
 async function renderAttendance(main) {
   main.replaceChildren(h('div', { class: 'empty' }, 'Loading…'));
-  const data = await run(() => api('GET', `/api/employee/attendance?month=${S.month}`));
+  const data = await run(() => api('GET', `${EMP}/attendance?month=${S.month}`));
   if (!data) return;
   const s = data.summary;
   const first = new Date(`${S.month}-01T00:00:00Z`).getUTCDay();
@@ -326,7 +336,7 @@ function dayDetails(d) {
 // ---------------------------------------------------------------- leaves
 
 async function renderLeaves(main) {
-  const list = await run(() => api('GET', '/api/employee/leaves'));
+  const list = await run(() => api('GET', `${EMP}/leaves`));
   if (!list) return;
   const kind = { pending: 'warn', approved: 'ok', rejected: 'bad', cancelled: 'neutral' };
   main.replaceChildren(
@@ -340,7 +350,7 @@ async function renderLeaves(main) {
         h('div', { class: 'small muted' }, `${l.leave_type === 'paid' ? 'Paid' : 'Unpaid'} leave${l.reason ? ` · ${l.reason}` : ''}`),
         l.status === 'pending' ? h('button', {
           class: 'btn btn-sm', style: { marginTop: '8px' },
-          onclick: async (e) => { if (await run(() => api('POST', `/api/employee/leaves/${l.id}/cancel`), e.target)) renderShell(); },
+          onclick: async (e) => { if (await run(() => api('POST', `${EMP}/leaves/${l.id}/cancel`), e.target)) renderShell(); },
         }, 'Cancel request') : ''))
       : h('div', { class: 'empty' }, 'No leave requests yet.'));
 }
@@ -356,7 +366,7 @@ function requestLeave() {
     ],
     submitLabel: 'Send request',
     async onSubmit(v) {
-      await api('POST', '/api/employee/leaves', v);
+      await api('POST', `${EMP}/leaves`, v);
       toast('Leave request sent');
       renderShell();
       return true;
@@ -367,7 +377,7 @@ function requestLeave() {
 // ---------------------------------------------------------------- more: documents, payslips, PIN
 
 async function renderMore(main) {
-  const [docs, slips] = await Promise.all([run(() => api('GET', '/api/employee/documents')), run(() => api('GET', '/api/employee/payslips'))]);
+  const [docs, slips] = await Promise.all([run(() => api('GET', `${EMP}/documents`)), run(() => api('GET', `${EMP}/payslips`))]);
   if (!docs || !slips) return;
   const e = S.me.employee;
   const docKind = { pending: 'warn', verified: 'ok', rejected: 'bad' };
@@ -388,7 +398,7 @@ async function renderMore(main) {
             h('div', {}, h('strong', {}, DOC_LABEL[d.doc_type]), d.label ? ` · ${d.label}` : ''),
             h('div', { class: 'small muted' }, d.doc_number || '', d.review_note ? ` · ${d.review_note}` : '')),
           badge(d.status, docKind[d.status]),
-          h('a', { class: 'btn btn-sm', href: `/api/employee/documents/${d.id}/file`, target: '_blank', rel: 'noopener' }, 'View'))))
+          h('a', { class: 'btn btn-sm', href: `${EMP}/documents/${d.id}/file`, target: '_blank', rel: 'noopener' }, 'View'))))
         : h('div', { class: 'empty' }, 'No documents uploaded yet.')),
     h('div', { class: 'card' }, h('h2', {}, 'Payslips'),
       slips.length
@@ -398,11 +408,11 @@ async function renderMore(main) {
         : h('div', { class: 'empty' }, 'Payslips appear here once your employer finalizes the month’s salary.')),
     h('div', { class: 'card row' },
       h('button', { class: 'btn', onclick: changePin }, 'Change PIN'),
-      h('button', { class: 'btn', onclick: async () => { await run(() => api('POST', '/api/employee/logout')); showLogin(); } }, 'Log out')));
+      PREVIEW_ID ? '' : h('button', { class: 'btn', onclick: async () => { await run(() => api('POST', `${EMP}/logout`)); showLogin(); } }, 'Log out')));
 }
 
 async function viewPayslip(month) {
-  const slip = await run(() => api('GET', `/api/employee/payslips/${month}`));
+  const slip = await run(() => api('GET', `${EMP}/payslips/${month}`));
   if (slip) openPayslip(slip.company_name, slip.month, slip.row);
 }
 
@@ -418,7 +428,7 @@ function uploadDocument() {
     submitLabel: 'Upload',
     async onSubmit(v) {
       const file = await prepareUpload(v.file);
-      await api('POST', '/api/employee/documents', { doc_type: v.doc_type, doc_number: v.doc_number, label: v.label, file });
+      await api('POST', `${EMP}/documents`, { doc_type: v.doc_type, doc_number: v.doc_number, label: v.label, file });
       toast('Document uploaded');
       renderShell();
       return true;
@@ -436,7 +446,7 @@ function changePin() {
     ],
     async onSubmit(v) {
       if (v.new_pin !== v.confirm) throw new Error('New PINs do not match');
-      await api('POST', '/api/employee/pin', { current_pin: v.current_pin, new_pin: v.new_pin });
+      await api('POST', `${EMP}/pin`, { current_pin: v.current_pin, new_pin: v.new_pin });
       toast('PIN changed');
       return true;
     },
