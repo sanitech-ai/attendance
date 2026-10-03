@@ -116,3 +116,45 @@ test('import: preview, create branches + employees + fixed pay items, PINs, payr
   assert.equal(r.status, 200);
   assert.equal((await admin('DELETE', `/api/admin/pay-items/${r.data.id}`)).status, 200);
 });
+
+test('branch location comes from a Google Maps link (form and import)', async (t) => {
+  const s = await startServer(ist('2026-10-01', '08:00'));
+  t.after(() => s.close());
+  const admin = s.client();
+  await admin('POST', '/api/admin/setup', { username: 'owner', password: 'password123', name: 'Owner' });
+
+  // Form: link only, no lat/lng typed
+  const link = 'https://www.google.com/maps/place/Sanitech/@17.40,78.40,17z/data=!3d17.4126!4d78.4482';
+  let r = await admin('POST', '/api/admin/branches', { name: 'HQ', maps_link: link, radius_m: 150, geofence_mode: 'flag' });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  let b = (await admin('GET', '/api/admin/branches')).data[0];
+  assert.deepEqual([b.lat, b.lng, b.location_set, b.maps_link], [17.4126, 78.4482, 1, link]);
+  r = await admin('POST', '/api/admin/branches', { name: 'Bad', maps_link: 'https://example.com/x', radius_m: 150, geofence_mode: 'flag' });
+  assert.equal(r.status, 400);
+  r = await admin('POST', '/api/admin/branches', { name: 'Nothing', radius_m: 150, geofence_mode: 'flag' });
+  assert.match(r.data.error, /Google Maps link/);
+
+  // Import: link column locates new branches and an existing unlocated one; a bad link blocks only its rows
+  const csv = [
+    'employee_id,name,branch,salary,branch_maps_link',
+    'E1,A,Site One,10000,"https://maps.google.com/?q=16.5,81.7"',
+    'E2,B,Site One,10000,',
+    'E3,C,Site Two,10000,',
+  ].join('\n');
+  r = await admin('POST', '/api/admin/employees/import', { csv, dry_run: true });
+  assert.deepEqual(r.data.new_branches.map((x) => [x.name, x.located]), [['Site One', true], ['Site Two', false]]);
+  r = await admin('POST', '/api/admin/employees/import', { csv: `${csv}\nE4,D,Site Three,10000,https://evil.example.com/` });
+  assert.equal(r.data.error_count, 1);
+  assert.match(r.data.rows[3].errors[0], /Maps link for Site Three/);
+  r = await admin('POST', '/api/admin/employees/import', { csv });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const branches = (await admin('GET', '/api/admin/branches')).data;
+  b = branches.find((x) => x.name === 'Site One');
+  assert.deepEqual([b.lat, b.lng, b.location_set], [16.5, 81.7, 1]);
+  assert.equal(branches.find((x) => x.name === 'Site Two').location_set, 0);
+
+  r = await admin('POST', '/api/admin/employees/import', { csv: 'employee_id,name,branch,salary,branch_maps_link\nE5,E,Site Two,10000,"28.4595, 77.0266"' });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  b = (await admin('GET', '/api/admin/branches')).data.find((x) => x.name === 'Site Two');
+  assert.deepEqual([b.lat, b.lng, b.location_set], [28.4595, 77.0266, 1], 'existing unlocated branch gets the location');
+});

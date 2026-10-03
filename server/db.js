@@ -213,6 +213,7 @@ function migrate(db) {
     // 0 = branch created (e.g. by import) before its GPS location was entered.
     db.exec('ALTER TABLE branches ADD COLUMN location_set INTEGER NOT NULL DEFAULT 1');
   }
+  if (!cols.includes('maps_link')) db.exec("ALTER TABLE branches ADD COLUMN maps_link TEXT NOT NULL DEFAULT ''");
 }
 
 function tx(db, fn) {

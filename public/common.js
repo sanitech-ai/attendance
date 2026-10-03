@@ -218,7 +218,7 @@ function formDialog({ title, fields, submitLabel = 'Save', onSubmit, wide }) {
     if (ok !== undefined && ok !== false) dlg.close();
   });
   setTimeout(() => body.querySelector('input:not([type=checkbox]),select,textarea')?.focus(), 50);
-  return dlg;
+  return { ...dlg, form: body };
 }
 
 function confirmDialog(title, message, confirmLabel = 'Confirm', danger = false) {

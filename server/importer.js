@@ -43,6 +43,7 @@ const COLUMNS = {
   shift_end: ['shift_end', 'shift end'],
   weekly_off: ['weekly_off', 'weekly off', 'weekly offs'],
   branch_radius_m: ['branch_radius_m', 'branch radius', 'radius'],
+  branch_maps_link: ['branch_maps_link', 'maps_link', 'google maps link', 'location link'],
   pin: ['pin'],
 };
 // Optional fixed monthly pay items: column -> [kind, label].
@@ -101,7 +102,8 @@ function planImport(db, csvText) {
   const missing = ['name', 'branch', 'salary'].filter((k) => idx[k] < 0);
   if (missing.length) return { error: `Missing column(s): ${missing.join(', ')}` };
 
-  const branches = new Map(db.prepare('SELECT id, name FROM branches').all().map((b) => [b.name.trim().toLowerCase(), b]));
+  const branches = new Map(db.prepare('SELECT id, name, location_set FROM branches').all().map((b) => [b.name.trim().toLowerCase(), b]));
+  const branchLinks = new Map(); // branch key -> Google Maps link (first one given in the file)
   const existingCodes = new Set(db.prepare('SELECT code FROM employees').all().map((e) => e.code.toLowerCase()));
   const seenCodes = new Set();
   const newBranches = new Map();
@@ -143,6 +145,8 @@ function planImport(db, csvText) {
     }
 
     const branchKey = branch.toLowerCase();
+    const link = get('branch_maps_link');
+    if (link && !branchLinks.has(branchKey)) branchLinks.set(branchKey, link.slice(0, 2000));
     if (branch && !branches.has(branchKey) && !newBranches.has(branchKey)) newBranches.set(branchKey, { name: branch, radius_m: radius });
     rows.push({
       line: i + 2,
@@ -155,7 +159,11 @@ function planImport(db, csvText) {
       },
     });
   });
-  return { rows, branches, newBranches: [...newBranches.values()] };
+  // Links only matter for branches that are new or still have no location.
+  for (const key of [...branchLinks.keys()]) {
+    if (branches.get(key)?.location_set) branchLinks.delete(key);
+  }
+  return { rows, branches, newBranches: [...newBranches.values()], branchLinks };
 }
 
 function randomPin() {

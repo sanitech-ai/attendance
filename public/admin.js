@@ -510,6 +510,7 @@ function importEmployees() {
       h('li', {}, h('b', {}, 'employee_id, name, branch, salary'), ' – required. Branches that don’t exist yet are created; you then set their location.'),
       h('li', {}, 'designation, phone, joined_on (DD-MM-YYYY, may be blank), salary_type (monthly/daily/hourly, default monthly)'),
       h('li', {}, 'shift_start, shift_end (default 09:00 and 18:00), weekly_off (default Sun), branch_radius_m (default 150)'),
+      h('li', {}, 'branch_maps_link – Google Maps link of the branch (needed on one row per branch); its location is read automatically'),
       h('li', {}, 'pf, esic, pt, tds – fixed monthly deductions; conveyance, room_rent – fixed monthly earnings'),
       h('li', {}, 'pin – optional; if blank a random 4-digit PIN is created and shown after import')));
 
@@ -519,7 +520,8 @@ function importEmployees() {
       h('p', {}, bad
         ? h('strong', { style: { color: 'var(--bad)' } }, `${bad} row(s) have problems. Fix them in the file and check again. Nothing has been imported.`)
         : h('strong', {}, `${res.rows.length} employee(s) ready to import.`),
-      res.new_branches.length ? ` New branches to be created: ${res.new_branches.map((b) => b.name).join(', ')}.` : ''),
+      res.new_branches.length ? ` New branches to be created: ${res.new_branches.map((b) => `${b.name}${b.located ? ' 📍' : ''}`).join(', ')}.` : '',
+      res.new_branches.some((b) => !b.located) ? ' Branches without 📍 have no location yet — add a branch_maps_link column, or set it afterwards.' : ''),
       table([
         { label: 'Line', render: (r) => String(r.line) },
         { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name || '—'), h('div', { class: 'small muted' }, `${r.code} · ${r.designation || ''}`)) },
@@ -650,29 +652,46 @@ async function pageBranches(el) {
     ], A.branches, { empty: 'No branches yet. Add your first branch — stand inside it and use “Use my current location”.' }));
 }
 
+/** Reads coordinates from a pasted Google Maps link as soon as it is entered. */
+function autoLocateFromLink(form) {
+  const linkInput = form.querySelector('[name=maps_link]');
+  const status = h('div', { class: 'hint' });
+  linkInput.closest('.field').append(status);
+  let timer = null;
+  let seq = 0;
+  const lookup = async () => {
+    const link = linkInput.value.trim();
+    if (!link) { status.textContent = ''; return; }
+    const mine = ++seq;
+    status.textContent = '⏳ Reading location from link…';
+    try {
+      const r = await api('POST', '/api/admin/maps/resolve', { link });
+      if (mine !== seq) return;
+      form.querySelector('[name=lat]').value = r.lat.toFixed(6);
+      form.querySelector('[name=lng]').value = r.lng.toFixed(6);
+      status.replaceChildren('✅ Location found: ', mapLink(r.lat, r.lng, `${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}`), ' — check it is the right place.');
+    } catch (err) {
+      if (mine === seq) status.textContent = `⚠ ${err.message}`;
+    }
+  };
+  linkInput.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(lookup, 500); });
+}
+
 function branchForm(b) {
-  formDialog({
+  const dlg = formDialog({
     title: b ? `Edit ${b.name}` : 'Add branch',
     fields: [
       { name: 'name', label: 'Branch name', required: true, value: b?.name },
       { name: 'address', label: 'Address', type: 'textarea', value: b?.address },
-      { name: 'maps_link', label: 'Google Maps link', placeholder: 'https://maps.app.goo.gl/…', hint: 'In Google Maps, long-press the exact spot to drop a pin → Share → Copy link, then paste it here.' },
-      { type: 'button', label: '🔗 Get location from link',
-        async onclick(form, btn) {
-          const link = form.querySelector('[name=maps_link]').value.trim();
-          if (!link) return toast('Paste a Google Maps link first', 'error');
-          const r = await run(() => api('POST', '/api/admin/maps/resolve', { link }), btn);
-          if (!r) return;
-          form.querySelector('[name=lat]').value = r.lat.toFixed(6);
-          form.querySelector('[name=lng]').value = r.lng.toFixed(6);
-          btn.textContent = `🔗 Got it: ${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}`;
-        } },
-      { type: 'button', label: '📍 Use my current location', hint: 'Or do this on a phone while standing inside the branch.',
+      { name: 'maps_link', label: 'Google Maps link', value: b?.maps_link, placeholder: 'https://maps.app.goo.gl/…',
+        hint: 'In Google Maps, long-press the exact spot to drop a pin → Share → Copy link, then paste it here. The location is read from the link automatically.' },
+      { type: 'button', label: '📍 Use my current location instead', hint: 'Or do this on a phone while standing inside the branch.',
         onclick(form, btn) {
           if (!navigator.geolocation) return toast('Location not available in this browser', 'error');
           btn.disabled = true;
           btn.textContent = 'Locating…';
           navigator.geolocation.getCurrentPosition((pos) => {
+            form.querySelector('[name=maps_link]').value = '';
             form.querySelector('[name=lat]').value = pos.coords.latitude.toFixed(6);
             form.querySelector('[name=lng]').value = pos.coords.longitude.toFixed(6);
             btn.disabled = false;
@@ -683,16 +702,15 @@ function branchForm(b) {
             toast(`Could not get location: ${err.message}`, 'error');
           }, { enableHighAccuracy: true, timeout: 20000 });
         } },
-      { name: 'lat', label: 'Latitude', type: 'number', step: 'any', required: true, value: b?.location_set ? b.lat : '', placeholder: '17.412300' },
-      { name: 'lng', label: 'Longitude', type: 'number', step: 'any', required: true, value: b?.location_set ? b.lng : '', placeholder: '78.448200' },
+      { name: 'lat', label: 'Latitude', type: 'number', step: 'any', value: b?.location_set ? b.lat : '', placeholder: 'filled from the link' },
+      { name: 'lng', label: 'Longitude', type: 'number', step: 'any', value: b?.location_set ? b.lng : '', placeholder: 'filled from the link' },
       { name: 'radius_m', label: 'Allowed radius (metres)', type: 'number', min: 20, max: 5000, required: true, value: b?.radius_m ?? 150, hint: 'Phone GPS is usually accurate to 10–50 m. 100–200 m works well for most offices.' },
       { name: 'geofence_mode', label: 'When an employee of this branch is outside every branch radius', type: 'select', value: b?.geofence_mode || 'flag',
         options: [{ value: 'flag', label: 'Allow the punch but flag it for review' }, { value: 'block', label: 'Block the punch' }] },
       ...(b ? [{ name: 'active', label: 'Active', type: 'checkbox', value: !!b.active }] : []),
     ],
     async onSubmit(v) {
-      const { maps_link: _link, ...rest } = v;
-      const body = { ...rest, radius_m: Number(v.radius_m), active: b ? v.active : true };
+      const body = { ...v, radius_m: Number(v.radius_m), active: b ? v.active : true };
       if (b) await api('PUT', `/api/admin/branches/${b.id}`, body);
       else await api('POST', '/api/admin/branches', body);
       toast('Branch saved');
@@ -700,6 +718,7 @@ function branchForm(b) {
       return true;
     },
   });
+  autoLocateFromLink(dlg.form);
 }
 
 // ---------------------------------------------------------------- holidays

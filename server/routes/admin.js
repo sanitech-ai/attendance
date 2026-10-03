@@ -138,33 +138,36 @@ module.exports = function adminRoutes(ctx) {
     ).all());
   });
 
-  function branchInput(b) {
+  /** Validates a branch; a Google Maps link, when given, is the source of the coordinates. */
+  async function branchInput(b) {
     const name = String(b.name || '').trim();
     if (!name) throw bad('Branch name is required');
+    const link = String(b.maps_link || '').trim().slice(0, 2000);
+    if (link) Object.assign(b, await resolveMapsLink(link));
     const lat = Number(b.lat);
     const lng = Number(b.lng);
     if (b.lat === '' || b.lng === '' || !Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
-      throw bad('Valid latitude and longitude are required');
+      throw bad('Paste a Google Maps link (or enter latitude and longitude)');
     }
     const radius = Number(b.radius_m ?? 150);
     if (!Number.isInteger(radius) || radius < 20 || radius > 5000) throw bad('Radius must be 20 to 5000 metres');
     if (!['block', 'flag'].includes(b.geofence_mode)) throw bad('Geofence mode must be block or flag');
-    return [name, String(b.address || '').slice(0, 300), lat, lng, radius, b.geofence_mode, b.active === false ? 0 : 1];
+    return [name, String(b.address || '').slice(0, 300), lat, lng, radius, b.geofence_mode, b.active === false ? 0 : 1, link];
   }
 
-  r.post('/branches', (req, res) => {
-    const v = branchInput(req.body || {});
+  r.post('/branches', async (req, res) => {
+    const v = await branchInput(req.body || {});
     const newId = db
-      .prepare('INSERT INTO branches (name, address, lat, lng, radius_m, geofence_mode, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .prepare('INSERT INTO branches (name, address, lat, lng, radius_m, geofence_mode, active, maps_link, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(...v, ctx.now()).lastInsertRowid;
     ctx.audit(req, 'branch.created', { id: Number(newId), name: v[0] });
     res.json({ ok: true, id: Number(newId) });
   });
 
-  r.put('/branches/:id', (req, res) => {
-    const v = branchInput(req.body || {});
+  r.put('/branches/:id', async (req, res) => {
+    const v = await branchInput(req.body || {});
     const result = db
-      .prepare('UPDATE branches SET name = ?, address = ?, lat = ?, lng = ?, radius_m = ?, geofence_mode = ?, active = ?, location_set = 1 WHERE id = ?')
+      .prepare('UPDATE branches SET name = ?, address = ?, lat = ?, lng = ?, radius_m = ?, geofence_mode = ?, active = ?, maps_link = ?, location_set = 1 WHERE id = ?')
       .run(...v, id(req.params.id));
     if (!result.changes) throw notFound();
     ctx.audit(req, 'branch.updated', { id: Number(req.params.id) });
@@ -291,12 +294,22 @@ module.exports = function adminRoutes(ctx) {
   });
 
   // ---- bulk import from CSV ----
-  r.post('/employees/import', (req, res) => {
+  r.post('/employees/import', async (req, res) => {
     const { csv, dry_run: dryRun } = req.body || {};
     if (typeof csv !== 'string' || !csv.trim()) throw bad('Choose a CSV file');
     if (csv.length > 2_000_000) throw bad('File is too large');
     const plan = planImport(db, csv);
     if (plan.error) throw bad(plan.error);
+    // Turn each branch's Google Maps link into coordinates; a bad link is reported on its rows.
+    const branchCoords = new Map();
+    await Promise.all([...plan.branchLinks].map(async ([key, link]) => {
+      try {
+        branchCoords.set(key, await resolveMapsLink(link));
+      } catch (err) {
+        for (const row of plan.rows) if (row.data.branchKey === key) row.errors.push(`Maps link for ${row.data.branch}: ${err.message}`);
+      }
+    }));
+    for (const nb of plan.newBranches) nb.located = branchCoords.has(nb.name.toLowerCase());
     const summary = plan.rows.map((r) => ({
       line: r.line, code: r.data.code, name: r.data.name, branch: r.data.branch, designation: r.data.designation,
       salary_paise: r.data.salary_paise, joined_on: r.data.joined_on, items: r.items, errors: r.errors,
@@ -309,11 +322,19 @@ module.exports = function adminRoutes(ctx) {
       const branchIds = new Map([...plan.branches].map(([k, b]) => [k, b.id]));
       for (const nb of plan.newBranches) {
         // Location comes later (admin pastes a Google Maps link); until then punches here are flagged.
+        const c = branchCoords.get(nb.name.toLowerCase());
         const bid = db.prepare(
-          `INSERT INTO branches (name, address, lat, lng, radius_m, geofence_mode, active, location_set, created_at)
-           VALUES (?, '', 0, 0, ?, 'flag', 1, 0, ?)`,
-        ).run(nb.name, nb.radius_m, ctx.now()).lastInsertRowid;
+          `INSERT INTO branches (name, address, lat, lng, radius_m, geofence_mode, active, location_set, maps_link, created_at)
+           VALUES (?, '', ?, ?, ?, 'flag', 1, ?, ?, ?)`,
+        ).run(nb.name, c?.lat ?? 0, c?.lng ?? 0, nb.radius_m, c ? 1 : 0, c ? plan.branchLinks.get(nb.name.toLowerCase()) : '', ctx.now()).lastInsertRowid;
         branchIds.set(nb.name.toLowerCase(), Number(bid));
+      }
+      // Existing branches that had no location yet get it from the file.
+      for (const [key, c] of branchCoords) {
+        const existing = plan.branches.get(key);
+        if (existing) {
+          db.prepare('UPDATE branches SET lat = ?, lng = ?, maps_link = ?, location_set = 1 WHERE id = ?').run(c.lat, c.lng, plan.branchLinks.get(key), existing.id);
+        }
       }
       const insEmp = db.prepare(
         `INSERT INTO employees (code, name, phone, designation, branch_id, salary_type, salary_paise, shift_start, shift_end,
