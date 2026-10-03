@@ -46,7 +46,7 @@ function installCard() {
   }
   return h('div', { class: 'card install-card' },
     h('div', { class: 'row', style: { marginBottom: '8px' } }, h('img', { src: '/icon-192.png', alt: '', width: 36, height: 36, style: { borderRadius: '8px' } }),
-      h('div', {}, h('strong', {}, 'Add Attendance to your Home Screen'), h('div', { class: 'small muted' }, 'Open it like an app with one tap, every day.'))),
+      h('div', {}, h('strong', {}, 'Add Sanitech to your Home Screen'), h('div', { class: 'small muted' }, 'Open it like an app with one tap, every day.'))),
     body);
 }
 
@@ -79,7 +79,8 @@ function showLogin() {
   const btn = h('button', { class: 'btn btn-primary btn-block', type: 'submit' }, 'Log in');
   const form = h('form', { class: 'form card login-card' },
     h('img', { src: '/icon.svg', alt: '', class: 'logo' }),
-    h('h1', {}, 'Staff Attendance'),
+    h('h1', {}, 'Sanitech'),
+    h('div', { class: 'muted', style: { marginBottom: '8px' } }, 'Staff attendance'),
     h('p', { class: 'muted' }, 'Staff: log in with the Employee ID and PIN given by your manager. Admins: use your username and password.'),
     h('div', { class: 'field' }, h('label', { for: 'code' }, 'Employee ID / admin username'), code),
     h('div', { class: 'field' }, h('label', { for: 'pin' }, 'PIN / password'), pin),

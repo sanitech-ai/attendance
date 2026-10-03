@@ -1,7 +1,7 @@
 {
-  "name": "Sanitech Attendance",
-  "short_name": "Attendance",
-  "description": "Punch in/out with selfie and location, see attendance, leaves and salary.",
+  "name": "Sanitech",
+  "short_name": "Sanitech",
+  "description": "Sanitech staff app: punch in/out with selfie and location, see attendance, leaves and salary.",
   "id": "/",
   "start_url": "/",
   "scope": "/",

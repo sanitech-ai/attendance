@@ -41,7 +41,7 @@ function loginShell(title, subtitle, fields, submitLabel, onSubmit) {
 }
 
 function showLogin() {
-  loginShell('Admin login', 'Attendance & payroll dashboard', [
+  loginShell('Sanitech Admin', 'Attendance & payroll dashboard', [
     { name: 'username', label: 'Username', autocomplete: 'username' },
     { name: 'password', label: 'Password', type: 'password', autocomplete: 'current-password' },
   ], 'Log in', async (v) => {
