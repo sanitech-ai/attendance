@@ -960,9 +960,51 @@ async function pageSettings(el, params) {
           async onSubmit(v) { await api('POST', '/api/admin/password', v); toast('Password changed'); return true; },
         }) }, 'Change my password')),
       table([
-        { label: 'Name', render: (a) => a.name },
+        { label: 'Name', render: (a) => h('span', {}, a.name, a.id === A.me.admin.id ? h('span', { class: 'muted' }, ' (you)') : '') },
         { label: 'Username', render: (a) => a.username },
         { label: 'Added', render: (a) => fmtDateTime(a.created_at) },
+        { label: '', render: (a) => h('div', { class: 'row' },
+          h('button', { class: 'btn btn-sm', onclick: () => formDialog({
+            title: `Edit ${a.name}`,
+            fields: [
+              { name: 'name', label: 'Name', required: true, value: a.name },
+              { name: 'username', label: 'Username (used to log in)', required: true, value: a.username },
+            ],
+            async onSubmit(v) {
+              await api('PUT', `/api/admin/admins/${a.id}`, v);
+              if (a.id === A.me.admin.id) A.me.admin = { ...A.me.admin, ...v };
+              toast('Admin updated');
+              route();
+              return true;
+            },
+          }) }, 'Edit'),
+          a.id === A.me.admin.id ? '' : h('button', { class: 'btn btn-sm', onclick: () => formDialog({
+            title: `Reset password · ${a.name}`,
+            fields: [
+              { name: 'new_password', label: `New password for ${a.username} (min 8 chars)`, type: 'password', required: true, autocomplete: 'new-password' },
+              { name: 'password', label: 'Your own password (to confirm)', type: 'password', required: true, autocomplete: 'current-password' },
+            ],
+            submitLabel: 'Reset password',
+            async onSubmit(v) {
+              await api('POST', `/api/admin/admins/${a.id}/password`, v);
+              toast(`Password reset. ${a.name} has been logged out and must use the new password.`);
+              return true;
+            },
+          }) }, 'Reset password'),
+          a.id === A.me.admin.id ? '' : h('button', { class: 'btn btn-sm', onclick: () => formDialog({
+            title: `Remove admin ${a.name}?`,
+            fields: [
+              { type: 'heading', label: `${a.name} will no longer be able to log in. Their past approvals stay in the records.` },
+              { name: 'password', label: 'Your own password (to confirm)', type: 'password', required: true, autocomplete: 'current-password' },
+            ],
+            submitLabel: 'Remove admin',
+            async onSubmit(v) {
+              await api('DELETE', `/api/admin/admins/${a.id}`, v);
+              toast(`${a.name} removed`);
+              route();
+              return true;
+            },
+          }) }, 'Remove')) },
       ], admins));
     return;
   }

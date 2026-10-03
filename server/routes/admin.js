@@ -111,6 +111,50 @@ module.exports = function adminRoutes(ctx) {
     res.json({ ok: true, id: Number(newId) });
   });
 
+  r.put('/admins/:id', (req, res) => {
+    const target = db.prepare('SELECT id, username, name FROM admins WHERE id = ?').get(id(req.params.id));
+    if (!target) throw notFound();
+    const name = String(req.body?.name ?? '').trim();
+    const username = String(req.body?.username ?? '').trim();
+    if (!name) throw bad('Name is required');
+    if (!/^[A-Za-z0-9_.@-]{3,40}$/.test(username)) throw bad('Username must be 3-40 letters/digits');
+    db.prepare('UPDATE admins SET name = ?, username = ? WHERE id = ?').run(name.slice(0, 80), username, target.id);
+    ctx.audit(req, 'admin.updated', { id: target.id, from: { name: target.name, username: target.username }, to: { name, username } });
+    res.json({ ok: true });
+  });
+
+  // Another admin's password: needs the acting admin's own password; that admin is logged out everywhere.
+  r.post('/admins/:id/password', (req, res) => {
+    const target = db.prepare('SELECT id, username FROM admins WHERE id = ?').get(id(req.params.id));
+    if (!target) throw notFound();
+    checkPassword(req);
+    const pw = req.body?.new_password;
+    if (typeof pw !== 'string' || pw.length < 8) throw bad('New password must be at least 8 characters');
+    db.prepare('UPDATE admins SET password_hash = ?, failed_logins = 0, locked_until = NULL WHERE id = ?').run(hashSecret(pw), target.id);
+    if (target.id !== req.admin.id) ctx.endAllSessions('admin', target.id);
+    ctx.audit(req, 'admin.password_reset', { id: target.id, username: target.username });
+    res.json({ ok: true });
+  });
+
+  r.delete('/admins/:id', (req, res) => {
+    const target = db.prepare('SELECT id, username, name FROM admins WHERE id = ?').get(id(req.params.id));
+    if (!target) throw notFound();
+    if (target.id === req.admin.id) throw bad('You cannot remove your own account');
+    if (db.prepare('SELECT COUNT(*) AS n FROM admins').get().n <= 1) throw bad('At least one admin must remain');
+    checkPassword(req);
+    tx(db, () => {
+      // Keep the records this admin approved; just drop the link to the deleted account.
+      for (const [table, col] of [['punches', 'reviewed_by'], ['ot_decisions', 'decided_by'], ['day_overrides', 'set_by'],
+        ['leave_requests', 'decided_by'], ['documents', 'reviewed_by'], ['payroll_runs', 'finalized_by']]) {
+        db.prepare(`UPDATE ${table} SET ${col} = NULL WHERE ${col} = ?`).run(target.id);
+      }
+      db.prepare("DELETE FROM sessions WHERE kind = 'admin' AND user_id = ?").run(target.id);
+      db.prepare('DELETE FROM admins WHERE id = ?').run(target.id);
+    });
+    ctx.audit(req, 'admin.removed', { username: target.username, name: target.name });
+    res.json({ ok: true });
+  });
+
   r.post('/password', (req, res) => {
     const { current_password, new_password } = req.body || {};
     const me = db.prepare('SELECT * FROM admins WHERE id = ?').get(req.admin.id);
