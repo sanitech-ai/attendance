@@ -177,6 +177,10 @@ const DEFAULT_SETTINGS = {
   company_name: 'Sanitech',
   half_day_hours: '4',
   grace_minutes: '15',
+  // Late arrivals per month that are only warnings; each late after that is a half day.
+  late_warnings: '2',
+  // Up to this late, staying until shift end still counts as a full day (subject to the warnings).
+  late_max_minutes: '60',
   max_accuracy_m: '100',
   ot_requires_approval: '1',
 };
@@ -209,6 +213,8 @@ function getSettings(db) {
     company_name: s.company_name,
     half_day_hours: Number(s.half_day_hours),
     grace_minutes: Number(s.grace_minutes),
+    late_warnings: Number(s.late_warnings),
+    late_max_minutes: Number(s.late_max_minutes),
     max_accuracy_m: Number(s.max_accuracy_m),
     ot_requires_approval: s.ot_requires_approval === '1',
   };

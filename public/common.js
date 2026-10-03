@@ -113,7 +113,20 @@ const STATUS_SHORT = {
 };
 const PUNCH_LABEL = { IN: 'Punch In', OUT: 'Punch Out', OT_IN: 'Start Overtime', OT_OUT: 'End Overtime' };
 const DOC_LABEL = { aadhaar: 'Aadhaar', pan: 'PAN', bank: 'Bank passbook / cheque', photo: 'Photo', other: 'Other' };
-const FLAG_LABEL = { flagged_punch: 'Location flagged', missing_out: 'No punch out', short_hours: 'Short hours', missing_ot_out: 'OT not ended' };
+const FLAG_LABEL = {
+  flagged_punch: 'Location flagged', missing_out: 'No punch out', short_hours: 'Short hours', missing_ot_out: 'OT not ended',
+  late_warning: 'Late (warning)', late_penalty: 'Late → half day',
+};
+
+/** "Late 20m · warning 1 of 2" / "Late 20m · 3rd late → half day" */
+function lateText(day, warnings) {
+  if (!day.late_minutes) return '';
+  const ord = (n) => `${n}${({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 100 >= 11 && n % 100 <= 13 ? 0 : n % 10] || 'th'}`;
+  if (!day.late_mark) return `Late ${fmtMinutes(day.late_minutes)}`;
+  return day.flags.includes('late_penalty')
+    ? `Late ${fmtMinutes(day.late_minutes)} · ${ord(day.late_mark)} late this month → half day`
+    : `Late ${fmtMinutes(day.late_minutes)} · warning ${day.late_mark} of ${warnings}`;
+}
 
 function badge(text, kind) {
   return h('span', { class: `badge badge-${kind || 'neutral'}` }, text);
@@ -308,7 +321,7 @@ button{margin-top:24px;padding:8px 16px;font-size:14px}@media print{button{displ
 <h2>Attendance</h2>
 <div class="grid"><div>Days in month: ${row.days_in_month}</div><div>Paid days: <b>${row.paid_days}</b></div>
 <div>Present: ${a.present}</div><div>Half days: ${a.half_day}</div><div>Absent: ${a.absent + a.not_marked}</div><div>Paid leave: ${a.paid_leave}</div>
-<div>Unpaid leave: ${a.unpaid_leave}</div><div>Week offs: ${a.week_off}</div><div>Holidays: ${a.holiday}</div><div>Late days: ${a.late_days}</div>
+<div>Unpaid leave: ${a.unpaid_leave}</div><div>Week offs: ${a.week_off}</div><div>Holidays: ${a.holiday}</div><div>Late days: ${a.late_days}${a.late_penalties ? ` (${a.late_penalties} counted as half day)` : ''}</div>
 <div>Overtime (approved): ${row.ot_hours} h</div></div>
 <div class="cols"><div><h2>Earnings</h2><table>${earnings}${line('Gross', money(row.gross_paise))}</table></div>
 <div><h2>Deductions</h2><table>${deductions}${line('Total', money(row.total_deductions_paise))}</table></div></div>

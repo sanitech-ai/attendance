@@ -216,7 +216,7 @@ test('overnight shift: OUT after midnight counts for the day the shift started',
   assert.equal(pay.base_paise, 80000, '8 hours x Rs 100');
 });
 
-test('default rules: 9-to-6 shift, 15-minute grace, full day within grace', async (t) => {
+test('default rules: 9-to-6 shift, 15-minute grace, 2 late warnings then half day', async (t) => {
   const s = await startServer(ist('2026-09-01', '08:00'));
   t.after(() => s.close());
   const admin = s.client();
@@ -224,8 +224,9 @@ test('default rules: 9-to-6 shift, 15-minute grace, full day within grace', asyn
   const settings = (await admin('GET', '/api/admin/settings')).data;
   assert.equal(settings.company_name, 'Sanitech');
   assert.equal(settings.grace_minutes, 15);
+  assert.equal(settings.late_warnings, 2);
   const b = await admin('POST', '/api/admin/branches', { name: 'HQ', ...OFFICE, radius_m: 150, geofence_mode: 'flag' });
-  await admin('POST', '/api/admin/employees', {
+  const emp = await admin('POST', '/api/admin/employees', {
     code: 'D1', name: 'Default', branch_id: b.data.id, salary_type: 'monthly', salary: 30000, shift_start: '09:00', shift_end: '18:00', weekly_offs: ['0'], joined_on: '2026-09-01', pin: '1234',
   });
   const staff = s.client();
@@ -234,14 +235,56 @@ test('default rules: 9-to-6 shift, 15-minute grace, full day within grace', asyn
     s.clock.now = ist(date, time);
     const r = await staff('POST', '/api/employee/punch', { kind, ...OFFICE, accuracy: 10, selfie: JPEG });
     assert.equal(r.status, 200, JSON.stringify(r.data));
+    return r.data;
   };
-  await punch('2026-09-01', '09:14', 'IN');
-  await punch('2026-09-01', '18:00', 'OUT');
-  await punch('2026-09-02', '09:20', 'IN');
-  await punch('2026-09-02', '18:00', 'OUT');
-  const days = (await staff('GET', '/api/employee/attendance?month=2026-09')).data.days;
-  assert.equal(days[0].status, 'present', '09:14-18:00 is a full day');
-  assert.equal(days[0].late_minutes, 0, 'within the 15-minute grace');
-  assert.equal(days[1].late_minutes, 20);
-  assert.equal(days[1].status, 'half_day', '8h40m is below 8h45m');
+  const day = async (date, inAt, outAt) => {
+    const r = await punch(date, inAt, 'IN');
+    await punch(date, outAt, 'OUT');
+    return r;
+  };
+
+  assert.equal((await day('2026-09-01', '09:14', '18:00')).late, null, 'within grace');
+  let r = await day('2026-09-02', '09:20', '18:00');
+  assert.deepEqual(r.late, { minutes: 20, mark: 1, warnings: 2, half_day: false });
+  await day('2026-09-03', '09:40', '18:00');
+  r = await day('2026-09-04', '09:16', '18:05');
+  assert.deepEqual(r.late, { minutes: 16, mark: 3, warnings: 2, half_day: true });
+  await day('2026-09-05', '09:30', '18:00');
+  await day('2026-09-07', '10:30', '18:00'); // 90 min late: beyond the 60-minute allowance
+  await day('2026-09-08', '09:20', '17:00'); // late and left early
+  // Admin forgives the 4th late (e.g. traffic jam reported); it no longer counts.
+  await admin('POST', '/api/admin/login', { username: 'owner', password: 'password123' });
+  await admin('PUT', '/api/admin/attendance/override', { employee_id: emp.data.id, date: '2026-09-05', status: 'present', note: 'Train delay' });
+
+  let days = (await staff('GET', '/api/employee/attendance?month=2026-09')).data.days;
+  const d = Object.fromEntries(days.map((x) => [x.date.slice(8), x]));
+  assert.equal(d['01'].status, 'present');
+  assert.equal(d['01'].late_minutes, 0);
+  assert.equal(d['02'].status, 'present', '1st late: warning, still a full day');
+  assert.ok(d['02'].flags.includes('late_warning'));
+  assert.equal(d['03'].status, 'present', '2nd late: warning');
+  assert.equal(d['04'].status, 'half_day', '3rd late: half day');
+  assert.ok(d['04'].flags.includes('late_penalty'));
+  assert.equal(d['05'].status, 'present', 'admin override wins and is not counted');
+  assert.equal(d['05'].late_mark, null);
+  assert.equal(d['07'].status, 'half_day', 'very late: hours rule (7h30m)');
+  assert.equal(d['07'].late_mark, 4);
+  assert.equal(d['08'].status, 'half_day');
+  assert.equal(d['08'].late_mark, 5);
+  const summary = (await staff('GET', '/api/employee/attendance?month=2026-09')).data.summary;
+  assert.equal(summary.late_days, 6);
+  assert.equal(summary.late_penalties, 3);
+
+  // Count restarts in a new month
+  await staff('POST', '/api/employee/login', { code: 'D1', pin: '1234' });
+  r = await day('2026-10-01', '09:20', '18:00');
+  assert.equal(r.late.mark, 1);
+  assert.equal(r.late.half_day, false);
+  // Single-day views (dashboard / today) still see earlier late marks in the month
+  await day('2026-10-02', '09:20', '18:00');
+  await punch('2026-10-03', '09:25', 'IN');
+  await admin('POST', '/api/admin/login', { username: 'owner', password: 'password123' });
+  const dash = (await admin('GET', '/api/admin/dashboard?date=2026-10-03')).data;
+  assert.equal(dash.rows[0].day.late_mark, 3);
+  assert.ok(dash.rows[0].day.flags.includes('late_penalty'));
 });

@@ -34,10 +34,13 @@ module.exports = function employeeRoutes(ctx) {
 
   r.get('/me', (req, res) => {
     const branch = db.prepare('SELECT id, name, address FROM branches WHERE id = ?').get(req.employee.branch_id);
+    const settings = getSettings(db);
     res.json({
       employee: publicEmployee(req.employee),
       branch,
-      company_name: getSettings(db).company_name,
+      company_name: settings.company_name,
+      late_warnings: settings.late_warnings,
+      grace_minutes: settings.grace_minutes,
     });
   });
 
@@ -130,9 +133,17 @@ module.exports = function employeeRoutes(ctx) {
         nearest ? Math.round(nearest.distance) : null, inside ? 1 : 0, file,
         flags.length ? 'flagged' : 'ok', flags.join('; ') || null, String(req.headers['user-agent'] || '').slice(0, 200),
       );
+    let late = null;
+    if (kind === 'IN') {
+      const [day] = computeRange(db, emp, workDate, workDate, settings, now);
+      if (day.late_mark) {
+        late = { minutes: day.late_minutes, mark: day.late_mark, warnings: settings.late_warnings, half_day: day.flags.includes('late_penalty') };
+      }
+    }
     res.json({
       ok: true,
       id: Number(result.lastInsertRowid),
+      late,
       at: now,
       status: flags.length ? 'flagged' : 'ok',
       flag_reason: flags.join('; ') || null,

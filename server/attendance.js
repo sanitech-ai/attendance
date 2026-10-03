@@ -94,6 +94,12 @@ function fullDayMinutes(emp, settings) {
   return Math.max(settings.half_day_hours * 60, shiftMinutes(emp.shift_start, emp.shift_end) - settings.grace_minutes);
 }
 
+/** Shift end as epoch ms; an overnight shift ends on the next calendar day. */
+function shiftEndMs(emp, date) {
+  const end = istMs(date, emp.shift_end);
+  return emp.shift_end <= emp.shift_start ? end + 86400000 : end;
+}
+
 function statusFromMinutes(minutes, settings, emp) {
   if (minutes >= fullDayMinutes(emp, settings)) return 'present';
   if (minutes >= settings.half_day_hours * 60) return 'half_day';
@@ -113,6 +119,7 @@ function computeDay(emp, date, ctx, settings, today) {
     first_in: p.firstIn ? istTime(p.firstIn) : null,
     last_out: p.lastOut ? istTime(p.lastOut) : null,
     late_minutes: 0,
+    late_mark: null,
     ot_minutes: p.otMinutes,
     ot_start: p.otStart ? istTime(p.otStart) : null,
     ot_end: p.otEnd ? istTime(p.otEnd) : null,
@@ -131,6 +138,11 @@ function computeDay(emp, date, ctx, settings, today) {
     .includes(weekday(date));
   const override = ctx.overrides.get(date);
 
+  if (p.firstIn !== null && emp.shift_start) {
+    const lateBy = Math.floor((p.firstIn - istMs(date, emp.shift_start)) / 60000);
+    if (lateBy > settings.grace_minutes) day.late_minutes = lateBy;
+  }
+
   if (date < emp.joined_on) {
     day.status = 'not_joined';
   } else if (override) {
@@ -142,6 +154,12 @@ function computeDay(emp, date, ctx, settings, today) {
       day.status = 'working';
     } else {
       day.status = statusFromMinutes(p.regularMinutes, settings, emp);
+      // A slightly late arrival who stays until shift end is handled by the late-mark rule
+      // (warnings, then half day) rather than being cut for short hours.
+      if (day.status !== 'present' && day.late_minutes > 0 && day.late_minutes <= settings.late_max_minutes
+        && p.openIn === null && p.lastOut >= shiftEndMs(emp, date)) {
+        day.status = 'present';
+      }
       if (p.openIn !== null) {
         flags.push('missing_out');
         // Came in but never punched out: give half a day until an admin corrects it.
@@ -164,11 +182,6 @@ function computeDay(emp, date, ctx, settings, today) {
     day.status = 'absent';
   }
 
-  if (p.firstIn !== null && emp.shift_start) {
-    const lateBy = Math.floor((p.firstIn - istMs(date, emp.shift_start)) / 60000);
-    if (lateBy > settings.grace_minutes) day.late_minutes = lateBy;
-  }
-
   if (p.openOt !== null && date < today) flags.push('missing_ot_out');
   if (p.otMinutes > 0) {
     const decision = ctx.ot.get(date);
@@ -186,12 +199,38 @@ function computeDay(emp, date, ctx, settings, today) {
   return day;
 }
 
+/**
+ * Late marks are counted per calendar month. The first `late_warnings` late days are warnings only;
+ * every late day after that counts as a half day. Days an admin has corrected are not counted.
+ */
+function applyLateMarks(day, state, settings) {
+  const month = day.date.slice(0, 7);
+  if (state.month !== month) {
+    state.month = month;
+    state.count = 0;
+  }
+  if (day.override || day.late_minutes <= 0 || !['present', 'half_day', 'working'].includes(day.status)) return;
+  state.count++;
+  day.late_mark = state.count;
+  if (state.count > settings.late_warnings) {
+    if (day.status === 'present') day.status = 'half_day';
+    day.flags.push('late_penalty');
+  } else {
+    day.flags.push('late_warning');
+  }
+}
+
 function computeRange(db, emp, from, to, settings, nowMs = Date.now()) {
-  const ctx = loadContext(db, emp, from, to);
+  // Start at the 1st of the month so late marks earlier in the month are counted.
+  const start = `${from.slice(0, 7)}-01`;
+  const ctx = loadContext(db, emp, start, to);
   const today = istDate(nowMs);
   const days = [];
-  for (let d = from; d <= to; ) {
-    days.push(computeDay(emp, d, ctx, settings, today));
+  const late = { month: null, count: 0 };
+  for (let d = start; d <= to; ) {
+    const day = computeDay(emp, d, ctx, settings, today);
+    applyLateMarks(day, late, settings);
+    if (d >= from) days.push(day);
     const next = new Date(`${d}T00:00:00Z`);
     next.setUTCDate(next.getUTCDate() + 1);
     d = next.toISOString().slice(0, 10);
@@ -208,6 +247,7 @@ function summarize(days) {
   s.ot_payable_minutes = 0;
   s.ot_pending_minutes = 0;
   s.late_days = 0;
+  s.late_penalties = 0;
   for (const d of days) {
     if (d.status in s) s[d.status]++;
     s.worked_minutes += d.worked_minutes;
@@ -215,6 +255,7 @@ function summarize(days) {
     s.ot_payable_minutes += d.ot_payable_minutes;
     if (d.ot_status === 'pending') s.ot_pending_minutes += d.ot_minutes;
     if (d.late_minutes > 0) s.late_days++;
+    if (d.flags.includes('late_penalty')) s.late_penalties++;
   }
   return s;
 }

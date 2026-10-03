@@ -91,7 +91,7 @@ async function renderHome(main) {
 
   const facts = h('dl', { class: 'kv' },
     h('dt', {}, 'Shift'), h('dd', {}, `${t.shift.start} – ${t.shift.end}`),
-    h('dt', {}, 'Status'), h('dd', {}, statusBadge(d.status) || '—', d.late_minutes ? [' ', badge(`Late ${fmtMinutes(d.late_minutes)}`, 'warn')] : ''),
+    h('dt', {}, 'Status'), h('dd', {}, statusBadge(d.status) || '—', d.late_minutes ? [' ', badge(lateText(d, S.me.late_warnings), d.flags.includes('late_penalty') ? 'bad' : 'warn')] : ''),
     h('dt', {}, 'In / Out'), h('dd', {}, `${d.first_in || '—'} / ${d.last_out || '—'}`),
     h('dt', {}, 'Worked'), h('dd', {}, fmtMinutes(d.worked_minutes)),
     d.ot_minutes || d.ot_start ? [h('dt', {}, 'Overtime'), h('dd', {}, `${fmtMinutes(d.ot_minutes)} `, d.ot_status ? badge(d.ot_status, d.ot_status === 'approved' ? 'ok' : d.ot_status === 'rejected' ? 'bad' : 'warn') : '')] : '');
@@ -255,6 +255,11 @@ function punchFlow(kind, today) {
     close();
     if (res.status === 'flagged') toast(`${PUNCH_LABEL[kind]} saved at ${fmtTime(res.at)}, but flagged for review: ${res.flag_reason}`, 'error');
     else toast(`${PUNCH_LABEL[kind]} done at ${fmtTime(res.at)}`);
+    if (res.late) {
+      toast(res.late.half_day
+        ? `You are late by ${fmtMinutes(res.late.minutes)}. This is late #${res.late.mark} this month, so today counts as a half day.`
+        : `You are late by ${fmtMinutes(res.late.minutes)}. Warning ${res.late.mark} of ${res.late.warnings} this month — after ${res.late.warnings} warnings, each late day counts as a half day.`, 'error');
+    }
     renderShell();
   });
 }
@@ -282,7 +287,7 @@ async function renderAttendance(main) {
       monthPicker(S.month, (m) => { S.month = m; renderAttendance(main); })),
     h('div', { class: 'stats' },
       stat(s.present, 'Present'), stat(s.half_day, 'Half days'), stat(s.absent + s.not_marked, 'Absent'),
-      stat(s.paid_leave + s.unpaid_leave, 'Leave'), stat(s.late_days, 'Late days'),
+      stat(s.paid_leave + s.unpaid_leave, 'Leave'), stat(`${s.late_days} / ${S.me.late_warnings}`, 'Late days / warnings'),
       stat((s.ot_payable_minutes / 60).toFixed(1), 'OT hours (approved)')),
     h('div', { class: 'card', style: { marginTop: '12px' } }, cal,
       h('p', { class: 'small muted' }, 'P present · HD half day · A absent · PL/UL leave · WO week off · H holiday. Tap a day for details.')));
@@ -298,7 +303,7 @@ function dayDetails(d) {
     d.holiday ? [h('dt', {}, 'Holiday'), h('dd', {}, d.holiday)] : '',
     h('dt', {}, 'In / Out'), h('dd', {}, `${d.first_in || '—'} / ${d.last_out || '—'}`),
     h('dt', {}, 'Worked'), h('dd', {}, fmtMinutes(d.worked_minutes)),
-    h('dt', {}, 'Late'), h('dd', {}, d.late_minutes ? fmtMinutes(d.late_minutes) : 'No'),
+    h('dt', {}, 'Late'), h('dd', {}, d.late_minutes ? lateText(d, S.me.late_warnings) : 'No'),
     h('dt', {}, 'Overtime'), h('dd', {}, d.ot_minutes ? `${fmtMinutes(d.ot_minutes)} (${d.ot_status})` : '—'),
     d.override ? [h('dt', {}, 'Corrected by admin'), h('dd', {}, d.override.note || 'Yes')] : '',
     d.flags.length ? [h('dt', {}, 'Notes'), h('dd', {}, d.flags.map((f) => FLAG_LABEL[f] || f).join(', '))] : ''));
