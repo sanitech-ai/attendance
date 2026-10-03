@@ -20,22 +20,36 @@ function distanceM(lat1, lng1, lat2, lng2) {
 
 function showLogin() {
   clearInterval(S.clockTimer);
-  const code = h('input', { id: 'code', autocomplete: 'username', autocapitalize: 'characters', required: true, placeholder: 'e.g. E001' });
-  const pin = h('input', { id: 'pin', type: 'password', inputmode: 'numeric', autocomplete: 'current-password', maxlength: 6, required: true, placeholder: '4–6 digits' });
+  const code = h('input', { id: 'code', autocomplete: 'username', autocapitalize: 'none', required: true, placeholder: 'e.g. SECPL0025' });
+  const pin = h('input', { id: 'pin', type: 'password', autocomplete: 'current-password', required: true, placeholder: 'Staff: 4–6 digit PIN' });
   const btn = h('button', { class: 'btn btn-primary btn-block', type: 'submit' }, 'Log in');
   const form = h('form', { class: 'form card login-card' },
     h('img', { src: '/icon.svg', alt: '', class: 'logo' }),
     h('h1', {}, 'Staff Attendance'),
-    h('p', { class: 'muted' }, 'Log in with the Employee ID and PIN given by your manager.'),
-    h('div', { class: 'field' }, h('label', { for: 'code' }, 'Employee ID'), code),
-    h('div', { class: 'field' }, h('label', { for: 'pin' }, 'PIN'), pin),
+    h('p', { class: 'muted' }, 'Staff: log in with the Employee ID and PIN given by your manager. Admins: use your username and password.'),
+    h('div', { class: 'field' }, h('label', { for: 'code' }, 'Employee ID / admin username'), code),
+    h('div', { class: 'field' }, h('label', { for: 'pin' }, 'PIN / password'), pin),
     btn,
     h('p', { class: 'small muted', style: { marginTop: '16px', textAlign: 'center' } }, 'Forgot your PIN? Ask your manager to reset it.'));
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     await run(async () => {
-      await api('POST', '/api/employee/login', { code: code.value.trim(), pin: pin.value });
-      await boot();
+      const id = code.value.trim();
+      // One login box for everyone: try staff (ID + PIN) first, then admin (username + password).
+      try {
+        await api('POST', '/api/employee/login', { code: id, pin: pin.value });
+        await boot();
+        return;
+      } catch (err) {
+        if (err.status !== 401) throw err;
+      }
+      try {
+        await api('POST', '/api/admin/login', { username: id, password: pin.value });
+      } catch (err) {
+        if (err.status === 401) throw new Error('Wrong Employee ID / username or PIN / password');
+        throw err;
+      }
+      location.href = '/admin';
     }, btn);
   });
   root.replaceChildren(h('div', { class: 'login-wrap' }, form));

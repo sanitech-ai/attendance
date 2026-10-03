@@ -45,8 +45,21 @@ function showLogin() {
     { name: 'username', label: 'Username', autocomplete: 'username' },
     { name: 'password', label: 'Password', type: 'password', autocomplete: 'current-password' },
   ], 'Log in', async (v) => {
-    await api('POST', '/api/admin/login', v);
-    location.reload();
+    try {
+      await api('POST', '/api/admin/login', v);
+      location.reload();
+      return;
+    } catch (err) {
+      if (err.status !== 401) throw err;
+    }
+    // Staff who open the admin page by mistake: accept their ID + PIN and send them to the staff app.
+    try {
+      await api('POST', '/api/employee/login', { code: v.username.trim(), pin: v.password });
+    } catch (err) {
+      if (err.status === 401) throw new Error('Wrong username or password');
+      throw err;
+    }
+    location.href = '/';
   });
 }
 
