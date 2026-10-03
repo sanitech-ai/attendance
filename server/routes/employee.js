@@ -11,6 +11,7 @@ const {
 } = require('../common');
 
 const PUNCH_KINDS = ['IN', 'OUT', 'OT_IN', 'OT_OUT'];
+const monthName = (m) => new Date(`${m}-01T00:00:00Z`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 const SELFIE_MAX_BYTES = 2 * 1024 * 1024;
 
 /**
@@ -52,6 +53,8 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       branch,
       company_name: settings.company_name,
       late_warnings: settings.late_warnings,
+      late_max_minutes: settings.late_max_minutes,
+      salary_visible_from: settings.salary_visible_from,
       grace_minutes: settings.grace_minutes,
     });
   });
@@ -151,8 +154,10 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     let late = null;
     if (kind === 'IN') {
       const [day] = computeRange(db, emp, workDate, workDate, settings, now);
-      if (day.late_mark) {
-        late = { minutes: day.late_minutes, mark: day.late_mark, warnings: settings.late_warnings, half_day: day.flags.includes('late_penalty') };
+      if (day.late_review) {
+        late = { minutes: day.late_minutes, review: true };
+      } else if (day.late_mark) {
+        late = { minutes: day.late_minutes, mark: day.late_mark, every: settings.late_warnings + 1, half_day: day.flags.includes('late_penalty') };
       }
     }
     res.json({
@@ -232,10 +237,11 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     const current = istDate(now).slice(0, 7);
     const month = req.query.month ? requireMonth(req.query.month) : current;
     if (month > current) throw bad('That month has not started yet');
+    const settings = getSettings(db);
+    if (month < settings.salary_visible_from) throw bad(`Salary details are available from ${monthName(settings.salary_visible_from)} onwards.`);
     const emp = req.employee;
     if (emp.joined_on && month < emp.joined_on.slice(0, 7)) throw bad('You had not joined yet in that month');
     const run = db.prepare('SELECT data_json, finalized_at FROM payroll_runs WHERE month = ?').get(month);
-    const settings = getSettings(db);
     if (run) {
       const data = JSON.parse(run.data_json);
       const row = data.rows.find((x) => x.employee_id === emp.id);
@@ -254,7 +260,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
   });
 
   r.get('/payslips', (req, res) => {
-    const runs = db.prepare('SELECT month, data_json FROM payroll_runs ORDER BY month DESC').all();
+    const runs = db.prepare('SELECT month, data_json FROM payroll_runs WHERE month >= ? ORDER BY month DESC').all(getSettings(db).salary_visible_from);
     const list = [];
     for (const run of runs) {
       const row = JSON.parse(run.data_json).rows.find((x) => x.employee_id === req.employee.id);
@@ -265,6 +271,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
 
   r.get('/payslips/:month', (req, res) => {
     const month = requireMonth(req.params.month);
+    if (month < getSettings(db).salary_visible_from) throw notFound('No payslip for this month');
     const run = db.prepare('SELECT data_json FROM payroll_runs WHERE month = ?').get(month);
     const data = run && JSON.parse(run.data_json);
     const row = data?.rows.find((x) => x.employee_id === req.employee.id);

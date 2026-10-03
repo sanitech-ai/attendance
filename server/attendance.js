@@ -47,7 +47,14 @@ function loadContext(db, emp, from, to) {
       .map((d) => [d.work_date, d]),
   );
 
-  return { punches, overrides, leaves, holidays, ot };
+  const late = new Map(
+    db
+      .prepare('SELECT * FROM late_decisions WHERE employee_id = ? AND work_date BETWEEN ? AND ?')
+      .all(emp.id, from, to)
+      .map((d) => [d.work_date, d]),
+  );
+
+  return { punches, overrides, leaves, holidays, ot, late };
 }
 
 /** Pairs IN->OUT and OT_IN->OT_OUT punches; open sessions are reported, not counted. */
@@ -120,6 +127,7 @@ function computeDay(emp, date, ctx, settings, today) {
     last_out: p.lastOut ? istTime(p.lastOut) : null,
     late_minutes: 0,
     late_mark: null,
+    late_review: null, // very late arrivals: 'pending' until an admin decides 'present' or 'half_day'
     future: date > today, // shown on the calendar, but not counted until the day has passed
     ot_minutes: p.otMinutes,
     ot_start: p.otStart ? istTime(p.otStart) : null,
@@ -151,8 +159,15 @@ function computeDay(emp, date, ctx, settings, today) {
     day.override = { note: override.note, worked_minutes: override.worked_minutes };
     if (override.worked_minutes !== null) day.worked_minutes = override.worked_minutes;
   } else if (p.firstIn !== null) {
+    const veryLate = day.late_minutes > settings.late_max_minutes;
+    const decision = veryLate ? ctx.late.get(date) : null;
+    if (veryLate) day.late_review = decision ? decision.status : 'pending';
     if (p.openIn !== null && date >= today) {
       day.status = 'working';
+      if (veryLate && !decision) flags.push('late_approval');
+    } else if (decision) {
+      // More than the allowed lateness: the admin decided full or half day.
+      day.status = decision.status;
     } else {
       day.status = statusFromMinutes(p.regularMinutes, settings, emp);
       // A slightly late arrival who stays until shift end is handled by the late-mark rule
@@ -168,6 +183,7 @@ function computeDay(emp, date, ctx, settings, today) {
       } else if (day.status === 'absent') {
         flags.push('short_hours');
       }
+      if (veryLate) flags.push('late_approval'); // provisional status until an admin decides
     }
   } else if (leave) {
     day.status = leave.leave_type === 'paid' ? 'paid_leave' : 'unpaid_leave';
@@ -201,8 +217,9 @@ function computeDay(emp, date, ctx, settings, today) {
 }
 
 /**
- * Late marks are counted per calendar month. The first `late_warnings` late days are warnings only;
- * every late day after that counts as a half day. Days an admin has corrected are not counted.
+ * Late marks are counted per calendar month. With late_warnings = 2, every 3rd late (3rd, 6th, 9th...)
+ * counts as a half day and the others are warnings. Not counted: days an admin corrected, and arrivals
+ * later than late_max_minutes, which go to an admin to decide full or half day instead.
  */
 function applyLateMarks(day, state, settings) {
   const month = day.date.slice(0, 7);
@@ -210,10 +227,10 @@ function applyLateMarks(day, state, settings) {
     state.month = month;
     state.count = 0;
   }
-  if (day.override || day.late_minutes <= 0 || !['present', 'half_day', 'working'].includes(day.status)) return;
+  if (day.override || day.late_review || day.late_minutes <= 0 || !['present', 'half_day', 'working'].includes(day.status)) return;
   state.count++;
   day.late_mark = state.count;
-  if (state.count > settings.late_warnings) {
+  if (state.count % (settings.late_warnings + 1) === 0) {
     if (day.status === 'present') day.status = 'half_day';
     day.flags.push('late_penalty');
   } else {
@@ -249,6 +266,7 @@ function summarize(days) {
   s.ot_pending_minutes = 0;
   s.late_days = 0;
   s.late_penalties = 0;
+  s.late_pending = 0;
   for (const d of days) {
     if (d.future) continue;
     if (d.status in s) s[d.status]++;
@@ -258,6 +276,7 @@ function summarize(days) {
     if (d.ot_status === 'pending') s.ot_pending_minutes += d.ot_minutes;
     if (d.late_minutes > 0) s.late_days++;
     if (d.flags.includes('late_penalty')) s.late_penalties++;
+    if (d.flags.includes('late_approval')) s.late_pending++;
   }
   return s;
 }

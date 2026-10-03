@@ -144,6 +144,12 @@ test('end-to-end: punches, overtime, leaves, documents and payroll', async (t) =
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.equal((await admin('PUT', '/api/admin/attendance/override', { employee_id: empId, date: '2026-09-06', status: 'present' })).status, 409, 'finalized month is locked');
 
+  // Salary before the "visible from" month (default Oct 2026) is hidden from staff
+  assert.deepEqual((await staff('GET', '/api/employee/payslips')).data, []);
+  assert.equal((await staff('GET', '/api/employee/payslips/2026-09')).status, 404);
+  assert.match((await staff('GET', '/api/employee/salary?month=2026-09')).data.error, /available from October 2026/);
+  await admin('PUT', '/api/admin/settings', { salary_visible_from: '2026-09' });
+
   // Employee sees payslip
   r = await staff('GET', '/api/employee/payslips');
   assert.deepEqual(r.data, [{ month: '2026-09', net_paise: row.net_paise }]);
@@ -216,8 +222,8 @@ test('overnight shift: OUT after midnight counts for the day the shift started',
   assert.equal(pay.base_paise, 80000, '8 hours x Rs 100');
 });
 
-test('default rules: 9-to-6 shift, 15-minute grace, 2 late warnings then half day', async (t) => {
-  const s = await startServer(ist('2026-09-01', '08:00'));
+test('late rules: every 3rd late is a half day; over 1 hour late needs an admin decision', async (t) => {
+  const s = await startServer(ist('2026-10-01', '08:00'));
   t.after(() => s.close());
   const admin = s.client();
   await admin('POST', '/api/admin/setup', { username: 'owner', password: 'password123', name: 'Owner' });
@@ -225,9 +231,10 @@ test('default rules: 9-to-6 shift, 15-minute grace, 2 late warnings then half da
   assert.equal(settings.company_name, 'Sanitech');
   assert.equal(settings.grace_minutes, 15);
   assert.equal(settings.late_warnings, 2);
+  assert.equal(settings.late_max_minutes, 60);
   const b = await admin('POST', '/api/admin/branches', { name: 'HQ', ...OFFICE, radius_m: 150, geofence_mode: 'flag' });
   const emp = await admin('POST', '/api/admin/employees', {
-    code: 'D1', name: 'Default', branch_id: b.data.id, salary_type: 'monthly', salary: 30000, shift_start: '09:00', shift_end: '18:00', weekly_offs: ['0'], joined_on: '2026-09-01', pin: '1234',
+    code: 'D1', name: 'Default', branch_id: b.data.id, salary_type: 'monthly', salary: 31000, shift_start: '09:00', shift_end: '18:00', weekly_offs: ['0'], joined_on: '2026-09-01', pin: '1234',
   });
   const staff = s.client();
   await staff('POST', '/api/employee/login', { code: 'D1', pin: '1234' });
@@ -243,48 +250,76 @@ test('default rules: 9-to-6 shift, 15-minute grace, 2 late warnings then half da
     return r;
   };
 
-  assert.equal((await day('2026-09-01', '09:14', '18:00')).late, null, 'within grace');
-  let r = await day('2026-09-02', '09:20', '18:00');
-  assert.deepEqual(r.late, { minutes: 20, mark: 1, warnings: 2, half_day: false });
-  await day('2026-09-03', '09:40', '18:00');
-  r = await day('2026-09-04', '09:16', '18:05');
-  assert.deepEqual(r.late, { minutes: 16, mark: 3, warnings: 2, half_day: true });
-  await day('2026-09-05', '09:30', '18:00');
-  await day('2026-09-07', '10:30', '18:00'); // 90 min late: beyond the 60-minute allowance
-  await day('2026-09-08', '09:20', '17:00'); // late and left early
-  // Admin forgives the 4th late (e.g. traffic jam reported); it no longer counts.
-  await admin('POST', '/api/admin/login', { username: 'owner', password: 'password123' });
-  await admin('PUT', '/api/admin/attendance/override', { employee_id: emp.data.id, date: '2026-09-05', status: 'present', note: 'Train delay' });
+  assert.equal((await day('2026-10-01', '09:14', '18:00')).late, null, 'within grace');
+  let r = await day('2026-10-02', '09:20', '18:00');
+  assert.deepEqual(r.late, { minutes: 20, mark: 1, every: 3, half_day: false });
+  await day('2026-10-03', '09:40', '18:00');                    // late #2
+  r = await day('2026-10-05', '09:16', '18:05');                // late #3 -> half day
+  assert.deepEqual(r.late, { minutes: 16, mark: 3, every: 3, half_day: true });
+  await day('2026-10-06', '09:30', '18:00');                    // late #4 -> warning again
+  await day('2026-10-07', '09:30', '18:00');                    // late #5
+  await day('2026-10-08', '09:30', '18:00');                    // late #6 -> half day
+  r = await day('2026-10-09', '10:30', '18:00');                // 90 min late -> admin decides
+  assert.deepEqual(r.late, { minutes: 90, review: true });
+  await day('2026-10-10', '10:05', '18:00');                    // 65 min late -> admin decides
+  await day('2026-10-12', '09:20', '18:00');                    // late #7 (very-late days are not counted)
 
-  let days = (await staff('GET', '/api/employee/attendance?month=2026-09')).data.days;
-  const d = Object.fromEntries(days.map((x) => [x.date.slice(8), x]));
+  const get = async () => Object.fromEntries((await staff('GET', '/api/employee/attendance?month=2026-10')).data.days.map((x) => [x.date.slice(8), x]));
+  let d = await get();
   assert.equal(d['01'].status, 'present');
-  assert.equal(d['01'].late_minutes, 0);
-  assert.equal(d['02'].status, 'present', '1st late: warning, still a full day');
+  assert.equal(d['02'].status, 'present');
   assert.ok(d['02'].flags.includes('late_warning'));
-  assert.equal(d['03'].status, 'present', '2nd late: warning');
-  assert.equal(d['04'].status, 'half_day', '3rd late: half day');
-  assert.ok(d['04'].flags.includes('late_penalty'));
-  assert.equal(d['05'].status, 'present', 'admin override wins and is not counted');
-  assert.equal(d['05'].late_mark, null);
-  assert.equal(d['07'].status, 'half_day', 'very late: hours rule (7h30m)');
-  assert.equal(d['07'].late_mark, 4);
-  assert.equal(d['08'].status, 'half_day');
-  assert.equal(d['08'].late_mark, 5);
-  const summary = (await staff('GET', '/api/employee/attendance?month=2026-09')).data.summary;
-  assert.equal(summary.late_days, 6);
-  assert.equal(summary.late_penalties, 3);
+  assert.equal(d['03'].status, 'present');
+  assert.equal(d['05'].status, 'half_day', '3rd late');
+  assert.ok(d['05'].flags.includes('late_penalty'));
+  assert.equal(d['06'].status, 'present', '4th late is a warning');
+  assert.equal(d['07'].status, 'present');
+  assert.equal(d['08'].status, 'half_day', '6th late');
+  assert.equal(d['09'].late_review, 'pending');
+  assert.ok(d['09'].flags.includes('late_approval'));
+  assert.equal(d['09'].late_mark, null, 'very late days are not in the every-3rd count');
+  assert.equal(d['12'].late_mark, 7);
+  assert.equal(d['12'].status, 'present');
 
-  // Count restarts in a new month
-  await staff('POST', '/api/employee/login', { code: 'D1', pin: '1234' });
-  r = await day('2026-10-01', '09:20', '18:00');
-  assert.equal(r.late.mark, 1);
-  assert.equal(r.late.half_day, false);
-  // Single-day views (dashboard / today) still see earlier late marks in the month
-  await day('2026-10-02', '09:20', '18:00');
-  await punch('2026-10-03', '09:25', 'IN');
+  // Admin sees both very-late days and decides
+  s.clock.now = ist('2026-10-12', '19:00');
   await admin('POST', '/api/admin/login', { username: 'owner', password: 'password123' });
-  const dash = (await admin('GET', '/api/admin/dashboard?date=2026-10-03')).data;
-  assert.equal(dash.rows[0].day.late_mark, 3);
-  assert.ok(dash.rows[0].day.flags.includes('late_penalty'));
+  assert.equal((await admin('GET', '/api/admin/pending')).data.late_approvals, 2);
+  r = await admin('GET', '/api/admin/late-approvals?month=2026-10');
+  assert.deepEqual(r.data.rows.map((x) => [x.date, x.late_review]), [['2026-10-10', 'pending'], ['2026-10-09', 'pending']]);
+  await admin('POST', '/api/admin/late-approvals/decision', { employee_id: emp.data.id, date: '2026-10-09', status: 'present' });
+  await admin('POST', '/api/admin/late-approvals/decision', { employee_id: emp.data.id, date: '2026-10-10', status: 'half_day' });
+  assert.equal((await admin('GET', '/api/admin/pending')).data.late_approvals, 0);
+  d = await get();
+  assert.equal(d['09'].status, 'present', 'admin granted a full day');
+  assert.equal(d['09'].late_review, 'present');
+  assert.equal(d['10'].status, 'half_day', 'admin gave a half day');
+  assert.ok(!d['09'].flags.includes('late_approval'));
+
+  // Finalizing is blocked while a very-late day is undecided
+  await admin('POST', '/api/admin/late-approvals/decision', { employee_id: emp.data.id, date: '2026-10-10', status: null });
+  s.clock.now = ist('2026-11-02', '10:00');
+  await admin('POST', '/api/admin/login', { username: 'owner', password: 'password123' });
+  r = await admin('POST', '/api/admin/payroll/2026-10/finalize', {});
+  assert.equal(r.status, 409);
+  assert.match(r.data.error, /late arrivals/);
+});
+
+test('bulk mark: 1-3 October present for everyone', async (t) => {
+  const s = await startServer(ist('2026-10-04', '10:00'));
+  t.after(() => s.close());
+  const admin = s.client();
+  await admin('POST', '/api/admin/setup', { username: 'owner', password: 'password123', name: 'Owner' });
+  const b = await admin('POST', '/api/admin/branches', { name: 'HQ', ...OFFICE, radius_m: 150, geofence_mode: 'flag' });
+  for (const [code, joined] of [['A1', ''], ['A2', '2026-10-02']]) {
+    await admin('POST', '/api/admin/employees', { code, name: code, branch_id: b.data.id, salary_type: 'monthly', salary: 31000, shift_start: '09:00', shift_end: '18:00', weekly_offs: ['0'], joined_on: joined, pin: '1234' });
+  }
+  const r = await admin('POST', '/api/admin/attendance/bulk-override', { from: '2026-10-01', to: '2026-10-04', status: 'present', note: 'Before app went live' });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.deepEqual(r.data, { ok: true, employees: 2, days: 5 }, 'Sunday 4th skipped; A2 only from joining');
+  const reg = (await admin('GET', '/api/admin/attendance?month=2026-10')).data.rows;
+  const a1 = reg.find((x) => x.code === 'A1').days;
+  assert.deepEqual(a1.slice(0, 4).map((x) => x.status), ['present', 'present', 'present', 'week_off']);
+  assert.equal(a1[0].override.note, 'Before app went live');
+  assert.equal((await admin('POST', '/api/admin/attendance/bulk-override', { from: '2026-10-01', to: '2026-12-01', status: 'present' })).status, 400);
 });

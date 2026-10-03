@@ -88,6 +88,16 @@ CREATE TABLE IF NOT EXISTS ot_decisions (
   PRIMARY KEY (employee_id, work_date)
 );
 
+-- Admin's call on arrivals later than late_max_minutes: count the day as full or half.
+CREATE TABLE IF NOT EXISTS late_decisions (
+  employee_id INTEGER NOT NULL REFERENCES employees(id),
+  work_date   TEXT NOT NULL,
+  status      TEXT NOT NULL CHECK (status IN ('present', 'half_day')),
+  decided_by  INTEGER REFERENCES admins(id),
+  decided_at  INTEGER NOT NULL,
+  PRIMARY KEY (employee_id, work_date)
+);
+
 CREATE TABLE IF NOT EXISTS day_overrides (
   employee_id    INTEGER NOT NULL REFERENCES employees(id),
   work_date      TEXT NOT NULL,
@@ -188,10 +198,12 @@ const DEFAULT_SETTINGS = {
   company_name: 'Sanitech',
   half_day_hours: '4',
   grace_minutes: '15',
-  // Late arrivals per month that are only warnings; each late after that is a half day.
+  // Warnings between half days: 2 means every 3rd late in a month (3rd, 6th, 9th...) is a half day.
   late_warnings: '2',
-  // Up to this late, staying until shift end still counts as a full day (subject to the warnings).
+  // Arriving later than this needs an admin to decide full or half day.
   late_max_minutes: '60',
+  // Staff can see salary statements from this month onwards.
+  salary_visible_from: '2026-10',
   max_accuracy_m: '100',
   ot_requires_approval: '1',
 };
@@ -237,6 +249,7 @@ function getSettings(db) {
     grace_minutes: Number(s.grace_minutes),
     late_warnings: Number(s.late_warnings),
     late_max_minutes: Number(s.late_max_minutes),
+    salary_visible_from: s.salary_visible_from,
     max_accuracy_m: Number(s.max_accuracy_m),
     ot_requires_approval: s.ot_requires_approval === '1',
   };

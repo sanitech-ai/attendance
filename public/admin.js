@@ -83,6 +83,7 @@ const PAGES = [
   ['punches', 'Punches & selfies', 'flagged_punches'],
   ['attendance', 'Attendance register'],
   ['overtime', 'Overtime'],
+  ['late', 'Late approvals', 'late_approvals'],
   ['leaves', 'Leave requests', 'leaves'],
   ['payroll', 'Payroll'],
   ['employees', 'Employees'],
@@ -204,11 +205,12 @@ async function pageDashboard(el, params) {
     h('div', { class: 'stats', style: { marginTop: '10px' } },
       tile(d.pending.flagged_punches, 'Flagged punches to review', '#/punches?status=flagged'),
       tile(d.pending.leaves, 'Leave requests pending', '#/leaves?status=pending'),
-      tile(d.pending.documents, 'Documents to verify', '#/documents?status=pending')),
+      tile(d.pending.documents, 'Documents to verify', '#/documents?status=pending'),
+      tile(d.pending.late_approvals, 'Very late arrivals to decide', '#/late')),
     h('h2', { style: { margin: '20px 0 10px' } }, `Staff on ${fmtDate(date)}`),
     table([
       { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)) },
-      { label: 'Status', render: (r) => [statusBadge(r.day.status), r.day.late_minutes ? [' ', badge(lateText(r.day, A.me.settings.late_warnings), r.day.flags.includes('late_penalty') ? 'bad' : 'warn')] : ''] },
+      { label: 'Status', render: (r) => [statusBadge(r.day.status), r.day.late_minutes ? [' ', badge(lateText(r.day, A.me.settings.late_warnings), lateKind(r.day))] : ''] },
       { label: 'In', render: (r) => r.day.first_in || '—' },
       { label: 'Out', render: (r) => r.day.last_out || '—' },
       { label: 'Worked', class: 'num', render: (r) => fmtMinutes(r.day.worked_minutes) },
@@ -309,6 +311,7 @@ async function pageAttendance(el, params) {
 
   el.replaceChildren(
     pageHead('Attendance register',
+      h('button', { class: 'btn', onclick: bulkMark }, 'Mark days for everyone'),
       h('a', { class: 'btn', href: `/api/admin/attendance.csv?month=${month}${branchId ? `&branch_id=${branchId}` : ''}` }, 'Download Excel (CSV)')),
     h('div', { class: 'toolbar' },
       monthPicker(month, (m) => go('attendance', { month: m, branch_id: branchId })),
@@ -316,6 +319,27 @@ async function pageAttendance(el, params) {
     data.finalized ? h('div', { class: 'card', style: { marginBottom: '12px' } }, '🔒 Payroll for this month is finalized. Reopen it on the Payroll page to make corrections.') : '',
     grid,
     h('p', { class: 'small muted' }, 'P present · HD half day · A absent · PL/UL paid/unpaid leave · WO week off · H holiday · W working now · – not marked. Dashed border = corrected by admin, red dot = needs attention. Click any cell to correct it.'));
+}
+
+function bulkMark() {
+  formDialog({
+    title: 'Mark days for everyone',
+    fields: [
+      { name: 'from', label: 'From', type: 'date', required: true, value: `${thisMonth()}-01` },
+      { name: 'to', label: 'To', type: 'date', required: true, value: todayIST() },
+      { name: 'status', label: 'Mark as', type: 'select', value: 'present', options: ['present', 'half_day', 'absent', 'paid_leave', 'unpaid_leave', 'holiday'].map((v) => ({ value: v, label: STATUS_LABEL[v] })) },
+      { name: 'branch_id', label: 'Staff of', type: 'select', options: [{ value: '', label: 'All branches' }, ...A.branches.filter((b) => b.active).map((b) => ({ value: b.id, label: b.name }))] },
+      { name: 'note', label: 'Reason', required: true, placeholder: 'e.g. Before the app went live' },
+      { name: 'include_week_offs', label: 'Also mark weekly off days (Sundays)', type: 'checkbox', value: false },
+    ],
+    submitLabel: 'Mark days',
+    async onSubmit(v) {
+      const r = await api('POST', '/api/admin/attendance/bulk-override', { ...v, branch_id: v.branch_id || null });
+      toast(`Marked ${r.days} day(s) for ${r.employees} employee(s).`);
+      route();
+      return true;
+    },
+  });
 }
 
 function editDay(r, d, finalized) {
@@ -382,6 +406,38 @@ async function pageOvertime(el, params) {
         r.ot_status !== 'rejected' ? h('button', { class: 'btn btn-sm', onclick: () => decide(r, 'rejected') }, 'Reject') : '',
         h('a', { class: 'btn btn-sm', href: `#/punches?date=${r.date}&employee_id=${r.employee_id}` }, 'Selfies')) : '') },
     ], data.rows, { empty: 'No overtime recorded this month.' }));
+}
+
+// ---------------------------------------------------------------- very late arrivals
+
+async function pageLate(el, params) {
+  const month = params.get('month') || thisMonth();
+  const data = await api('GET', `/api/admin/late-approvals?month=${month}`);
+  const kind = { pending: 'warn', present: 'ok', half_day: 'bad' };
+  const label = { pending: 'Waiting for you', present: 'Full day', half_day: 'Half day' };
+  const decide = (r, status) => run(async () => {
+    await api('POST', '/api/admin/late-approvals/decision', { employee_id: r.employee_id, date: r.date, status });
+    toast(status ? `${r.name}: ${label[status]} on ${fmtDate(r.date)}` : 'Decision cleared');
+    route();
+  });
+  el.replaceChildren(
+    pageHead('Late approvals'),
+    h('div', { class: 'toolbar' }, monthPicker(month, (m) => go('late', { month: m }))),
+    h('p', { class: 'muted small' }, `Staff who arrive more than ${data.late_max_minutes} minutes late are sent here. Decide whether the day counts as a full day or a half day. These days are not part of the "every 3rd late is a half day" count. Payroll can't be finalized while any are waiting.`),
+    table([
+      { label: 'Date', render: (r) => fmtDate(r.date) },
+      { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)) },
+      { label: 'Shift', render: (r) => `${r.shift_start}–${r.shift_end}` },
+      { label: 'In / Out', render: (r) => `${r.first_in || '—'} / ${r.last_out || (r.status === 'working' ? 'working' : '—')}` },
+      { label: 'Late by', class: 'num', render: (r) => fmtMinutes(r.late_minutes) },
+      { label: 'Worked', class: 'num', render: (r) => fmtMinutes(r.worked_minutes) },
+      { label: 'Decision', render: (r) => badge(label[r.late_review], kind[r.late_review]) },
+      { label: '', render: (r) => h('div', { class: 'row' },
+        r.late_review !== 'present' ? h('button', { class: 'btn btn-sm btn-ok', onclick: () => decide(r, 'present') }, 'Full day') : '',
+        r.late_review !== 'half_day' ? h('button', { class: 'btn btn-sm', onclick: () => decide(r, 'half_day') }, 'Half day') : '',
+        r.late_review !== 'pending' ? h('button', { class: 'btn btn-sm', onclick: () => decide(r, null) }, 'Undo') : '',
+        h('a', { class: 'btn btn-sm', href: `#/punches?date=${r.date}&employee_id=${r.employee_id}` }, 'Selfies')) },
+    ], data.rows, { empty: `Nobody was more than ${data.late_max_minutes} minutes late this month.`, rowClass: (r) => (r.late_review === 'pending' ? 'row-flag' : null) }));
 }
 
 // ---------------------------------------------------------------- leaves
@@ -850,6 +906,11 @@ async function pagePayroll(el, params) {
         ? h('span', {}, '🔒 Finalized ', h('span', { class: 'muted small' }, `on ${fmtDateTime(p.finalized_at)}${p.finalized_by ? ` by ${p.finalized_by}` : ''}`))
         : h('span', { class: 'muted small' }, month >= thisMonth() ? 'Month in progress — figures cover days up to today.' : 'Draft — review, then finalize.')),
       h('div', { class: 'row' }, h('a', { class: 'btn', href: `/api/admin/payroll.csv?month=${month}` }, 'Download Excel (CSV)'), finalizeBtn)),
+    p.rows.some((r) => r.attendance.late_pending) && !p.finalized
+      ? h('div', { class: 'card', style: { marginBottom: '12px', borderColor: 'var(--warn)' } },
+        `⚠ Very late arrivals need your full/half-day decision: ${p.rows.filter((r) => r.attendance.late_pending).map((r) => r.name).join(', ')}. `,
+        h('a', { href: `#/late?month=${month}` }, 'Decide now →'))
+      : '',
     pendingOt.length && !p.finalized
       ? h('div', { class: 'card', style: { marginBottom: '12px', borderColor: 'var(--warn)' } },
         `⚠ ${pendingOt.length} employee(s) have overtime waiting for approval: ${pendingOt.map((r) => r.name).join(', ')}. `,
@@ -877,7 +938,7 @@ async function pagePayroll(el, params) {
         h('li', {}, 'Hourly: rate × hours worked (paid leave counts as one full shift).'),
         h('li', {}, 'Overtime: approved OT hours × the same hourly rate (monthly: per-day ÷ shift hours; daily: daily rate ÷ shift hours).'),
         h('li', {}, `Full day = the employee’s shift length minus the ${A.me.settings.grace_minutes}-minute grace (9:00–18:00 → ${fmtMinutes(540 - A.me.settings.grace_minutes)} worked). Half day needs ${A.me.settings.half_day_hours} h. A missing punch-out counts as a half day until you correct it.`),
-        h('li', {}, `Late arrivals: the first ${A.me.settings.late_warnings} late days in a month are warnings; every late day after that counts as a half day. Someone up to ${A.me.settings.late_max_minutes} min late who stays until shift end is otherwise treated as a full day; later than that, normal hours rules apply.`),
+        h('li', {}, `Late arrivals: every ${A.me.settings.late_warnings + 1}${A.me.settings.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month counts as a half day; the others are warnings. Someone up to ${A.me.settings.late_max_minutes} min late who stays until shift end is otherwise a full day. Later than ${A.me.settings.late_max_minutes} min: you decide full or half day (Late approvals).`),
         h('li', {}, 'Net = base + OT + additions − deductions − advances.'))));
 }
 
@@ -1047,8 +1108,9 @@ async function pageSettings(el, params) {
       h('dt', {}, 'Full day'), h('dd', {}, `Shift length minus grace (9:00–18:00 → ${fmtMinutes(540 - s.grace_minutes)} worked)`),
       h('dt', {}, 'Half day'), h('dd', {}, `${s.half_day_hours} hours worked`),
       h('dt', {}, 'Late after'), h('dd', {}, `${s.grace_minutes} minutes past shift start`),
-      h('dt', {}, 'Late warnings'), h('dd', {}, `${s.late_warnings} per month, then each late day is a half day`),
-      h('dt', {}, 'Very late'), h('dd', {}, `More than ${s.late_max_minutes} min late: hours rule applies (usually a half day)`),
+      h('dt', {}, 'Late rule'), h('dd', {}, `Every ${s.late_warnings + 1}${s.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month is a half day (others are warnings)`),
+      h('dt', {}, 'Very late'), h('dd', {}, `More than ${s.late_max_minutes} min late: you decide full or half day`),
+      h('dt', {}, 'Staff salary view'), h('dd', {}, `From ${fmtMonth(s.salary_visible_from)} onwards`),
       h('dt', {}, 'GPS accuracy'), h('dd', {}, `Flag punches worse than ±${s.max_accuracy_m} m`),
       h('dt', {}, 'Overtime'), h('dd', {}, s.ot_requires_approval ? 'Needs admin approval before it is paid' : 'Paid automatically')),
     h('div', { class: 'form-actions' }, h('button', { class: 'btn btn-primary', onclick: () => formDialog({
@@ -1057,8 +1119,9 @@ async function pageSettings(el, params) {
         { name: 'company_name', label: 'Company name', required: true, value: s.company_name },
         { name: 'half_day_hours', label: 'Hours for a half day', type: 'number', step: '0.25', min: 0.5, max: 24, required: true, value: s.half_day_hours, hint: 'Less than this counts as absent.' },
         { name: 'grace_minutes', label: 'Late grace period (minutes)', type: 'number', min: 0, max: 240, required: true, value: s.grace_minutes, hint: 'Also sets the full day: shift length minus this grace.' },
-        { name: 'late_warnings', label: 'Late warnings per month before half day', type: 'number', min: 0, max: 31, step: 1, required: true, value: s.late_warnings, hint: 'With 2: 1st and 2nd late = warning, 3rd and every later late in the month = half day.' },
-        { name: 'late_max_minutes', label: 'Late arrivals up to (minutes) still count as full day if they stay till shift end', type: 'number', min: 0, max: 480, required: true, value: s.late_max_minutes },
+        { name: 'late_warnings', label: 'Warnings between half days', type: 'number', min: 0, max: 31, step: 1, required: true, value: s.late_warnings, hint: 'With 2: the 3rd, 6th, 9th… late in a month is a half day; the others are warnings.' },
+        { name: 'late_max_minutes', label: 'Arrivals later than this (minutes) need your full/half-day decision', type: 'number', min: 0, max: 480, required: true, value: s.late_max_minutes },
+        { name: 'salary_visible_from', label: 'Staff can see salary from (month)', type: 'month', required: true, value: s.salary_visible_from },
         { name: 'max_accuracy_m', label: 'Flag punches with GPS accuracy worse than (metres)', type: 'number', min: 10, max: 5000, required: true, value: s.max_accuracy_m },
         { name: 'ot_requires_approval', label: 'Overtime needs admin approval', type: 'checkbox', value: s.ot_requires_approval },
       ],
@@ -1082,6 +1145,7 @@ const PAGE_FNS = {
   punches: pagePunches,
   attendance: pageAttendance,
   overtime: pageOvertime,
+  late: pageLate,
   leaves: pageLeaves,
   employees: pageEmployees,
   preview: pagePreview,

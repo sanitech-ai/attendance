@@ -93,6 +93,8 @@ module.exports = function adminRoutes(ctx) {
       }
     }
     if (b.ot_requires_approval !== undefined) updates.ot_requires_approval = b.ot_requires_approval ? '1' : '0';
+    if (b.salary_visible_from !== undefined) updates.salary_visible_from = requireMonth(String(b.salary_visible_from));
+    if (updates.late_warnings !== undefined && !Number.isInteger(Number(updates.late_warnings))) throw bad('late_warnings must be a whole number');
     const st = db.prepare('UPDATE settings SET value = ? WHERE key = ?');
     for (const [k, v] of Object.entries(updates)) st.run(v, k);
     ctx.audit(req, 'settings.updated', updates);
@@ -144,7 +146,7 @@ module.exports = function adminRoutes(ctx) {
     checkPassword(req);
     tx(db, () => {
       // Keep the records this admin approved; just drop the link to the deleted account.
-      for (const [table, col] of [['punches', 'reviewed_by'], ['ot_decisions', 'decided_by'], ['day_overrides', 'set_by'],
+      for (const [table, col] of [['punches', 'reviewed_by'], ['ot_decisions', 'decided_by'], ['late_decisions', 'decided_by'], ['day_overrides', 'set_by'],
         ['leave_requests', 'decided_by'], ['documents', 'reviewed_by'], ['payroll_runs', 'finalized_by']]) {
         db.prepare(`UPDATE ${table} SET ${col} = NULL WHERE ${col} = ?`).run(target.id);
       }
@@ -331,7 +333,7 @@ module.exports = function adminRoutes(ctx) {
       ...db.prepare(`SELECT stored_file AS f FROM documents WHERE employee_id IN (${marks})`).all(...ids),
     ].map((r) => r.f);
     tx(db, () => {
-      for (const table of ['punches', 'documents', 'leave_requests', 'day_overrides', 'ot_decisions', 'advances', 'adjustments', 'pay_items']) {
+      for (const table of ['punches', 'documents', 'leave_requests', 'day_overrides', 'ot_decisions', 'late_decisions', 'advances', 'adjustments', 'pay_items']) {
         db.prepare(`DELETE FROM ${table} WHERE employee_id IN (${marks})`).run(...ids);
       }
       db.prepare(`DELETE FROM sessions WHERE kind = 'employee' AND user_id IN (${marks})`).run(...ids);
@@ -375,8 +377,25 @@ module.exports = function adminRoutes(ctx) {
     res.json({ ok: true, employees: ids.length, branches });
   });
 
+  /** Days with an arrival later than late_max_minutes that nobody has decided yet (active staff). */
+  function pendingLateCount() {
+    const s = getSettings(db);
+    return db.prepare(
+      `SELECT COUNT(*) AS n FROM (
+         SELECT p.employee_id, p.work_date, MIN(p.at) AS first_in, e.shift_start, e.joined_on
+         FROM punches p JOIN employees e ON e.id = p.employee_id
+         WHERE p.kind = 'IN' AND p.status != 'rejected' AND e.active = 1
+         GROUP BY p.employee_id, p.work_date) f
+       WHERE f.first_in - (CAST(strftime('%s', f.work_date || ' ' || f.shift_start) AS INTEGER) * 1000 - 19800000) >= ?
+         AND (f.joined_on = '' OR f.work_date >= f.joined_on)
+         AND NOT EXISTS (SELECT 1 FROM late_decisions d WHERE d.employee_id = f.employee_id AND d.work_date = f.work_date)
+         AND NOT EXISTS (SELECT 1 FROM day_overrides o WHERE o.employee_id = f.employee_id AND o.work_date = f.work_date)`,
+    ).get((s.late_max_minutes + 1) * 60000).n;
+  }
+
   function pendingCounts() {
     return {
+      late_approvals: pendingLateCount(),
       flagged_punches: db.prepare("SELECT COUNT(*) AS n FROM punches WHERE status = 'flagged'").get().n,
       leaves: db.prepare("SELECT COUNT(*) AS n FROM leave_requests WHERE status = 'pending'").get().n,
       documents: db.prepare("SELECT COUNT(*) AS n FROM documents WHERE status = 'pending'").get().n,
@@ -681,6 +700,77 @@ module.exports = function adminRoutes(ctx) {
     res.json({ ok: true });
   });
 
+  // ---- very late arrivals: admin decides full or half day ----
+  r.get('/late-approvals', (req, res) => {
+    const month = requireMonth(req.query.month);
+    const [from, to] = monthRange(month);
+    const settings = getSettings(db);
+    const emps = db.prepare(
+      `SELECT DISTINCT e.*, b.name AS branch_name FROM employees e JOIN branches b ON b.id = e.branch_id
+       JOIN punches p ON p.employee_id = e.id AND p.kind = 'IN' AND p.work_date BETWEEN ? AND ?
+       ORDER BY e.name`,
+    ).all(from, to);
+    const out = [];
+    for (const e of emps) {
+      for (const d of computeRange(db, e, from, to, settings, ctx.now())) {
+        if (d.late_review) out.push({ employee_id: e.id, code: e.code, name: e.name, branch_name: e.branch_name, shift_start: e.shift_start, shift_end: e.shift_end, ...d });
+      }
+    }
+    // Undecided first, then newest first.
+    out.sort((a, b) => (b.late_review === 'pending') - (a.late_review === 'pending') || (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    res.json({ month, late_max_minutes: settings.late_max_minutes, rows: out });
+  });
+
+  r.post('/late-approvals/decision', (req, res) => {
+    const { employee_id, date, status } = req.body || {};
+    requireDate(date);
+    const empId = id(employee_id);
+    assertMonthOpen(db, date.slice(0, 7));
+    if (status === null) {
+      db.prepare('DELETE FROM late_decisions WHERE employee_id = ? AND work_date = ?').run(empId, date);
+      ctx.audit(req, 'late.decision_cleared', { employee_id: empId, date });
+      return res.json({ ok: true });
+    }
+    if (!['present', 'half_day'].includes(status)) throw bad('Choose full day or half day');
+    db.prepare(
+      `INSERT INTO late_decisions (employee_id, work_date, status, decided_by, decided_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (employee_id, work_date) DO UPDATE SET status = excluded.status, decided_by = excluded.decided_by, decided_at = excluded.decided_at`,
+    ).run(empId, date, status, req.admin.id, ctx.now());
+    ctx.audit(req, 'late.decided', { employee_id: empId, date, status });
+    res.json({ ok: true });
+  });
+
+  // Mark a range of days for all (or one branch's) active staff, e.g. before the app went live.
+  r.post('/attendance/bulk-override', (req, res) => {
+    const { from, to, status, note, branch_id: branchId, include_week_offs: includeOffs } = req.body || {};
+    requireDate(from, 'from');
+    requireDate(to, 'to');
+    if (to < from) throw bad('End date is before start date');
+    if ((Date.parse(to) - Date.parse(from)) / 86400000 > 31) throw bad('At most 31 days at a time');
+    if (!OVERRIDE_STATUSES.includes(status)) throw bad('Unknown status');
+    for (const m of new Set([from.slice(0, 7), to.slice(0, 7)])) assertMonthOpen(db, m);
+    const emps = db.prepare(`SELECT * FROM employees WHERE active = 1 ${branchId ? 'AND branch_id = ?' : ''}`).all(...(branchId ? [id(branchId)] : []));
+    const upsert = db.prepare(
+      `INSERT INTO day_overrides (employee_id, work_date, status, worked_minutes, note, set_by, set_at) VALUES (?, ?, ?, NULL, ?, ?, ?)
+       ON CONFLICT (employee_id, work_date) DO UPDATE SET status = excluded.status, worked_minutes = NULL,
+         note = excluded.note, set_by = excluded.set_by, set_at = excluded.set_at`,
+    );
+    let count = 0;
+    tx(db, () => {
+      for (const e of emps) {
+        const offs = e.weekly_offs.split(',').filter(Boolean).map(Number);
+        for (let d = from; d <= to; d = new Date(Date.parse(d) + 86400000).toISOString().slice(0, 10)) {
+          if (e.joined_on && d < e.joined_on) continue;
+          if (!includeOffs && offs.includes(new Date(`${d}T00:00:00Z`).getUTCDay())) continue;
+          upsert.run(e.id, d, status, String(note || '').slice(0, 300), req.admin.id, ctx.now());
+          count++;
+        }
+      }
+    });
+    ctx.audit(req, 'attendance.bulk_override', { from, to, status, note, branch_id: branchId || null, days: count, employees: emps.length });
+    res.json({ ok: true, employees: emps.length, days: count });
+  });
+
   // ---- leaves ----
   r.get('/leaves', (req, res) => {
     const status = req.query.status;
@@ -865,6 +955,10 @@ module.exports = function adminRoutes(ctx) {
       const pendingOt = data.rows.filter((x) => x.attendance.ot_pending_minutes > 0);
       if (pendingOt.length && !req.body?.ignore_pending_ot) {
         throw new HttpError(409, `${pendingOt.length} employee(s) have overtime waiting for approval. Approve or reject it first.`);
+      }
+      const pendingLate = data.rows.filter((x) => x.attendance.late_pending > 0);
+      if (pendingLate.length) {
+        throw new HttpError(409, `${pendingLate.length} employee(s) have late arrivals (over ${getSettings(db).late_max_minutes} min) waiting for your full/half-day decision.`);
       }
       db.prepare('INSERT INTO payroll_runs (month, finalized_at, finalized_by, data_json) VALUES (?, ?, ?, ?)')
         .run(month, ctx.now(), req.admin.id, JSON.stringify(data));
