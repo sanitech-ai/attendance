@@ -2,6 +2,7 @@
 const express = require('express');
 const { getSettings } = require('../db');
 const { computeRange, summarize } = require('../attendance');
+const { employeeSalary } = require('../payroll');
 const {
   bad, HttpError, istDate, haversineMeters, decodeDataUrl, requireDate, requireMonth, daysInMonth, hashSecret,
 } = require('../util');
@@ -224,6 +225,34 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
   });
 
   // ---- payslips (only finalized months) ----
+  // Salary for any month up to now: the final payslip once payroll is finalized, otherwise a live
+  // statement calculated from attendance so far (it changes as days are punched and approved).
+  r.get('/salary', (req, res) => {
+    const now = ctx.now();
+    const current = istDate(now).slice(0, 7);
+    const month = req.query.month ? requireMonth(req.query.month) : current;
+    if (month > current) throw bad('That month has not started yet');
+    const emp = req.employee;
+    if (emp.joined_on && month < emp.joined_on.slice(0, 7)) throw bad('You had not joined yet in that month');
+    const run = db.prepare('SELECT data_json, finalized_at FROM payroll_runs WHERE month = ?').get(month);
+    const settings = getSettings(db);
+    if (run) {
+      const data = JSON.parse(run.data_json);
+      const row = data.rows.find((x) => x.employee_id === emp.id);
+      if (row) return res.json({ month, status: 'final', finalized_at: run.finalized_at, company_name: data.company_name, row });
+    }
+    const branch = db.prepare('SELECT name FROM branches WHERE id = ?').get(emp.branch_id);
+    const row = employeeSalary(db, { ...emp, branch_name: branch?.name || '' }, month, settings, now);
+    res.json({
+      month,
+      status: month === current ? 'live' : 'pending',
+      as_of: now,
+      counted_until: month === current ? istDate(now) : null,
+      company_name: settings.company_name,
+      row,
+    });
+  });
+
   r.get('/payslips', (req, res) => {
     const runs = db.prepare('SELECT month, data_json FROM payroll_runs ORDER BY month DESC').all();
     const list = [];

@@ -120,6 +120,7 @@ function computeDay(emp, date, ctx, settings, today) {
     last_out: p.lastOut ? istTime(p.lastOut) : null,
     late_minutes: 0,
     late_mark: null,
+    future: date > today, // shown on the calendar, but not counted until the day has passed
     ot_minutes: p.otMinutes,
     ot_start: p.otStart ? istTime(p.otStart) : null,
     ot_end: p.otEnd ? istTime(p.otEnd) : null,
@@ -249,6 +250,7 @@ function summarize(days) {
   s.late_days = 0;
   s.late_penalties = 0;
   for (const d of days) {
+    if (d.future) continue;
     if (d.status in s) s[d.status]++;
     s.worked_minutes += d.worked_minutes;
     s.ot_minutes += d.ot_minutes;

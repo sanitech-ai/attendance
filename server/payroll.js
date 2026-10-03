@@ -37,6 +37,7 @@ function salaryForEmployee(emp, days, month, extras) {
     hourlyRate = emp.salary_paise;
     let minutes = 0;
     for (const d of days) {
+      if (d.future) continue;
       if (d.status === 'present' || d.status === 'half_day') {
         if (d.worked_minutes > 0) minutes += d.worked_minutes;
         else if (d.override) minutes += d.status === 'present' ? shiftMin : shiftMin / 2;
@@ -89,6 +90,18 @@ function salaryForEmployee(emp, days, month, extras) {
   };
 }
 
+/** One employee's salary for a month, from attendance so far (days after today are not counted yet). */
+function employeeSalary(db, emp, month, settings, nowMs = Date.now()) {
+  const from = `${month}-01`;
+  const to = `${month}-${String(daysInMonth(month)).padStart(2, '0')}`;
+  const days = computeRange(db, emp, from, to, settings, nowMs);
+  return salaryForEmployee(emp, days, month, {
+    adjustments: db.prepare('SELECT * FROM adjustments WHERE employee_id = ? AND month = ? ORDER BY id').all(emp.id, month),
+    payItems: db.prepare('SELECT * FROM pay_items WHERE employee_id = ? ORDER BY kind, id').all(emp.id),
+    advances: db.prepare('SELECT * FROM advances WHERE employee_id = ? AND deduct_month = ? ORDER BY given_on').all(emp.id, month),
+  });
+}
+
 function computePayroll(db, month, settings, nowMs = Date.now()) {
   const from = `${month}-01`;
   const to = `${month}-${String(daysInMonth(month)).padStart(2, '0')}`;
@@ -100,18 +113,7 @@ function computePayroll(db, month, settings, nowMs = Date.now()) {
        ORDER BY b.name, e.name`,
     )
     .all(to, from, to);
-  const adjStmt = db.prepare('SELECT * FROM adjustments WHERE employee_id = ? AND month = ? ORDER BY id');
-  const advStmt = db.prepare('SELECT * FROM advances WHERE employee_id = ? AND deduct_month = ? ORDER BY given_on');
-  const itemStmt = db.prepare('SELECT * FROM pay_items WHERE employee_id = ? ORDER BY kind, id');
-
-  const rows = employees.map((emp) => {
-    const days = computeRange(db, emp, from, to, settings, nowMs);
-    return salaryForEmployee(emp, days, month, {
-      adjustments: adjStmt.all(emp.id, month),
-      payItems: itemStmt.all(emp.id),
-      advances: advStmt.all(emp.id, month),
-    });
-  });
+  const rows = employees.map((emp) => employeeSalary(db, emp, month, settings, nowMs));
   const totals = rows.reduce(
     (t, r) => ({
       base_paise: t.base_paise + r.base_paise,
@@ -125,4 +127,4 @@ function computePayroll(db, month, settings, nowMs = Date.now()) {
   return { month, company_name: settings.company_name, rows, totals };
 }
 
-module.exports = { computePayroll, salaryForEmployee };
+module.exports = { computePayroll, employeeSalary, salaryForEmployee };

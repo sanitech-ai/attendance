@@ -5,7 +5,56 @@
 const PREVIEW_ID = new URLSearchParams(location.search).get('preview');
 const EMP = PREVIEW_ID ? `/api/admin/preview/${encodeURIComponent(PREVIEW_ID)}` : '/api/employee';
 
-const S = { me: null, tab: 'home', month: thisMonth(), clockTimer: null };
+// ---- "Add to Home Screen" ----
+let installPrompt = null; // Android/Chrome hands us this when the app can be installed with one tap
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  refreshInstallCards();
+});
+window.addEventListener('appinstalled', () => {
+  installPrompt = null;
+  refreshInstallCards();
+});
+if ('serviceWorker' in navigator && !PREVIEW_ID) navigator.serviceWorker.register('/sw.js').catch(() => {});
+
+function isInstalled() {
+  return matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+}
+
+function installCard() {
+  if (PREVIEW_ID || isInstalled()) return h('div', { class: 'install-card hidden' });
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  let body;
+  if (installPrompt) {
+    body = h('button', { class: 'btn btn-primary btn-block', onclick: async () => {
+      const p = installPrompt;
+      installPrompt = null;
+      await p.prompt();
+      await p.userChoice.catch(() => null);
+      refreshInstallCards();
+    } }, '📲 Add to Home Screen');
+  } else if (ios) {
+    body = h('ol', { class: 'small' },
+      h('li', {}, 'Open this page in ', h('b', {}, 'Safari'), '.'),
+      h('li', {}, 'Tap the ', h('b', {}, 'Share'), ' button (square with an arrow ⬆) at the bottom.'),
+      h('li', {}, 'Scroll down and tap ', h('b', {}, 'Add to Home Screen'), ', then ', h('b', {}, 'Add'), '.'));
+  } else {
+    body = h('ol', { class: 'small' },
+      h('li', {}, 'In ', h('b', {}, 'Chrome'), ', tap the ', h('b', {}, '⋮'), ' menu at the top right.'),
+      h('li', {}, 'Tap ', h('b', {}, 'Add to Home screen'), ' (or ', h('b', {}, 'Install app'), '), then ', h('b', {}, 'Install'), '.'));
+  }
+  return h('div', { class: 'card install-card' },
+    h('div', { class: 'row', style: { marginBottom: '8px' } }, h('img', { src: '/icon-192.png', alt: '', width: 36, height: 36, style: { borderRadius: '8px' } }),
+      h('div', {}, h('strong', {}, 'Add Attendance to your Home Screen'), h('div', { class: 'small muted' }, 'Open it like an app with one tap, every day.'))),
+    body);
+}
+
+function refreshInstallCards() {
+  document.querySelectorAll('.install-card').forEach((el) => el.replaceWith(installCard()));
+}
+
+const S = { me: null, tab: 'home', month: thisMonth(), salaryMonth: thisMonth(), clockTimer: null };
 const root = document.getElementById('root');
 
 setUnauthorizedHandler(() => {
@@ -57,7 +106,7 @@ function showLogin() {
       location.href = '/admin';
     }, btn);
   });
-  root.replaceChildren(h('div', { class: 'login-wrap' }, form));
+  root.replaceChildren(h('div', { class: 'login-wrap' }, h('div', { class: 'login-stack' }, form, installCard())));
   code.focus();
 }
 
@@ -77,6 +126,7 @@ async function boot() {
 const TABS = [
   ['home', '⏱', 'Today'],
   ['attendance', '📅', 'Attendance'],
+  ['salary', '₹', 'Salary'],
   ['leaves', '🌴', 'Leaves'],
   ['more', '☰', 'More'],
 ];
@@ -93,7 +143,7 @@ function renderShell() {
       h('div', { class: 'small muted' }, S.me.company_name)),
     main, bar);
   clearInterval(S.clockTimer);
-  ({ home: renderHome, attendance: renderAttendance, leaves: renderLeaves, more: renderMore })[S.tab](main);
+  ({ home: renderHome, attendance: renderAttendance, salary: renderSalary, leaves: renderLeaves, more: renderMore })[S.tab](main);
 }
 
 // ---------------------------------------------------------------- today / punch
@@ -377,8 +427,8 @@ function requestLeave() {
 // ---------------------------------------------------------------- more: documents, payslips, PIN
 
 async function renderMore(main) {
-  const [docs, slips] = await Promise.all([run(() => api('GET', `${EMP}/documents`)), run(() => api('GET', `${EMP}/payslips`))]);
-  if (!docs || !slips) return;
+  const docs = await run(() => api('GET', `${EMP}/documents`));
+  if (!docs) return;
   const e = S.me.employee;
   const docKind = { pending: 'warn', verified: 'ok', rejected: 'bad' };
   main.replaceChildren(
@@ -400,20 +450,80 @@ async function renderMore(main) {
           badge(d.status, docKind[d.status]),
           h('a', { class: 'btn btn-sm', href: `${EMP}/documents/${d.id}/file`, target: '_blank', rel: 'noopener' }, 'View'))))
         : h('div', { class: 'empty' }, 'No documents uploaded yet.')),
-    h('div', { class: 'card' }, h('h2', {}, 'Payslips'),
-      slips.length
-        ? h('ul', { class: 'timeline' }, slips.map((p) => h('li', {},
-          h('div', { style: { flex: 1 } }, h('strong', {}, fmtMonth(p.month)), h('div', { class: 'small muted' }, `Net pay ${money(p.net_paise)}`)),
-          h('button', { class: 'btn btn-sm', onclick: () => viewPayslip(p.month) }, 'Open'))))
-        : h('div', { class: 'empty' }, 'Payslips appear here once your employer finalizes the month’s salary.')),
+    installCard(),
     h('div', { class: 'card row' },
       h('button', { class: 'btn', onclick: changePin }, 'Change PIN'),
       PREVIEW_ID ? '' : h('button', { class: 'btn', onclick: async () => { await run(() => api('POST', `${EMP}/logout`)); showLogin(); } }, 'Log out')));
 }
 
-async function viewPayslip(month) {
-  const slip = await run(() => api('GET', `${EMP}/payslips/${month}`));
-  if (slip) openPayslip(slip.company_name, slip.month, slip.row);
+// ---------------------------------------------------------------- salary (live + finalized)
+
+async function renderSalary(main) {
+  const picker = h('div', { class: 'spread', style: { marginBottom: '12px' } },
+    monthPicker(S.salaryMonth, (m) => { S.salaryMonth = m; renderSalary(main); }));
+  main.replaceChildren(picker, h('div', { class: 'empty' }, 'Loading…'));
+  const [d, slips] = await Promise.all([
+    api('GET', `${EMP}/salary?month=${S.salaryMonth}`).catch((err) => ({ error: err.message })),
+    api('GET', `${EMP}/payslips`).catch(() => []),
+  ]);
+  const past = slips.length
+    ? h('div', { class: 'card' }, h('h2', {}, 'Final payslips'),
+      h('ul', { class: 'timeline' }, slips.map((p) => h('li', {},
+        h('div', { style: { flex: 1 } }, h('strong', {}, fmtMonth(p.month)), h('div', { class: 'small muted' }, `Net pay ${money(p.net_paise)}`)),
+        h('button', { class: 'btn btn-sm', onclick: () => { S.salaryMonth = p.month; renderSalary(main); } }, 'View')))))
+    : '';
+  if (d.error) {
+    main.replaceChildren(picker, h('div', { class: 'card' }, h('p', { class: 'muted' }, d.error)), past);
+    return;
+  }
+  const r = d.row;
+  const a = r.attendance;
+  const line = (label, value, opts = {}) => h('div', { class: `pay-line${opts.total ? ' total' : ''}` },
+    h('div', {}, label, opts.note ? h('div', { class: 'small muted' }, opts.note) : ''), h('div', { class: 'num' }, value));
+  const sum = (xs) => xs.reduce((t, x) => t + x.amount_paise, 0);
+  const rateNote = r.salary_type === 'monthly'
+    ? `${money(r.salary_paise)}/month ÷ ${r.days_in_month} days = ${money(r.per_day_paise)}/day × ${r.paid_days} paid days`
+    : r.salary_type === 'daily'
+      ? `${money(r.per_day_paise)}/day × ${r.paid_days} paid days`
+      : `${money(r.hourly_rate_paise)}/hour × ${(r.base_paise / Math.max(1, r.hourly_rate_paise)).toFixed(2)} hours`;
+  const status = d.status === 'final'
+    ? badge('Final payslip', 'ok')
+    : d.status === 'live' ? badge(`Live · updated ${fmtTime(d.as_of)}`, 'info') : badge('Not finalized yet', 'warn');
+  const deductions = [...r.deductions, ...r.advances.map((x) => ({ label: `Advance (${fmtDate(x.given_on)})${x.note ? ` · ${x.note}` : ''}`, amount_paise: x.amount_paise }))];
+
+  main.replaceChildren(
+    picker,
+    h('div', { class: 'card' },
+      h('div', { class: 'spread' }, h('div', { class: 'muted' }, d.status === 'final' ? 'Net pay' : 'Net pay so far'), status),
+      h('div', { class: 'clock' }, money(r.net_paise)),
+      d.status === 'live'
+        ? h('p', { class: 'small muted' }, `Calculated from your attendance up to today (${fmtDate(d.counted_until)}). Today counts once you punch out, and overtime counts once approved. It updates every time you open this page.`,
+          r.total_deductions_paise ? ' Monthly deductions (PF, ESIC, PT, advances) are taken in full, so early in the month this figure is low or even negative — it grows with every day you work.' : '')
+        : d.status === 'pending' ? h('p', { class: 'small muted' }, 'Your employer has not finalized this month yet, so these figures can still change.') : '',
+      h('button', { class: 'btn btn-block', style: { marginTop: '8px' }, onclick: () => openPayslip(d.company_name, d.month, r, { provisional: d.status !== 'final', asOf: d.as_of }) },
+        d.status === 'final' ? 'Download / print payslip' : 'Download / print statement')),
+    h('div', { class: 'card' }, h('h2', {}, 'Attendance'),
+      h('dl', { class: 'kv' },
+        h('dt', {}, 'Days in month'), h('dd', {}, String(r.days_in_month)),
+        h('dt', {}, 'Paid days'), h('dd', {}, String(r.paid_days)),
+        h('dt', {}, 'Present'), h('dd', {}, String(a.present)),
+        h('dt', {}, 'Half days'), h('dd', {}, String(a.half_day), a.late_penalties ? h('span', { class: 'muted' }, ` (${a.late_penalties} from late marks)`) : ''),
+        h('dt', {}, 'Absent'), h('dd', {}, String(a.absent + a.not_marked)),
+        h('dt', {}, 'Paid / unpaid leave'), h('dd', {}, `${a.paid_leave} / ${a.unpaid_leave}`),
+        h('dt', {}, 'Week offs / holidays'), h('dd', {}, `${a.week_off} / ${a.holiday}`),
+        h('dt', {}, 'Late marks'), h('dd', {}, `${a.late_days} (warnings allowed: ${S.me.late_warnings})`),
+        h('dt', {}, 'Overtime approved'), h('dd', {}, `${r.ot_hours} h`),
+        a.ot_pending_minutes ? [h('dt', {}, 'Overtime awaiting approval'), h('dd', {}, `${fmtMinutes(a.ot_pending_minutes)} (not included yet)`)] : '')),
+    h('div', { class: 'card' }, h('h2', {}, 'Earnings'),
+      line('Basic pay', money(r.base_paise), { note: rateNote }),
+      line('Overtime', money(r.ot_paise), { note: `${r.ot_hours} h × ${money(r.hourly_rate_paise)}/hour` }),
+      r.additions.map((x) => line(x.label, money(x.amount_paise))),
+      line('Gross earnings', money(r.gross_paise), { total: true })),
+    h('div', { class: 'card' }, h('h2', {}, 'Deductions'),
+      deductions.length ? deductions.map((x) => line(x.label, `− ${money(x.amount_paise)}`)) : h('p', { class: 'muted' }, 'No deductions.'),
+      line('Total deductions', `− ${money(r.total_deductions_paise)}`, { total: true })),
+    h('div', { class: 'card' }, line('Net pay', money(r.net_paise), { total: true })),
+    past);
 }
 
 function uploadDocument() {
