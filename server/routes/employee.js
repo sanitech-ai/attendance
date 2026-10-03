@@ -67,7 +67,7 @@ module.exports = function employeeRoutes(ctx) {
          WHERE employee_id = ? AND work_date = ? ORDER BY at`,
       )
       .all(emp.id, workDate);
-    const branches = db.prepare('SELECT id, name, lat, lng, radius_m FROM branches WHERE active = 1').all();
+    const branches = db.prepare('SELECT id, name, lat, lng, radius_m FROM branches WHERE active = 1 AND location_set = 1').all();
     res.json({
       server_time: now,
       work_date: workDate,
@@ -100,15 +100,17 @@ module.exports = function employeeRoutes(ctx) {
     }
 
     const settings = getSettings(db);
-    const branches = db.prepare('SELECT * FROM branches WHERE active = 1').all();
+    // Branches whose GPS location hasn't been entered yet can't be measured against.
+    const branches = db.prepare('SELECT * FROM branches WHERE active = 1 AND location_set = 1').all();
     let nearest = null;
     for (const b of branches) {
       const d = haversineMeters(lat, lng, b.lat, b.lng);
       if (!nearest || d < nearest.distance) nearest = { branch: b, distance: d };
     }
     const inside = !!nearest && nearest.distance <= nearest.branch.radius_m;
-    const home = branches.find((b) => b.id === emp.branch_id);
-    const mode = home?.geofence_mode || 'flag';
+    const home = db.prepare('SELECT * FROM branches WHERE id = ?').get(emp.branch_id);
+    const homeLocated = !!home?.location_set;
+    const mode = homeLocated ? home.geofence_mode : 'flag';
 
     if (!inside && mode === 'block') {
       const where = nearest ? `${Math.round(nearest.distance)} m from ${nearest.branch.name}` : 'not near any branch';
@@ -116,7 +118,8 @@ module.exports = function employeeRoutes(ctx) {
     }
 
     const flags = [];
-    if (!inside) flags.push(nearest ? `outside geofence (${Math.round(nearest.distance)} m from ${nearest.branch.name})` : 'no branch configured');
+    if (!homeLocated && !inside) flags.push(`location of ${home?.name || 'home branch'} not set yet`);
+    else if (!inside) flags.push(nearest ? `outside geofence (${Math.round(nearest.distance)} m from ${nearest.branch.name})` : 'no branch configured');
     if (acc === null) flags.push('GPS accuracy unknown');
     else if (acc > settings.max_accuracy_m) flags.push(`low GPS accuracy (±${Math.round(acc)} m)`);
 

@@ -143,7 +143,7 @@ function computeDay(emp, date, ctx, settings, today) {
     if (lateBy > settings.grace_minutes) day.late_minutes = lateBy;
   }
 
-  if (date < emp.joined_on) {
+  if (emp.joined_on && date < emp.joined_on) {
     day.status = 'not_joined';
   } else if (override) {
     day.status = override.status;

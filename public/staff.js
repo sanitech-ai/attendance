@@ -364,7 +364,7 @@ async function renderMore(main) {
         h('dt', {}, 'Designation'), h('dd', {}, e.designation || '—'),
         h('dt', {}, 'Branch'), h('dd', {}, S.me.branch?.name || '—'),
         h('dt', {}, 'Shift'), h('dd', {}, `${e.shift_start} – ${e.shift_end}`),
-        h('dt', {}, 'Joined'), h('dd', {}, fmtDate(e.joined_on)))),
+        h('dt', {}, 'Joined'), h('dd', {}, e.joined_on ? fmtDate(e.joined_on) : '—'))),
     h('div', { class: 'card' },
       h('div', { class: 'spread' }, h('h2', {}, 'My documents'), h('button', { class: 'btn btn-primary btn-sm', onclick: uploadDocument }, '+ Upload')),
       h('p', { class: 'small muted' }, 'Upload Aadhaar, PAN and other KYC documents. Files are encrypted and only visible to your employer’s admins.'),

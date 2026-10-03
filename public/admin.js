@@ -173,9 +173,16 @@ async function pageDashboard(el, params) {
         h('li', {}, h('a', { href: '#/employees' }, 'Add employees'), ' with salary, shift and a PIN.'),
         h('li', {}, 'Share the staff app link with employees: ', h('code', {}, location.origin + '/'), '. They log in with Employee ID + PIN and add it to their home screen.')))
     : '';
+  const unlocated = A.branches.filter((b) => b.active && !b.location_set);
+  const locationWarning = unlocated.length
+    ? h('div', { class: 'card', style: { marginBottom: '16px', borderColor: 'var(--warn)' } },
+      `⚠ ${unlocated.length} branch(es) have no GPS location yet: ${unlocated.map((b) => b.name).join(', ')}. Punches from their staff are flagged until you `,
+      h('a', { href: '#/branches' }, 'set the location'), '.')
+    : '';
   el.replaceChildren(
     pageHead('Dashboard', h('input', { type: 'date', value: date, onchange: (e) => go('dashboard', { date: e.target.value }) })),
     gettingStarted,
+    locationWarning,
     h('div', { class: 'stats' },
       tile(t.employees, 'Active staff'), tile(t.in, 'Present / working'), tile(t.absent, 'Absent / not marked'),
       tile(t.late, 'Late'), tile(t.on_leave, 'On leave'), tile(t.off, 'Week off / holiday'), tile(t.on_ot, 'On overtime now')),
@@ -397,7 +404,9 @@ async function pageEmployees(el) {
   await Promise.all([loadBranches(), loadEmployees()]);
   const rate = (e) => `${money(e.salary_paise)} / ${{ monthly: 'month', daily: 'day', hourly: 'hour' }[e.salary_type]}`;
   el.replaceChildren(
-    pageHead('Employees', h('button', { class: 'btn btn-primary', onclick: () => employeeForm() }, '+ Add employee')),
+    pageHead('Employees',
+      h('button', { class: 'btn', onclick: importEmployees }, 'Import from CSV'),
+      h('button', { class: 'btn btn-primary', onclick: () => employeeForm() }, '+ Add employee')),
     !A.branches.length ? h('div', { class: 'card' }, 'Add a ', h('a', { href: '#/branches' }, 'branch'), ' first — every employee belongs to a branch.') : '',
     table([
       { label: 'Employee', render: (e) => h('div', {}, h('strong', {}, e.name), h('div', { class: 'small muted' }, `${e.code}${e.designation ? ` · ${e.designation}` : ''}${e.phone ? ` · ${e.phone}` : ''}`)) },
@@ -409,6 +418,7 @@ async function pageEmployees(el) {
       { label: 'Status', render: (e) => (e.active ? badge('active', 'ok') : badge('inactive', 'neutral')) },
       { label: '', render: (e) => h('div', { class: 'row' },
         h('button', { class: 'btn btn-sm', onclick: () => employeeForm(e) }, 'Edit'),
+        h('button', { class: 'btn btn-sm', onclick: () => payItems(e) }, 'PF / allowances'),
         h('button', { class: 'btn btn-sm', onclick: () => resetPin(e) }, 'Reset PIN')) },
     ], A.employees, { empty: 'No employees yet. Click “Add employee”.' }));
 }
@@ -422,7 +432,7 @@ function employeeForm(e) {
     { name: 'phone', label: 'Phone', type: 'tel', value: e?.phone },
     { name: 'designation', label: 'Designation', value: e?.designation },
     { name: 'branch_id', label: 'Branch', type: 'select', required: true, value: e?.branch_id, options: A.branches.filter((b) => b.active || b.id === e?.branch_id).map((b) => ({ value: b.id, label: b.name })) },
-    { name: 'joined_on', label: 'Joining date', type: 'date', required: true, value: e?.joined_on || todayIST() },
+    { name: 'joined_on', label: 'Joining date', type: 'date', value: e ? e.joined_on : todayIST(), hint: 'Leave blank if not known.' },
     { type: 'heading', label: 'Salary & shift' },
     { name: 'salary_type', label: 'Salary type', type: 'select', value: e?.salary_type || 'monthly',
       options: [{ value: 'monthly', label: 'Monthly' }, { value: 'daily', label: 'Daily wage' }, { value: 'hourly', label: 'Hourly' }] },
@@ -450,6 +460,101 @@ function employeeForm(e) {
       return true;
     },
   });
+}
+
+async function payItems(e) {
+  const items = await run(() => api('GET', `/api/admin/employees/${e.id}/pay-items`));
+  if (!items) return;
+  const body = h('div', { class: 'stack' },
+    h('p', { class: 'small muted' }, 'These are applied every month in full (not reduced for absent days) whenever the employee has at least one paid day. For one-off bonuses or fines, use Payroll → Bonus & deductions.'),
+    table([
+      { label: 'Type', render: (x) => (x.kind === 'addition' ? badge('earning', 'ok') : badge('deduction', 'bad')) },
+      { label: 'Item', render: (x) => x.label },
+      { label: 'Monthly amount', class: 'num', render: (x) => money(x.amount_paise) },
+      { label: '', render: (x) => h('button', { class: 'btn btn-sm', onclick: async (ev) => {
+        if (await run(() => api('DELETE', `/api/admin/pay-items/${x.id}`), ev.currentTarget)) { dlg.close(); payItems(e); }
+      } }, 'Remove') },
+    ], items, { empty: 'No fixed pay items.' }),
+    h('div', { class: 'form-actions' }, h('button', { class: 'btn btn-primary', onclick: () => {
+      dlg.close();
+      formDialog({
+        title: `Add fixed monthly item · ${e.name}`,
+        fields: [
+          { name: 'kind', label: 'Type', type: 'select', options: [{ value: 'deduction', label: 'Deduction (PF, ESIC, PT, TDS…)' }, { value: 'addition', label: 'Earning (conveyance, room rent…)' }] },
+          { name: 'label', label: 'Name', required: true, placeholder: 'e.g. PF' },
+          { name: 'amount', label: 'Monthly amount (₹)', type: 'number', step: '0.01', min: 1, required: true },
+        ],
+        async onSubmit(v) {
+          await api('POST', `/api/admin/employees/${e.id}/pay-items`, v);
+          setTimeout(() => payItems(e), 0);
+          return true;
+        },
+      });
+    } }, '+ Add item')));
+  const dlg = modal(`PF / allowances · ${e.name}`, body, { wide: true });
+}
+
+function importEmployees() {
+  const file = h('input', { type: 'file', accept: '.csv,text/csv' });
+  const out = h('div', { class: 'stack' });
+  let csv = '';
+  const check = h('button', { class: 'btn btn-primary', onclick: async (ev) => {
+    if (!file.files[0]) return toast('Choose a CSV file first', 'error');
+    csv = await file.files[0].text();
+    const res = await run(() => api('POST', '/api/admin/employees/import', { csv, dry_run: true }), ev.currentTarget);
+    if (res) showPreview(res);
+  } }, 'Check file');
+  const help = h('details', { class: 'small' }, h('summary', {}, 'File format'),
+    h('p', {}, 'Save your Excel sheet as CSV with a header row. Columns (any order):'),
+    h('ul', {},
+      h('li', {}, h('b', {}, 'employee_id, name, branch, salary'), ' – required. Branches that don’t exist yet are created; you then set their location.'),
+      h('li', {}, 'designation, phone, joined_on (DD-MM-YYYY, may be blank), salary_type (monthly/daily/hourly, default monthly)'),
+      h('li', {}, 'shift_start, shift_end (default 09:00 and 18:00), weekly_off (default Sun), branch_radius_m (default 150)'),
+      h('li', {}, 'pf, esic, pt, tds – fixed monthly deductions; conveyance, room_rent – fixed monthly earnings'),
+      h('li', {}, 'pin – optional; if blank a random 4-digit PIN is created and shown after import')));
+
+  function showPreview(res) {
+    const bad = res.error_count;
+    out.replaceChildren(
+      h('p', {}, bad
+        ? h('strong', { style: { color: 'var(--bad)' } }, `${bad} row(s) have problems. Fix them in the file and check again. Nothing has been imported.`)
+        : h('strong', {}, `${res.rows.length} employee(s) ready to import.`),
+      res.new_branches.length ? ` New branches to be created: ${res.new_branches.map((b) => b.name).join(', ')}.` : ''),
+      table([
+        { label: 'Line', render: (r) => String(r.line) },
+        { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name || '—'), h('div', { class: 'small muted' }, `${r.code} · ${r.designation || ''}`)) },
+        { label: 'Branch', render: (r) => r.branch },
+        { label: 'Salary', class: 'num', render: (r) => money(r.salary_paise) },
+        { label: 'Joined', render: (r) => (r.joined_on ? fmtDate(r.joined_on) : '—') },
+        { label: 'Fixed items', render: (r) => r.items.map((i) => `${i.label} ${i.kind === 'deduction' ? '−' : '+'}${money(i.amount_paise)}`).join(', ') || '—' },
+        { label: 'Problems', render: (r) => (r.errors.length ? h('span', { style: { color: 'var(--bad)' } }, r.errors.join('; ')) : '✓') },
+      ], res.rows, { rowClass: (r) => (r.errors.length ? 'row-flag' : null) }),
+      bad ? '' : h('div', { class: 'form-actions' }, h('button', { class: 'btn btn-primary', onclick: async (ev) => {
+        const done = await run(() => api('POST', '/api/admin/employees/import', { csv }), ev.currentTarget);
+        if (done) showDone(done);
+      } }, `Import ${res.rows.length} employee(s)`)));
+  }
+
+  function showDone(done) {
+    const pinsCsv = ['Employee ID,Name,Branch,PIN', ...done.created.map((c) => [c.code, c.name, c.branch, c.pin].map((x) => `"${String(x).replace(/"/g, '""')}"`).join(','))].join('\r\n');
+    out.replaceChildren(
+      h('p', {}, h('strong', {}, `Imported ${done.created.length} employee(s).`),
+        ' Download the PIN list now — PINs are stored encrypted and cannot be shown again (you can always reset a PIN).'),
+      h('div', { class: 'row' },
+        h('a', { class: 'btn btn-primary', href: URL.createObjectURL(new Blob([`\uFEFF${pinsCsv}`], { type: 'text/csv' })), download: 'staff-pins.csv' }, 'Download PIN list'),
+        done.new_branches.length ? h('a', { class: 'btn', href: '#/branches', onclick: () => dlg.close() }, 'Set branch locations →') : ''),
+      table([
+        { label: 'Employee ID', render: (c) => c.code },
+        { label: 'Name', render: (c) => c.name },
+        { label: 'Branch', render: (c) => c.branch },
+        { label: 'PIN', render: (c) => h('code', {}, c.pin) },
+      ], done.created));
+    file.disabled = true;
+    check.remove();
+  }
+
+  const dlg = modal('Import employees from CSV', h('div', { class: 'stack' }, help, h('div', { class: 'row' }, file, check), out),
+    { wide: true, onClose: () => route() });
 }
 
 function resetPin(e) {
@@ -534,7 +639,9 @@ async function pageBranches(el) {
     h('p', { class: 'muted small' }, 'Staff can punch at any active branch. If they are outside every branch’s radius, the punch is either flagged for your review or blocked, depending on their home branch’s setting.'),
     table([
       { label: 'Branch', render: (b) => h('div', {}, h('strong', {}, b.name), b.address ? h('div', { class: 'small muted' }, b.address) : '') },
-      { label: 'Location', render: (b) => h('div', {}, `${b.lat.toFixed(5)}, ${b.lng.toFixed(5)} `, mapLink(b.lat, b.lng)) },
+      { label: 'Location', render: (b) => (b.location_set
+        ? h('div', {}, `${b.lat.toFixed(5)}, ${b.lng.toFixed(5)} `, mapLink(b.lat, b.lng))
+        : h('button', { class: 'btn btn-sm btn-primary', onclick: () => branchForm(b) }, '⚠ Set location')) },
       { label: 'Radius', class: 'num', render: (b) => `${b.radius_m} m` },
       { label: 'Outside radius', render: (b) => (b.geofence_mode === 'block' ? badge('Block punch', 'bad') : badge('Allow & flag', 'warn')) },
       { label: 'Staff', class: 'num', render: (b) => String(b.employee_count) },
@@ -549,7 +656,18 @@ function branchForm(b) {
     fields: [
       { name: 'name', label: 'Branch name', required: true, value: b?.name },
       { name: 'address', label: 'Address', type: 'textarea', value: b?.address },
-      { type: 'button', label: '📍 Use my current location', hint: 'Do this while standing inside the branch, or paste coordinates from Google Maps (right-click a spot → copy the numbers).',
+      { name: 'maps_link', label: 'Google Maps link', placeholder: 'https://maps.app.goo.gl/…', hint: 'In Google Maps, long-press the exact spot to drop a pin → Share → Copy link, then paste it here.' },
+      { type: 'button', label: '🔗 Get location from link',
+        async onclick(form, btn) {
+          const link = form.querySelector('[name=maps_link]').value.trim();
+          if (!link) return toast('Paste a Google Maps link first', 'error');
+          const r = await run(() => api('POST', '/api/admin/maps/resolve', { link }), btn);
+          if (!r) return;
+          form.querySelector('[name=lat]').value = r.lat.toFixed(6);
+          form.querySelector('[name=lng]').value = r.lng.toFixed(6);
+          btn.textContent = `🔗 Got it: ${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}`;
+        } },
+      { type: 'button', label: '📍 Use my current location', hint: 'Or do this on a phone while standing inside the branch.',
         onclick(form, btn) {
           if (!navigator.geolocation) return toast('Location not available in this browser', 'error');
           btn.disabled = true;
@@ -565,15 +683,16 @@ function branchForm(b) {
             toast(`Could not get location: ${err.message}`, 'error');
           }, { enableHighAccuracy: true, timeout: 20000 });
         } },
-      { name: 'lat', label: 'Latitude', type: 'number', step: 'any', required: true, value: b?.lat, placeholder: '19.076090' },
-      { name: 'lng', label: 'Longitude', type: 'number', step: 'any', required: true, value: b?.lng, placeholder: '72.877426' },
+      { name: 'lat', label: 'Latitude', type: 'number', step: 'any', required: true, value: b?.location_set ? b.lat : '', placeholder: '17.412300' },
+      { name: 'lng', label: 'Longitude', type: 'number', step: 'any', required: true, value: b?.location_set ? b.lng : '', placeholder: '78.448200' },
       { name: 'radius_m', label: 'Allowed radius (metres)', type: 'number', min: 20, max: 5000, required: true, value: b?.radius_m ?? 150, hint: 'Phone GPS is usually accurate to 10–50 m. 100–200 m works well for most offices.' },
       { name: 'geofence_mode', label: 'When an employee of this branch is outside every branch radius', type: 'select', value: b?.geofence_mode || 'flag',
         options: [{ value: 'flag', label: 'Allow the punch but flag it for review' }, { value: 'block', label: 'Block the punch' }] },
       ...(b ? [{ name: 'active', label: 'Active', type: 'checkbox', value: !!b.active }] : []),
     ],
     async onSubmit(v) {
-      const body = { ...v, radius_m: Number(v.radius_m), active: b ? v.active : true };
+      const { maps_link: _link, ...rest } = v;
+      const body = { ...rest, radius_m: Number(v.radius_m), active: b ? v.active : true };
       if (b) await api('PUT', `/api/admin/branches/${b.id}`, body);
       else await api('POST', '/api/admin/branches', body);
       toast('Branch saved');

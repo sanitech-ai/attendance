@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS employees (
   shift_start   TEXT NOT NULL DEFAULT '09:00',
   shift_end     TEXT NOT NULL DEFAULT '18:00',
   weekly_offs   TEXT NOT NULL DEFAULT '0',
-  joined_on     TEXT NOT NULL,
+  joined_on     TEXT NOT NULL DEFAULT '', -- '' when unknown
   pin_hash      TEXT NOT NULL,
   failed_logins INTEGER NOT NULL DEFAULT 0,
   locked_until  INTEGER,
@@ -156,6 +156,17 @@ CREATE TABLE IF NOT EXISTS documents (
   reviewed_at       INTEGER
 );
 
+-- Recurring monthly earnings/deductions (PF, ESIC, PT, TDS, conveyance, room rent...).
+CREATE TABLE IF NOT EXISTS pay_items (
+  id           INTEGER PRIMARY KEY,
+  employee_id  INTEGER NOT NULL REFERENCES employees(id),
+  kind         TEXT NOT NULL CHECK (kind IN ('addition', 'deduction')),
+  label        TEXT NOT NULL,
+  amount_paise INTEGER NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pay_items_emp ON pay_items(employee_id);
+
 CREATE TABLE IF NOT EXISTS payroll_runs (
   month        TEXT PRIMARY KEY,
   finalized_at INTEGER NOT NULL,
@@ -189,9 +200,19 @@ function openDb(file) {
   const db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   db.exec(SCHEMA);
+  migrate(db);
   const ins = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) ins.run(k, v);
   return db;
+}
+
+/** Additive migrations for databases created by earlier versions. */
+function migrate(db) {
+  const cols = db.prepare('PRAGMA table_info(branches)').all().map((c) => c.name);
+  if (!cols.includes('location_set')) {
+    // 0 = branch created (e.g. by import) before its GPS location was entered.
+    db.exec('ALTER TABLE branches ADD COLUMN location_set INTEGER NOT NULL DEFAULT 1');
+  }
 }
 
 function tx(db, fn) {

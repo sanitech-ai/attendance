@@ -11,6 +11,7 @@ const { daysInMonth, shiftMinutes } = require('./util');
  * Overtime is paid at the same hourly rate as regular work:
  *  monthly hourly rate = per-day / shift hours, daily = salary / shift hours, hourly = salary.
  * Only approved overtime is paid.
+ * Fixed monthly pay items (PF, PT, conveyance...) apply in full whenever there is at least one paid day.
  */
 function salaryForEmployee(emp, days, month, extras) {
   const s = summarize(days);
@@ -48,8 +49,10 @@ function salaryForEmployee(emp, days, month, extras) {
   }
 
   const otPaise = (hourlyRate * s.ot_payable_minutes) / 60;
-  const additions = extras.adjustments.filter((a) => a.kind === 'addition');
-  const deductions = extras.adjustments.filter((a) => a.kind === 'deduction');
+  const fixed = paidDays > 0 ? extras.payItems || [] : [];
+  const items = [...fixed, ...extras.adjustments];
+  const additions = items.filter((a) => a.kind === 'addition');
+  const deductions = items.filter((a) => a.kind === 'deduction');
   const sum = (xs) => xs.reduce((t, x) => t + x.amount_paise, 0);
 
   const base = Math.round(basePaise);
@@ -99,11 +102,13 @@ function computePayroll(db, month, settings, nowMs = Date.now()) {
     .all(to, from, to);
   const adjStmt = db.prepare('SELECT * FROM adjustments WHERE employee_id = ? AND month = ? ORDER BY id');
   const advStmt = db.prepare('SELECT * FROM advances WHERE employee_id = ? AND deduct_month = ? ORDER BY given_on');
+  const itemStmt = db.prepare('SELECT * FROM pay_items WHERE employee_id = ? ORDER BY kind, id');
 
   const rows = employees.map((emp) => {
     const days = computeRange(db, emp, from, to, settings, nowMs);
     return salaryForEmployee(emp, days, month, {
       adjustments: adjStmt.all(emp.id, month),
+      payItems: itemStmt.all(emp.id),
       advances: advStmt.all(emp.id, month),
     });
   });

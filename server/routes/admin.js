@@ -3,6 +3,8 @@ const express = require('express');
 const { getSettings, tx } = require('../db');
 const { computeRange, summarize } = require('../attendance');
 const { computePayroll } = require('../payroll');
+const { planImport, randomPin } = require('../importer');
+const { resolveMapsLink } = require('../maps');
 const {
   bad, HttpError, istDate, requireDate, requireMonth, daysInMonth, hashSecret, toPaise, isTime, isDate,
 } = require('../util');
@@ -162,11 +164,15 @@ module.exports = function adminRoutes(ctx) {
   r.put('/branches/:id', (req, res) => {
     const v = branchInput(req.body || {});
     const result = db
-      .prepare('UPDATE branches SET name = ?, address = ?, lat = ?, lng = ?, radius_m = ?, geofence_mode = ?, active = ? WHERE id = ?')
+      .prepare('UPDATE branches SET name = ?, address = ?, lat = ?, lng = ?, radius_m = ?, geofence_mode = ?, active = ?, location_set = 1 WHERE id = ?')
       .run(...v, id(req.params.id));
     if (!result.changes) throw notFound();
     ctx.audit(req, 'branch.updated', { id: Number(req.params.id) });
     res.json({ ok: true });
+  });
+
+  r.post('/maps/resolve', async (req, res) => {
+    res.json(await resolveMapsLink(String(req.body?.link || '')));
   });
 
   // ---- employees ----
@@ -197,12 +203,13 @@ module.exports = function adminRoutes(ctx) {
     if (!isTime(b.shift_start) || !isTime(b.shift_end)) throw bad('Shift times must be HH:MM');
     const offs = Array.isArray(b.weekly_offs) ? b.weekly_offs : String(b.weekly_offs ?? '').split(',').filter((x) => x !== '');
     if (offs.some((d) => !/^[0-6]$/.test(String(d)))) throw bad('Weekly offs must be days 0 (Sun) to 6 (Sat)');
-    if (!isDate(b.joined_on)) throw bad('Joining date is required');
+    const joinedOn = String(b.joined_on ?? '').trim();
+    if (joinedOn && !isDate(joinedOn)) throw bad('Joining date must be a valid date');
     return {
       code, name, branch_id: branchId, salary_type: b.salary_type, salary_paise: salary,
       phone: String(b.phone || '').slice(0, 20), designation: String(b.designation || '').slice(0, 60),
       shift_start: b.shift_start, shift_end: b.shift_end, weekly_offs: [...new Set(offs.map(String))].sort().join(','),
-      joined_on: b.joined_on, active: b.active === false ? 0 : 1,
+      joined_on: joinedOn, active: b.active === false ? 0 : 1,
     };
   }
 
@@ -255,6 +262,75 @@ module.exports = function adminRoutes(ctx) {
   }
 
   r.get('/pending', (req, res) => res.json(pendingCounts()));
+
+  // ---- fixed monthly pay items (PF, PT, allowances...) ----
+  r.get('/employees/:id/pay-items', (req, res) => {
+    res.json(db.prepare('SELECT * FROM pay_items WHERE employee_id = ? ORDER BY kind, id').all(id(req.params.id)));
+  });
+
+  r.post('/employees/:id/pay-items', (req, res) => {
+    const empId = id(req.params.id);
+    if (!db.prepare('SELECT 1 FROM employees WHERE id = ?').get(empId)) throw notFound();
+    const { kind, label } = req.body || {};
+    if (!['addition', 'deduction'].includes(kind)) throw bad('Kind must be addition or deduction');
+    if (!String(label || '').trim()) throw bad('Label is required (e.g. PF)');
+    const amount = toPaise(req.body.amount);
+    if (!amount) throw bad('Amount must be more than zero');
+    const newId = db.prepare('INSERT INTO pay_items (employee_id, kind, label, amount_paise, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(empId, kind, String(label).trim().slice(0, 60), amount, ctx.now()).lastInsertRowid;
+    ctx.audit(req, 'pay_item.created', { employee_id: empId, kind, label, amount: rupees(amount) });
+    res.json({ ok: true, id: Number(newId) });
+  });
+
+  r.delete('/pay-items/:id', (req, res) => {
+    const item = db.prepare('SELECT * FROM pay_items WHERE id = ?').get(id(req.params.id));
+    if (!item) throw notFound();
+    db.prepare('DELETE FROM pay_items WHERE id = ?').run(item.id);
+    ctx.audit(req, 'pay_item.deleted', { employee_id: item.employee_id, label: item.label, amount: rupees(item.amount_paise) });
+    res.json({ ok: true });
+  });
+
+  // ---- bulk import from CSV ----
+  r.post('/employees/import', (req, res) => {
+    const { csv, dry_run: dryRun } = req.body || {};
+    if (typeof csv !== 'string' || !csv.trim()) throw bad('Choose a CSV file');
+    if (csv.length > 2_000_000) throw bad('File is too large');
+    const plan = planImport(db, csv);
+    if (plan.error) throw bad(plan.error);
+    const summary = plan.rows.map((r) => ({
+      line: r.line, code: r.data.code, name: r.data.name, branch: r.data.branch, designation: r.data.designation,
+      salary_paise: r.data.salary_paise, joined_on: r.data.joined_on, items: r.items, errors: r.errors,
+    }));
+    const errorCount = plan.rows.filter((r) => r.errors.length).length;
+    if (dryRun || errorCount) {
+      return res.json({ dry_run: true, rows: summary, new_branches: plan.newBranches, error_count: errorCount });
+    }
+    const created = tx(db, () => {
+      const branchIds = new Map([...plan.branches].map(([k, b]) => [k, b.id]));
+      for (const nb of plan.newBranches) {
+        // Location comes later (admin pastes a Google Maps link); until then punches here are flagged.
+        const bid = db.prepare(
+          `INSERT INTO branches (name, address, lat, lng, radius_m, geofence_mode, active, location_set, created_at)
+           VALUES (?, '', 0, 0, ?, 'flag', 1, 0, ?)`,
+        ).run(nb.name, nb.radius_m, ctx.now()).lastInsertRowid;
+        branchIds.set(nb.name.toLowerCase(), Number(bid));
+      }
+      const insEmp = db.prepare(
+        `INSERT INTO employees (code, name, phone, designation, branch_id, salary_type, salary_paise, shift_start, shift_end,
+           weekly_offs, joined_on, active, pin_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+      );
+      const insItem = db.prepare('INSERT INTO pay_items (employee_id, kind, label, amount_paise, created_at) VALUES (?, ?, ?, ?, ?)');
+      return plan.rows.map(({ data: d, items }) => {
+        const pin = d.pin || randomPin();
+        const empId = insEmp.run(d.code, d.name, d.phone, d.designation, branchIds.get(d.branchKey), d.salary_type, d.salary_paise,
+          d.shift_start, d.shift_end, d.weekly_offs, d.joined_on, hashSecret(pin), ctx.now()).lastInsertRowid;
+        for (const it of items) insItem.run(empId, it.kind, it.label, it.amount_paise, ctx.now());
+        return { code: d.code, name: d.name, branch: d.branch, pin };
+      });
+    });
+    ctx.audit(req, 'employees.imported', { count: created.length, new_branches: plan.newBranches.map((b) => b.name) });
+    res.json({ ok: true, created, new_branches: plan.newBranches });
+  });
 
   // ---- dashboard ----
   r.get('/dashboard', (req, res) => {
