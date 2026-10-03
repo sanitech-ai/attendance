@@ -521,7 +521,10 @@ function importEmployees() {
         ? h('strong', { style: { color: 'var(--bad)' } }, `${bad} row(s) have problems. Fix them in the file and check again. Nothing has been imported.`)
         : h('strong', {}, `${res.rows.length} employee(s) ready to import.`),
       res.new_branches.length ? ` New branches to be created: ${res.new_branches.map((b) => `${b.name}${b.located ? ' 📍' : ''}`).join(', ')}.` : '',
-      res.new_branches.some((b) => !b.located) ? ' Branches without 📍 have no location yet — add a branch_maps_link column, or set it afterwards.' : ''),
+      res.new_branches.some((b) => !b.located) ? ' Branches without 📍 have no location yet — you can set it afterwards on the Branches page.' : ''),
+    res.link_warnings?.length ? h('div', { class: 'card', style: { borderColor: 'var(--warn)' } },
+      h('strong', {}, '⚠ Could not read these Maps links (the import can still go ahead; set these locations afterwards):'),
+      h('ul', { class: 'small' }, res.link_warnings.map((w) => h('li', {}, w)))) : '',
       table([
         { label: 'Line', render: (r) => String(r.line) },
         { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name || '—'), h('div', { class: 'small muted' }, `${r.code} · ${r.designation || ''}`)) },

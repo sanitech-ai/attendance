@@ -24,6 +24,13 @@ test('CSV parsing and value normalisation', () => {
   assert.equal(normWeeklyOff('funday'), null);
 });
 
+test('coordinates from a Google Maps page body', () => {
+  const { coordsFromPage } = require('../server/maps');
+  assert.deepEqual(coordsFromPage('<meta content="https://maps.google.com/maps/api/staticmap?center=17.4126%2C78.4482&amp;zoom=15">'), { lat: 17.4126, lng: 78.4482 });
+  assert.deepEqual(coordsFromPage('href="https://www.google.com/maps/place/X/@16.51,81.73,15z"'), { lat: 16.51, lng: 81.73 });
+  assert.equal(coordsFromPage('<html>nothing</html>'), null);
+});
+
 test('Google Maps links and coordinates', async () => {
   assert.deepEqual(parseCoords('17.4123, 78.4482'), { lat: 17.4123, lng: 78.4482 });
   assert.deepEqual(parseCoords('https://www.google.com/maps/place/Office/@17.40,78.40,17z/data=!3m1!4b1!4m6!3m5!8m2!3d17.4123!4d78.4482'), { lat: 17.4123, lng: 78.4482 }, 'pin beats view centre');
@@ -143,9 +150,9 @@ test('branch location comes from a Google Maps link (form and import)', async (t
   ].join('\n');
   r = await admin('POST', '/api/admin/employees/import', { csv, dry_run: true });
   assert.deepEqual(r.data.new_branches.map((x) => [x.name, x.located]), [['Site One', true], ['Site Two', false]]);
-  r = await admin('POST', '/api/admin/employees/import', { csv: `${csv}\nE4,D,Site Three,10000,https://evil.example.com/` });
-  assert.equal(r.data.error_count, 1);
-  assert.match(r.data.rows[3].errors[0], /Maps link for Site Three/);
+  r = await admin('POST', '/api/admin/employees/import', { csv: `${csv}\nE4,D,Site Three,10000,https://evil.example.com/`, dry_run: true });
+  assert.equal(r.data.error_count, 0, 'an unreadable link does not block the import');
+  assert.match(r.data.link_warnings[0], /^Site Three: Only Google Maps links/);
   r = await admin('POST', '/api/admin/employees/import', { csv });
   assert.equal(r.status, 200, JSON.stringify(r.data));
   const branches = (await admin('GET', '/api/admin/branches')).data;

@@ -143,7 +143,14 @@ module.exports = function adminRoutes(ctx) {
     const name = String(b.name || '').trim();
     if (!name) throw bad('Branch name is required');
     const link = String(b.maps_link || '').trim().slice(0, 2000);
-    if (link) Object.assign(b, await resolveMapsLink(link));
+    if (link) {
+      try {
+        Object.assign(b, await resolveMapsLink(link));
+      } catch (err) {
+        // Keep coordinates entered by hand / from the phone if the link can't be read.
+        if (b.lat === '' || b.lat == null || b.lng === '' || b.lng == null) throw err;
+      }
+    }
     const lat = Number(b.lat);
     const lng = Number(b.lng);
     if (b.lat === '' || b.lng === '' || !Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
@@ -300,13 +307,16 @@ module.exports = function adminRoutes(ctx) {
     if (csv.length > 2_000_000) throw bad('File is too large');
     const plan = planImport(db, csv);
     if (plan.error) throw bad(plan.error);
-    // Turn each branch's Google Maps link into coordinates; a bad link is reported on its rows.
+    // Turn each branch's Google Maps link into coordinates. A link that can't be read doesn't block the
+    // import: the branch is created without a location and the admin sets it afterwards.
     const branchCoords = new Map();
+    const linkWarnings = [];
     await Promise.all([...plan.branchLinks].map(async ([key, link]) => {
       try {
         branchCoords.set(key, await resolveMapsLink(link));
       } catch (err) {
-        for (const row of plan.rows) if (row.data.branchKey === key) row.errors.push(`Maps link for ${row.data.branch}: ${err.message}`);
+        const name = plan.rows.find((row) => row.data.branchKey === key)?.data.branch || key;
+        linkWarnings.push(`${name}: ${err.message}`);
       }
     }));
     for (const nb of plan.newBranches) nb.located = branchCoords.has(nb.name.toLowerCase());
@@ -316,7 +326,7 @@ module.exports = function adminRoutes(ctx) {
     }));
     const errorCount = plan.rows.filter((r) => r.errors.length).length;
     if (dryRun || errorCount) {
-      return res.json({ dry_run: true, rows: summary, new_branches: plan.newBranches, error_count: errorCount });
+      return res.json({ dry_run: true, rows: summary, new_branches: plan.newBranches, error_count: errorCount, link_warnings: linkWarnings });
     }
     const created = tx(db, () => {
       const branchIds = new Map([...plan.branches].map(([k, b]) => [k, b.id]));
@@ -350,7 +360,7 @@ module.exports = function adminRoutes(ctx) {
       });
     });
     ctx.audit(req, 'employees.imported', { count: created.length, new_branches: plan.newBranches.map((b) => b.name) });
-    res.json({ ok: true, created, new_branches: plan.newBranches });
+    res.json({ ok: true, created, new_branches: plan.newBranches, link_warnings: linkWarnings });
   });
 
   // ---- dashboard ----
