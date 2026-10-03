@@ -419,7 +419,8 @@ async function pageEmployees(el) {
       { label: '', render: (e) => h('div', { class: 'row' },
         h('button', { class: 'btn btn-sm', onclick: () => employeeForm(e) }, 'Edit'),
         h('button', { class: 'btn btn-sm', onclick: () => payItems(e) }, 'PF / allowances'),
-        h('button', { class: 'btn btn-sm', onclick: () => resetPin(e) }, 'Reset PIN')) },
+        h('button', { class: 'btn btn-sm', onclick: () => resetPin(e) }, 'Reset PIN'),
+        h('button', { class: 'btn btn-sm', title: 'Delete permanently', onclick: () => deleteEmployee(e) }, 'Delete')) },
     ], A.employees, { empty: 'No employees yet. Click “Add employee”.' }));
 }
 
@@ -562,6 +563,39 @@ function importEmployees() {
     { wide: true, onClose: () => route() });
 }
 
+async function deleteEmployee(e) {
+  const ok = await confirmDialog(`Delete ${e.name}?`,
+    `This permanently deletes ${e.name} (${e.code}) and all their attendance, selfies, documents, leaves and pay items. It cannot be undone. `
+    + 'If the person has left the company, use Edit → untick "Active" instead, which keeps their records for payroll.', 'Delete permanently', true);
+  if (!ok) return;
+  if (await run(() => api('DELETE', `/api/admin/employees/${e.id}`))) {
+    toast(`${e.name} deleted`);
+    route();
+  }
+}
+
+function resetStaff() {
+  formDialog({
+    title: 'Delete all staff and branches',
+    fields: [
+      { type: 'heading', label: 'This cannot be undone' },
+      { name: 'info', label: 'What is deleted', type: 'textarea', value: 'Every employee with all their attendance, selfies, documents, leaves, advances and pay items, and every branch. Admin accounts, settings, company-wide holidays and finalized payroll are kept.' },
+      { name: 'password', label: 'Your admin password', type: 'password', required: true, autocomplete: 'current-password' },
+      { name: 'confirm', label: 'Type DELETE to confirm', required: true, placeholder: 'DELETE' },
+    ],
+    submitLabel: 'Delete everything',
+    async onSubmit(v) {
+      if (v.confirm !== 'DELETE') throw new Error('Type DELETE in capital letters to confirm');
+      const r = await api('POST', '/api/admin/reset-staff', { password: v.password, confirm: v.confirm });
+      toast(`Deleted ${r.employees} employee(s) and ${r.branches} branch(es). You can import fresh data now.`);
+      go('employees');
+      return true;
+    },
+  });
+  const info = document.querySelector('.modal [name=info]');
+  if (info) info.readOnly = true;
+}
+
 function resetPin(e) {
   formDialog({
     title: `Reset PIN for ${e.name}`,
@@ -651,7 +685,12 @@ async function pageBranches(el) {
       { label: 'Outside radius', render: (b) => (b.geofence_mode === 'block' ? badge('Block punch', 'bad') : badge('Allow & flag', 'warn')) },
       { label: 'Staff', class: 'num', render: (b) => String(b.employee_count) },
       { label: 'Status', render: (b) => (b.active ? badge('active', 'ok') : badge('inactive', 'neutral')) },
-      { label: '', render: (b) => h('button', { class: 'btn btn-sm', onclick: () => branchForm(b) }, 'Edit') },
+      { label: '', render: (b) => h('div', { class: 'row' },
+        h('button', { class: 'btn btn-sm', onclick: () => branchForm(b) }, 'Edit'),
+        b.all_employee_count ? '' : h('button', { class: 'btn btn-sm', onclick: async (ev) => {
+          if (!(await confirmDialog(`Delete ${b.name}?`, 'This branch has no employees. It will be removed permanently.', 'Delete', true))) return;
+          if (await run(() => api('DELETE', `/api/admin/branches/${b.id}`), ev.currentTarget)) route();
+        } }, 'Delete')) },
     ], A.branches, { empty: 'No branches yet. Add your first branch — stand inside it and use “Use my current location”.' }));
 }
 
@@ -957,7 +996,11 @@ async function pageSettings(el, params) {
         return true;
       },
     }) }, 'Edit settings')));
-  el.replaceChildren(pageHead('Settings'), tabs, form);
+  const danger = h('div', { class: 'card', style: { maxWidth: '560px', marginTop: '16px', borderColor: 'var(--bad)' } },
+    h('h2', {}, 'Danger zone'),
+    h('p', { class: 'small muted' }, 'Start over: delete every employee and branch (for example to re-import staff from a corrected file).'),
+    h('button', { class: 'btn btn-danger', onclick: resetStaff }, 'Delete all staff and branches…'));
+  el.replaceChildren(pageHead('Settings'), tabs, form, danger);
 }
 
 const PAGE_FNS = {

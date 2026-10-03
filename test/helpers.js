@@ -38,6 +38,7 @@ async function startServer(startAt) {
 
   return {
     base,
+    dataDir,
     db,
     clock,
     client,

@@ -165,3 +165,49 @@ test('branch location comes from a Google Maps link (form and import)', async (t
   b = (await admin('GET', '/api/admin/branches')).data.find((x) => x.name === 'Site Two');
   assert.deepEqual([b.lat, b.lng, b.location_set], [28.4595, 77.0266, 1], 'existing unlocated branch gets the location');
 });
+
+test('delete employees / branches and full reset before re-import', async (t) => {
+  const s = await startServer(ist('2026-10-01', '08:00'));
+  t.after(() => s.close());
+  const fs = require('node:fs');
+  const admin = s.client();
+  await admin('POST', '/api/admin/setup', { username: 'owner', password: 'password123', name: 'Owner' });
+  let r = await admin('POST', '/api/admin/employees/import', { csv: CSV });
+  const pin = r.data.created[0].pin;
+
+  // Give one employee a punch (selfie file) and a document
+  const staff = s.client();
+  await staff('POST', '/api/employee/login', { code: 'SECPL0008', pin });
+  s.clock.now = ist('2026-10-01', '09:00');
+  await staff('POST', '/api/employee/punch', { kind: 'IN', lat: 17.41, lng: 78.44, accuracy: 10, selfie: JPEG });
+  const filesDir = require('node:path').join(s.dataDir, 'files');
+  assert.equal(fs.readdirSync(filesDir).length, 1);
+
+  // Branch with staff can't be deleted
+  const branches = (await admin('GET', '/api/admin/branches')).data;
+  r = await admin('DELETE', `/api/admin/branches/${branches[0].id}`);
+  assert.equal(r.status, 409);
+
+  // Single delete
+  const emps = (await admin('GET', '/api/admin/employees')).data;
+  const koushik = emps.find((e) => e.code === 'SECPL0437');
+  assert.equal((await admin('DELETE', `/api/admin/employees/${koushik.id}`)).status, 200);
+  assert.equal((await admin('GET', '/api/admin/employees')).data.length, 3);
+
+  // Reset needs the word DELETE and the right password
+  assert.equal((await admin('POST', '/api/admin/reset-staff', { password: 'password123', confirm: 'delete' })).status, 400);
+  r = await admin('POST', '/api/admin/reset-staff', { password: 'wrong-pass', confirm: 'DELETE' });
+  assert.equal(r.status, 403, 'wrong password is not a logout');
+  assert.equal((await admin('GET', '/api/admin/me')).status, 200, 'still logged in');
+  r = await admin('POST', '/api/admin/reset-staff', { password: 'password123', confirm: 'DELETE' });
+  assert.deepEqual(r.data, { ok: true, employees: 3, branches: 3 });
+  assert.equal((await admin('GET', '/api/admin/employees')).data.length, 0);
+  assert.equal((await admin('GET', '/api/admin/branches')).data.length, 0);
+  assert.equal(fs.readdirSync(filesDir).length, 0, 'selfies removed from disk');
+  assert.equal((await staff('GET', '/api/employee/me')).status, 401, 'deleted staff are logged out');
+
+  // Same file imports cleanly again
+  r = await admin('POST', '/api/admin/employees/import', { csv: CSV });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.equal(r.data.created.length, 4);
+});

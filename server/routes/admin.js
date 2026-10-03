@@ -133,7 +133,8 @@ module.exports = function adminRoutes(ctx) {
   // ---- branches ----
   r.get('/branches', (req, res) => {
     res.json(db.prepare(
-      `SELECT b.*, (SELECT COUNT(*) FROM employees e WHERE e.branch_id = b.id AND e.active = 1) AS employee_count
+      `SELECT b.*, (SELECT COUNT(*) FROM employees e WHERE e.branch_id = b.id AND e.active = 1) AS employee_count,
+         (SELECT COUNT(*) FROM employees e WHERE e.branch_id = b.id) AS all_employee_count
        FROM branches b ORDER BY b.active DESC, b.name`,
     ).all());
   });
@@ -178,6 +179,20 @@ module.exports = function adminRoutes(ctx) {
       .run(...v, id(req.params.id));
     if (!result.changes) throw notFound();
     ctx.audit(req, 'branch.updated', { id: Number(req.params.id) });
+    res.json({ ok: true });
+  });
+
+  r.delete('/branches/:id', (req, res) => {
+    const b = db.prepare('SELECT * FROM branches WHERE id = ?').get(id(req.params.id));
+    if (!b) throw notFound();
+    const n = db.prepare('SELECT COUNT(*) AS n FROM employees WHERE branch_id = ?').get(b.id).n;
+    if (n) throw new HttpError(409, `${n} employee(s) still belong to ${b.name}. Move or delete them first.`);
+    tx(db, () => {
+      db.prepare('UPDATE punches SET branch_id = NULL WHERE branch_id = ?').run(b.id);
+      db.prepare('DELETE FROM holidays WHERE branch_id = ?').run(b.id);
+      db.prepare('DELETE FROM branches WHERE id = ?').run(b.id);
+    });
+    ctx.audit(req, 'branch.deleted', { name: b.name });
     res.json({ ok: true });
   });
 
@@ -261,6 +276,59 @@ module.exports = function adminRoutes(ctx) {
     ctx.endAllSessions('employee', empId);
     ctx.audit(req, 'employee.pin_reset', { id: empId });
     res.json({ ok: true });
+  });
+
+  /** Permanently removes employees and everything recorded for them, including stored selfies/documents. */
+  function deleteEmployees(ids) {
+    if (!ids.length) return 0;
+    const marks = ids.map(() => '?').join(',');
+    const files = [
+      ...db.prepare(`SELECT selfie_file AS f FROM punches WHERE employee_id IN (${marks})`).all(...ids),
+      ...db.prepare(`SELECT stored_file AS f FROM documents WHERE employee_id IN (${marks})`).all(...ids),
+    ].map((r) => r.f);
+    tx(db, () => {
+      for (const table of ['punches', 'documents', 'leave_requests', 'day_overrides', 'ot_decisions', 'advances', 'adjustments', 'pay_items']) {
+        db.prepare(`DELETE FROM ${table} WHERE employee_id IN (${marks})`).run(...ids);
+      }
+      db.prepare(`DELETE FROM sessions WHERE kind = 'employee' AND user_id IN (${marks})`).run(...ids);
+      db.prepare(`DELETE FROM employees WHERE id IN (${marks})`).run(...ids);
+    });
+    for (const f of files) ctx.deleteFile(f);
+    return ids.length;
+  }
+
+  function checkPassword(req) {
+    const me = db.prepare('SELECT * FROM admins WHERE id = ?').get(req.admin.id);
+    try {
+      ctx.checkLogin('admins', me, String(req.body?.password ?? ''), 'password_hash');
+    } catch (err) {
+      // A wrong password here must not look like an expired session to the dashboard.
+      if (err.status === 401) throw new HttpError(403, 'Wrong password');
+      throw err;
+    }
+  }
+
+  r.delete('/employees/:id', (req, res) => {
+    const emp = db.prepare('SELECT id, code, name FROM employees WHERE id = ?').get(id(req.params.id));
+    if (!emp) throw notFound();
+    deleteEmployees([emp.id]);
+    ctx.audit(req, 'employee.deleted', { code: emp.code, name: emp.name });
+    res.json({ ok: true });
+  });
+
+  // Fresh start: removes every employee (with all their records) and every branch. Admins, settings,
+  // company-wide holidays and finalized payroll snapshots are kept.
+  r.post('/reset-staff', (req, res) => {
+    if (req.body?.confirm !== 'DELETE') throw bad('Type DELETE to confirm');
+    checkPassword(req);
+    const ids = db.prepare('SELECT id FROM employees').all().map((e) => e.id);
+    deleteEmployees(ids);
+    const branches = tx(db, () => {
+      db.prepare('DELETE FROM holidays WHERE branch_id IS NOT NULL').run();
+      return db.prepare('DELETE FROM branches').run().changes;
+    });
+    ctx.audit(req, 'staff.reset', { employees: ids.length, branches });
+    res.json({ ok: true, employees: ids.length, branches });
   });
 
   function pendingCounts() {
