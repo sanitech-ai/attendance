@@ -12,7 +12,8 @@ if (production && !process.env.APP_SECRET) {
 }
 
 const { app } = createApp({ dataDir, secret: process.env.APP_SECRET, secureCookies: production });
-app.listen(port, () => {
+// HOST=127.0.0.1 keeps the app reachable only through the HTTPS reverse proxy.
+app.listen(port, process.env.HOST || undefined, () => {
   console.log(`Attendance app running on http://localhost:${port}`);
   console.log(`  Staff app:  http://localhost:${port}/`);
   console.log(`  Admin:      http://localhost:${port}/admin`);

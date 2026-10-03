@@ -44,7 +44,19 @@ On first visit to `/admin` you create the owner account. Then add branches (stan
 You need one small server with a **persistent disk** and **HTTPS**. For 100 staff, the smallest plan of any VPS
 provider (1 vCPU / 1 GB RAM) is plenty.
 
-**Option A: VPS (e.g. DigitalOcean, Hetzner, AWS Lightsail) with Caddy for automatic HTTPS**
+**Quickest: one-command setup on a fresh Ubuntu server** (Oracle Cloud Always Free, AWS Lightsail, DigitalOcean…)
+
+Point the domain's DNS `A` record at the server, open ports 80/443 in the provider's firewall, then on the server:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sanitech-ai/attendance/main/scripts/setup-server.sh | sudo bash -s app.sanitech.in
+```
+
+It installs Node.js and Caddy (automatic HTTPS), opens the server firewall, runs the app as a service, generates
+`APP_SECRET` in `/etc/attendance.env`, and sets up nightly backups to `/var/backups/attendance` (14 days).
+Later updates: `sudo attendance-update`. To deploy a branch other than `main`, add `BRANCH=<name>` after `sudo`.
+
+**Option A (manual): VPS with Caddy for automatic HTTPS**
 
 ```bash
 # on the server (Ubuntu), after installing Node 22 and Caddy
