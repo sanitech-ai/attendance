@@ -304,9 +304,10 @@ function distanceM(lat1, lng1, lat2, lng2) {
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
-/** 850 m / 3.2 km */
+/** Distances are shown in km: 0.33 km, 4.25 km, 12.4 km, 285 km. */
 function fmtDistance(m) {
-  return m >= 1000 ? `${(m / 1000).toFixed(m >= 10000 ? 0 : 1)} km` : `${Math.round(m)} m`;
+  const km = m / 1000;
+  return `${km.toFixed(km >= 100 ? 0 : km >= 10 ? 1 : 2)} km`;
 }
 
 function mapLink(lat, lng, text = 'Map') {

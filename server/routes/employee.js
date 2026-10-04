@@ -4,7 +4,7 @@ const { getSettings } = require('../db');
 const { computeRange, summarize } = require('../attendance');
 const { employeeSalary } = require('../payroll');
 const {
-  bad, HttpError, istDate, haversineMeters, decodeDataUrl, requireDate, requireMonth, daysInMonth, hashSecret,
+  bad, HttpError, istDate, haversineMeters, fmtKm, decodeDataUrl, requireDate, requireMonth, daysInMonth, hashSecret,
 } = require('../util');
 const {
   allowedBranchIds, profileMissing, paymentDetails, publicEmployee, validPin, punchState, createDocument, sendStoredFile, notFound, DOC_COLUMNS,
@@ -183,7 +183,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     const mode = homeLocated ? home.geofence_mode : 'flag';
 
     if (!inside && mode === 'block') {
-      const where = nearest ? `${Math.round(nearest.distance)} m from ${nearest.branch.name}` : 'not near any branch';
+      const where = nearest ? `${fmtKm(nearest.distance)} from ${nearest.branch.name}` : 'not near any branch';
       throw new HttpError(403, `You are ${where}. Punch from inside one of your sites. If you are inside, wait for a better GPS signal and retry.`);
     }
 
@@ -194,7 +194,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     else if (!homeLocated && !inside) flags.push(`location of ${home?.name || 'home branch'} not set yet`);
     else if (!inside) {
       flags.push(nearest
-        ? `outside geofence (${Math.round(nearest.distance)} m from ${nearest.branch.name}${allowed.has(nearest.branch.id) ? '' : ', not one of their locations'})`
+        ? `outside geofence (${fmtKm(nearest.distance)} from ${nearest.branch.name}${allowed.has(nearest.branch.id) ? '' : ', not one of their locations'})`
         : 'no branch configured');
     }
     if (acc === null) flags.push('GPS accuracy unknown');

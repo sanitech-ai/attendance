@@ -281,7 +281,7 @@ function punchDetail(p) {
       h('dt', {}, 'Time'), h('dd', {}, fmtDateTime(p.at)),
       h('dt', {}, 'Work date'), h('dd', {}, fmtDate(p.work_date)),
       h('dt', {}, 'Home branch'), h('dd', {}, p.home_branch_name),
-      h('dt', {}, 'Nearest branch'), h('dd', {}, p.branch_name ? `${p.branch_name} (${p.distance_m} m, ${p.inside_geofence ? 'inside' : 'outside'} geofence)` : '—'),
+      h('dt', {}, 'Nearest branch'), h('dd', {}, p.branch_name ? `${p.branch_name} (${fmtDistance(p.distance_m)}, ${p.inside_geofence ? 'inside' : 'outside'} geofence)` : '—'),
       h('dt', {}, 'GPS'), h('dd', {}, `${p.lat.toFixed(6)}, ${p.lng.toFixed(6)} `, p.accuracy_m !== null ? `±${Math.round(p.accuracy_m)} m ` : '', mapLink(p.lat, p.lng, 'Open map')),
       h('dt', {}, 'Status'), h('dd', {}, p.status, p.flag_reason ? ` — ${p.flag_reason}` : '')),
     reviewButtons(p, () => dlg.close())), { wide: true });

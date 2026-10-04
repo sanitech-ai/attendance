@@ -109,7 +109,7 @@ test('distance is reported from the closest site, not just the closest allowed o
   assert.equal(r.data.status, 'flagged');
   assert.equal(r.data.branch_name, 'Head Office');
   assert.ok(r.data.distance_m > 300 && r.data.distance_m < 360, String(r.data.distance_m));
-  assert.match(r.data.flag_reason, /m from Head Office, not one of their locations/);
+  assert.match(r.data.flag_reason, /0\.3\d km from Head Office, not one of their locations/);
 
   r = await (await login('M2'))('POST', '/api/employee/punch', { kind: 'IN', ...HQ, accuracy: 15, selfie: JPEG });
   assert.equal(r.data.status, 'ok');

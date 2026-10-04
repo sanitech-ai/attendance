@@ -48,6 +48,12 @@ function shiftMinutes(start, end) {
   return diff;
 }
 
+/** Same format as the apps: 0.33 km, 4.25 km, 12.4 km, 285 km. */
+function fmtKm(m) {
+  const km = m / 1000;
+  return `${km.toFixed(km >= 100 ? 0 : km >= 10 ? 1 : 2)} km`;
+}
+
 function haversineMeters(lat1, lng1, lat2, lng2) {
   const R = 6371000;
   const rad = (x) => (x * Math.PI) / 180;
@@ -150,7 +156,7 @@ function decodeDataUrl(dataUrl, allowed, maxBytes) {
 }
 
 module.exports = {
-  istDate, istTime, istMs, addDays, weekday, daysInMonth, monthDates, shiftMinutes, haversineMeters,
+  istDate, istTime, istMs, addDays, weekday, daysInMonth, monthDates, shiftMinutes, haversineMeters, fmtKm,
   hashSecret, verifySecret, randomToken, sha256, encrypt, decrypt,
   HttpError, bad, isDate, isMonth, isTime, requireDate, requireMonth, toPaise, decodeDataUrl,
 };
