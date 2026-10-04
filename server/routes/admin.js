@@ -386,6 +386,22 @@ module.exports = function adminRoutes(ctx) {
     res.json({ ok: true });
   });
 
+  // New random PINs for many staff at once, returned once so the admin can send them out.
+  r.post('/employees/reset-pins', (req, res) => {
+    const ids = [...new Set((req.body?.ids || []).map(id))];
+    if (!ids.length) throw bad('Select at least one employee');
+    const out = tx(db, () => ids.map((empId) => {
+      const e = db.prepare('SELECT id, code, name, phone FROM employees WHERE id = ? AND active = 1').get(empId);
+      if (!e) throw notFound('Employee not found or inactive');
+      const pin = randomPin();
+      db.prepare('UPDATE employees SET pin_hash = ?, failed_logins = 0, locked_until = NULL WHERE id = ?').run(hashSecret(pin), empId);
+      ctx.endAllSessions('employee', empId);
+      return { ...e, pin };
+    }));
+    ctx.audit(req, 'employee.pins_reset', { ids });
+    res.json(out);
+  });
+
   /** Permanently removes employees and everything recorded for them, including stored selfies/documents. */
   function deleteEmployees(ids) {
     if (!ids.length) return 0;

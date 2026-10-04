@@ -561,6 +561,7 @@ async function pageEmployees(el, params) {
   const rate = (e) => `${money(e.salary_paise)} / ${{ monthly: 'month', daily: 'day', hourly: 'hour' }[e.salary_type]}`;
   el.replaceChildren(
     pageHead('Employees',
+      h('button', { class: 'btn', onclick: sendLogins }, '🔑 Send login details'),
       h('button', { class: 'btn', onclick: importEmployees }, 'Import from CSV'),
       h('button', { class: 'btn btn-primary', onclick: () => employeeForm() }, '+ Add employee')),
     !A.branches.length ? h('div', { class: 'card' }, 'Add a ', h('a', { href: '#/branches' }, 'branch'), ' first — every employee belongs to a branch.') : '',
@@ -770,6 +771,83 @@ function resetStaff() {
   });
   const info = document.querySelector('.modal [name=info]');
   if (info) info.readOnly = true;
+}
+
+/** Pick staff, give them new PINs, and get one ready-to-send message per person. */
+function sendLogins() {
+  const staff = A.employees.filter((e) => e.active);
+  const boxes = new Map();
+  const list = h('div', { class: 'pick-list' }, staff.map((e) => {
+    const box = h('input', { type: 'checkbox', checked: !e.last_login_at });
+    boxes.set(e.id, box);
+    return h('label', { class: 'pick' }, box,
+      h('span', { style: { flex: 1 } }, h('strong', {}, e.name), h('span', { class: 'small muted' }, ` · ${e.code} · ${e.branch_name}`)),
+      e.last_login_at ? badge(`using app since ${fmtDate(new Date(e.last_login_at + 5.5 * 3600000).toISOString().slice(0, 10))}`, 'ok') : badge('not logged in yet', 'warn'));
+  }));
+  const go = h('button', { class: 'btn btn-primary' });
+  const refresh = () => {
+    const n = [...boxes.values()].filter((b) => b.checked).length;
+    go.textContent = `Create new PINs for ${n} staff`;
+    go.disabled = !n;
+  };
+  list.addEventListener('change', refresh);
+  refresh();
+  const setAll = (v) => { boxes.forEach((b) => { b.checked = v; }); refresh(); };
+  const dlg = modal('Send login details', h('div', { class: 'stack' },
+    h('p', { class: 'small' }, 'PINs are stored scrambled, so existing PINs can’t be shown. This gives the ticked staff a ', h('strong', {}, 'new'), ' PIN and logs them out. Staff already using the app are unticked — they know their PIN.'),
+    h('div', { class: 'row' }, h('button', { class: 'btn btn-sm', onclick: () => setAll(true) }, 'Tick all'), h('button', { class: 'btn btn-sm', onclick: () => setAll(false) }, 'Untick all')),
+    list,
+    h('div', { class: 'form-actions' }, h('button', { class: 'btn', onclick: () => dlg.close() }, 'Cancel'), go)), { wide: true });
+  go.addEventListener('click', async () => {
+    const ids = [...boxes].filter(([, b]) => b.checked).map(([id]) => id);
+    const out = await run(() => api('POST', '/api/admin/employees/reset-pins', { ids }), go);
+    if (!out) return;
+    dlg.close();
+    showLogins(out);
+    loadEmployees();
+  });
+}
+
+function loginMessage(e) {
+  return `Hi ${e.name}, your Sanitech attendance app login:\n`
+    + `App: ${location.origin}\n`
+    + `Employee ID: ${e.code}\n`
+    + `PIN: ${e.pin}\n\n`
+    + 'Open the link in Chrome → ⋮ → Add to Home screen. After logging in, change your PIN under More → Change PIN.';
+}
+
+async function copyText(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    const ta = h('textarea', { style: { position: 'fixed', opacity: 0 } }, text);
+    document.body.append(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+  }
+  if (btn) { const old = btn.textContent; btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = old; }, 1500); }
+}
+
+function showLogins(rows) {
+  const all = rows.map(loginMessage).join('\n\n—————\n\n');
+  const table = ['Employee ID\tName\tPIN', ...rows.map((e) => `${e.code}\t${e.name}\t${e.pin}`)].join('\n');
+  const dlg = modal(`New login details (${rows.length})`, h('div', { class: 'stack' },
+    h('p', { class: 'small', style: { color: 'var(--warn)', fontWeight: 600 } }, '⚠ Send or note these now — the PINs can’t be shown again once you close this window (you can always create new ones).'),
+    h('div', { class: 'row' },
+      h('button', { class: 'btn btn-sm', onclick: (ev) => copyText(table, ev.currentTarget) }, 'Copy ID + PIN table'),
+      h('button', { class: 'btn btn-sm', onclick: (ev) => copyText(all, ev.currentTarget) }, 'Copy all messages')),
+    rows.map((e) => {
+      const msg = loginMessage(e);
+      const phone = String(e.phone || '').replace(/\D/g, '').slice(-10);
+      return h('div', { class: 'login-msg' },
+        h('div', { class: 'spread' }, h('strong', {}, `${e.name} · ${e.code} · PIN ${e.pin}`),
+          h('div', { class: 'row' },
+            h('button', { class: 'btn btn-sm', onclick: (ev) => copyText(msg, ev.currentTarget) }, 'Copy'),
+            phone.length === 10 ? h('a', { class: 'btn btn-sm btn-ok', href: `https://wa.me/91${phone}?text=${encodeURIComponent(msg)}`, target: '_blank', rel: 'noopener' }, 'WhatsApp') : '')),
+        h('pre', {}, msg));
+    }),
+    h('div', { class: 'form-actions' }, h('button', { class: 'btn btn-primary', onclick: () => dlg.close() }, 'Done'))), { wide: true });
 }
 
 function resetPin(e) {

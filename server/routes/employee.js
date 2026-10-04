@@ -34,6 +34,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       const emp = db.prepare('SELECT * FROM employees WHERE code = ? AND active = 1').get(code.trim());
       ctx.checkLogin('employees', emp, pin, 'pin_hash');
       ctx.startSession(res, 'employee', emp.id);
+      db.prepare('UPDATE employees SET last_login_at = ? WHERE id = ?').run(ctx.now(), emp.id);
       res.json({ ok: true });
     });
 

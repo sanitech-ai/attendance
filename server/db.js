@@ -292,6 +292,11 @@ function migrate(db) {
     // Anyone already on a personal shift keeps it.
     db.exec(`UPDATE employees SET follow_branch_shift = 0 WHERE shift_start != '09:00' OR shift_end != '18:00'`);
   }
+  if (!empCols.includes('last_login_at')) {
+    // Tells the admin who has started using the app (and so already knows their PIN).
+    db.exec('ALTER TABLE employees ADD COLUMN last_login_at INTEGER');
+    db.exec(`UPDATE employees SET last_login_at = (SELECT MAX(at) FROM punches p WHERE p.employee_id = employees.id)`);
+  }
   if (!empCols.includes('is_manager')) {
     // Managers can mark app-flagged items as verified/doubtful; they cannot change anything.
     db.exec('ALTER TABLE employees ADD COLUMN is_manager INTEGER NOT NULL DEFAULT 0');

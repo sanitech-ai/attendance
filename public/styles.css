@@ -272,3 +272,11 @@ tr.row-flag td { background: var(--warn-bg); }
 .ok-text { color: var(--ok); font-weight: 600; }
 .toolbar .check { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; }
 .toolbar .check input { width: auto; min-width: 0; }
+
+/* Send login details */
+.pick-list { max-height: 50vh; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }
+.pick { display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.pick:last-child { border-bottom: 0; }
+.pick input { width: auto; }
+.login-msg { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.login-msg pre { white-space: pre-wrap; font: inherit; font-size: 13px; margin: 8px 0 0; color: var(--muted); }
