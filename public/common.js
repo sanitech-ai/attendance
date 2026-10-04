@@ -19,6 +19,13 @@ function h(tag, attrs, ...children) {
   return el;
 }
 
+// A selfie that was deleted: show a grey "no photo" box instead of a broken image.
+document.addEventListener('error', (e) => {
+  const img = e.target;
+  if (img.tagName !== 'IMG' || !/\/selfie$/.test(img.src)) return;
+  img.replaceWith(h('div', { class: `${img.className} img-gone`, title: 'Photo deleted' }, 'No photo'));
+}, true);
+
 class ApiError extends Error {
   constructor(status, message) {
     super(message);

@@ -240,7 +240,7 @@ async function pagePunches(el, params) {
   const statusKind = { ok: 'ok', flagged: 'warn', approved: 'info', rejected: 'bad' };
 
   el.replaceChildren(
-    pageHead('Punches & selfies'),
+    pageHead('Punches & selfies', A.me.admin.can_edit_attendance ? h('button', { class: 'btn', onclick: purgeSelfies }, '🗑 Delete selfies…') : ''),
     h('div', { class: 'toolbar' },
       h('input', { type: 'date', value: f.date, onchange: (e) => set('date')(e.target.value), 'aria-label': 'Date' }),
       f.date ? h('button', { class: 'btn btn-sm', onclick: () => set('date')('') }, 'All dates') : '',
@@ -262,6 +262,33 @@ async function pagePunches(el, params) {
       { label: '', render: (p) => reviewButtons(p) },
     ], rows, { empty: 'No punches match these filters.', rowClass: (p) => (p.status === 'flagged' ? 'row-flag' : null) }),
     rows.length === 500 ? h('p', { class: 'small muted' }, 'Showing the latest 500 punches. Use filters to narrow down.') : '');
+}
+
+function purgeSelfies() {
+  formDialog({
+    title: 'Delete selfies',
+    fields: [
+      { type: 'heading', label: 'This cannot be undone' },
+      { name: 'mode', label: 'What to delete', type: 'select', value: 'photos', options: [
+        { value: 'photos', label: 'Only the selfie photos — keep punch times & locations (attendance stays the same)' },
+        { value: 'punches', label: 'The whole punches with their selfies — those days lose their punches' },
+      ] },
+      { name: 'up_to', label: 'Up to and including (leave blank for everything until now)', type: 'date', value: '' },
+      { name: 'include_visits', label: 'Also delete field visit selfies', type: 'checkbox', value: true },
+      { name: 'password', label: 'Your admin password', type: 'password', required: true, autocomplete: 'current-password' },
+      { name: 'confirm', label: 'Type DELETE to confirm', required: true, placeholder: 'DELETE' },
+    ],
+    submitLabel: 'Delete',
+    async onSubmit(v) {
+      if (v.confirm !== 'DELETE') throw new Error('Type DELETE in capital letters to confirm');
+      const r = await api('POST', '/api/admin/punches/purge', v);
+      toast(r.mode === 'photos'
+        ? `Deleted the photos of ${r.punches} punch(es)${r.visits ? ` and ${r.visits} field visit(s)` : ''}. Punch times and locations are kept.`
+        : `Deleted ${r.punches} punch(es)${r.visits ? ` and ${r.visits} field visit(s)` : ''}.${r.skipped ? ` ${r.skipped} punch(es) in finalized payroll months were kept.` : ''}`);
+      route();
+      return true;
+    },
+  });
 }
 
 function reviewButtons(p, after) {

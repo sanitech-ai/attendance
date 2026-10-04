@@ -160,6 +160,7 @@ const DOC_COLUMNS = `id, employee_id, doc_type, label, doc_number, mime, size_by
   uploaded_by, uploaded_at, reviewed_at`;
 
 function sendStoredFile(ctx, res, storedFile, mime, filename) {
+  if (!storedFile) throw notFound('This photo was deleted');
   const buf = ctx.readFile(storedFile);
   res.set({
     'Content-Type': mime,

@@ -563,6 +563,43 @@ module.exports = function adminRoutes(ctx) {
     res.json({ ok: true, employees: ids.length, branches });
   });
 
+  // Delete punch selfies (and field visit selfies) up to a date. Either only the photos (punch times
+  // and locations stay, so attendance is unchanged) or the whole punches (those days lose them).
+  r.post('/punches/purge', (req, res) => {
+    requireAttendanceEditor(req);
+    const b = req.body || {};
+    if (b.confirm !== 'DELETE') throw bad('Type DELETE to confirm');
+    checkPassword(req);
+    const mode = b.mode === 'punches' ? 'punches' : 'photos';
+    const upTo = b.up_to ? requireDate(b.up_to) : '9999-12-31';
+    const closed = db.prepare('SELECT month FROM payroll_runs').all().map((x) => x.month);
+    const openMonth = (col) => (closed.length ? ` AND substr(${col}, 1, 7) NOT IN (${closed.map(() => '?').join(',')})` : '');
+    const punches = db.prepare(`SELECT id, selfie_file, work_date FROM punches WHERE work_date <= ?${mode === 'punches' ? openMonth('work_date') : ''}`)
+      .all(upTo, ...(mode === 'punches' ? closed : []));
+    const visits = b.include_visits ? db.prepare('SELECT id, selfie_file FROM visits WHERE work_date <= ?').all(upTo) : [];
+    tx(db, () => {
+      for (const p of punches) {
+        if (mode === 'punches') {
+          db.prepare("DELETE FROM verifications WHERE kind = 'punch' AND ref = ?").run(String(p.id));
+          db.prepare('DELETE FROM punches WHERE id = ?').run(p.id);
+        } else {
+          db.prepare("UPDATE punches SET selfie_file = '' WHERE id = ?").run(p.id);
+        }
+      }
+      for (const v of visits) {
+        if (mode === 'punches') db.prepare('DELETE FROM visits WHERE id = ?').run(v.id);
+        else db.prepare("UPDATE visits SET selfie_file = '' WHERE id = ?").run(v.id);
+      }
+    });
+    // Files go after the database change, so a crash can't leave rows pointing at missing photos.
+    for (const x of [...punches, ...visits]) if (x.selfie_file) ctx.deleteFile(x.selfie_file);
+    const skipped = mode === 'punches' && closed.length
+      ? db.prepare(`SELECT COUNT(*) AS n FROM punches WHERE work_date <= ? AND substr(work_date, 1, 7) IN (${closed.map(() => '?').join(',')})`).get(upTo, ...closed).n
+      : 0;
+    ctx.audit(req, 'selfies.purged', { mode, up_to: b.up_to || null, punches: punches.length, visits: visits.length, skipped });
+    res.json({ ok: true, mode, punches: punches.length, visits: visits.length, skipped });
+  });
+
   /** Manager checks keyed by ref, with the manager's name, for showing next to flagged items. */
   function verificationsFor(kind) {
     return new Map(db.prepare(
