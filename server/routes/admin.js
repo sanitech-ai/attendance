@@ -10,6 +10,7 @@ const {
 } = require('../util');
 const {
   profileMissing, paymentDetails, publicEmployee, validPin, createDocument, sendStoredFile, notFound, assertMonthOpen, DOC_COLUMNS,
+  measurePunch,
 } = require('../common');
 
 const OVERRIDE_STATUSES = ['present', 'half_day', 'absent', 'paid_leave', 'unpaid_leave', 'week_off', 'holiday'];
@@ -262,13 +263,15 @@ module.exports = function adminRoutes(ctx) {
   });
 
   /** Validates a branch; a Google Maps link, when given, is the source of the coordinates. */
-  async function branchInput(b) {
+  async function branchInput(b, before) {
     const name = String(b.name || '').trim();
     if (!name) throw bad('Branch name is required');
     const link = String(b.maps_link || '').trim().slice(0, 2000);
-    if (link) {
+    // Only read the link when it is new or changed. Re-reading it on every edit used to move a pin
+    // silently whenever Google answered the server with a different spot.
+    if (link && !(before && before.location_set && link === before.maps_link)) {
       try {
-        Object.assign(b, await resolveMapsLink(link));
+        Object.assign(b, await resolveMapsLink(link, ctx.fetch));
       } catch (err) {
         // Keep coordinates entered by hand / from the phone if the link can't be read.
         if (b.lat === '' || b.lat == null || b.lng === '' || b.lng == null) throw err;
@@ -295,20 +298,62 @@ module.exports = function adminRoutes(ctx) {
       .prepare('INSERT INTO branches (name, address, lat, lng, radius_m, geofence_mode, active, maps_link, shift_start, shift_end, field_visits, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(...v, ctx.now()).lastInsertRowid;
     ctx.audit(req, 'branch.created', { id: Number(newId), name: v[0] });
-    res.json({ ok: true, id: Number(newId) });
+    // A new site can be the closest one for recent punches.
+    res.json({ ok: true, id: Number(newId), remeasured: remeasurePunches() });
   });
 
   r.put('/branches/:id', async (req, res) => {
-    const v = await branchInput(req.body || {});
-    const result = db
-      .prepare('UPDATE branches SET name = ?, address = ?, lat = ?, lng = ?, radius_m = ?, geofence_mode = ?, active = ?, maps_link = ?, shift_start = ?, shift_end = ?, field_visits = ?, location_set = 1 WHERE id = ?')
-      .run(...v, id(req.params.id));
-    if (!result.changes) throw notFound();
+    const before = db.prepare('SELECT * FROM branches WHERE id = ?').get(id(req.params.id));
+    if (!before) throw notFound();
+    const v = await branchInput(req.body || {}, before);
+    db.prepare('UPDATE branches SET name = ?, address = ?, lat = ?, lng = ?, radius_m = ?, geofence_mode = ?, active = ?, maps_link = ?, shift_start = ?, shift_end = ?, field_visits = ?, location_set = 1 WHERE id = ?')
+      .run(...v, before.id);
+    const moved = !before.location_set || before.lat !== v[2] || before.lng !== v[3] || before.radius_m !== v[4] || before.active !== v[6];
+    const remeasured = moved ? remeasurePunches() : 0;
     // Staff who follow their branch's timing get the new office hours.
     db.prepare('UPDATE employees SET shift_start = ?, shift_end = ? WHERE branch_id = ? AND follow_branch_shift = 1').run(v[8], v[9], id(req.params.id));
-    ctx.audit(req, 'branch.updated', { id: Number(req.params.id) });
-    res.json({ ok: true });
+    ctx.audit(req, 'branch.updated', { id: Number(req.params.id), moved, from: moved ? [before.lat, before.lng] : undefined });
+    res.json({ ok: true, remeasured });
   });
+
+  // Move a pin to an exact spot (e.g. where the branch's staff actually punch).
+  r.post('/branches/:id/pin', (req, res) => {
+    const lat = Number(req.body?.lat);
+    const lng = Number(req.body?.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 90 || Math.abs(lng) > 180) throw bad('Invalid location');
+    const before = db.prepare('SELECT * FROM branches WHERE id = ?').get(id(req.params.id));
+    if (!before) throw notFound();
+    db.prepare('UPDATE branches SET lat = ?, lng = ?, location_set = 1 WHERE id = ?').run(lat, lng, before.id);
+    const remeasured = remeasurePunches();
+    ctx.audit(req, 'branch.pin_moved', { id: before.id, from: [before.lat, before.lng], to: [lat, lng] });
+    res.json({ ok: true, remeasured });
+  });
+
+  /**
+   * After a pin moves, measure the last 45 days of punches again so their distances and flags are right.
+   * Punches an admin already approved/rejected, and finalized months, are left alone. A punch that was
+   * only flagged for its location and is now inside its site becomes OK.
+   */
+  function remeasurePunches() {
+    const settings = getSettings(db);
+    const closed = new Set(db.prepare('SELECT month FROM payroll_runs').all().map((r2) => r2.month));
+    const rows = db.prepare("SELECT * FROM punches WHERE at > ? AND status IN ('ok', 'flagged')").all(ctx.now() - 45 * 86400000);
+    const emps = new Map();
+    const upd = db.prepare('UPDATE punches SET branch_id = ?, distance_m = ?, inside_geofence = ?, status = ?, flag_reason = ? WHERE id = ?');
+    let n = 0;
+    tx(db, () => {
+      for (const p of rows) {
+        if (closed.has(p.work_date.slice(0, 7))) continue;
+        if (!emps.has(p.employee_id)) emps.set(p.employee_id, db.prepare('SELECT * FROM employees WHERE id = ?').get(p.employee_id));
+        const m = measurePunch(db, emps.get(p.employee_id), p.lat, p.lng, p.accuracy_m, settings);
+        const status = p.status === 'flagged' && !m.flags.length ? 'ok' : p.status;
+        const reason = status === 'ok' && p.status === 'ok' ? p.flag_reason : m.flags.join('; ') || null;
+        upd.run(m.nearest?.branch.id ?? null, m.nearest ? Math.round(m.nearest.distance) : null, m.inside ? 1 : 0, status, reason, p.id);
+        n++;
+      }
+    });
+    return n;
+  }
 
   r.delete('/branches/:id', (req, res) => {
     const b = db.prepare('SELECT * FROM branches WHERE id = ?').get(id(req.params.id));
@@ -326,7 +371,10 @@ module.exports = function adminRoutes(ctx) {
   });
 
   r.post('/maps/resolve', async (req, res) => {
-    res.json(await resolveMapsLink(String(req.body?.link || '')));
+    const c = await resolveMapsLink(String(req.body?.link || ''), ctx.fetch);
+    // Name the place so a wrong spot is obvious straight away (best effort).
+    const place = await placeName(c.lat, c.lng, ctx.fetch).catch(() => '');
+    res.json({ ...c, place });
   });
 
   // ---- employees ----
@@ -599,7 +647,7 @@ module.exports = function adminRoutes(ctx) {
     const linkWarnings = [];
     await Promise.all([...plan.branchLinks].map(async ([key, link]) => {
       try {
-        branchCoords.set(key, await resolveMapsLink(link));
+        branchCoords.set(key, await resolveMapsLink(link, ctx.fetch));
       } catch (err) {
         const name = plan.rows.find((row) => row.data.branchKey === key)?.data.branch || key;
         linkWarnings.push(`${name}: ${err.message}`);

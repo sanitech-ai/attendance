@@ -1,5 +1,5 @@
 'use strict';
-const { bad, decodeDataUrl, HttpError } = require('./util');
+const { bad, decodeDataUrl, HttpError, haversineMeters, fmtKm } = require('./util');
 
 const PUNCH_WINDOW_MS = 20 * 60 * 60 * 1000;
 const DOC_TYPES = ['aadhaar', 'pan', 'bank', 'photo', 'other'];
@@ -46,6 +46,39 @@ function paymentDetails(b) {
     out.bank_ifsc = ifsc;
   }
   return out;
+}
+
+/**
+ * Where a punch was taken, relative to the company's sites. Inside any of the employee's own sites
+ * counts; otherwise the distance is to the closest company site of any kind (so someone next to the
+ * head office isn't shown as "300 km from <another site>"), plus how far they are from their own branch.
+ */
+function measurePunch(db, emp, lat, lng, acc, settings) {
+  const allowed = allowedBranchIds(db, emp);
+  const measured = db.prepare('SELECT * FROM branches WHERE active = 1 AND location_set = 1').all()
+    .map((b) => ({ branch: b, distance: haversineMeters(lat, lng, b.lat, b.lng) }))
+    .sort((x, y) => x.distance - y.distance);
+  const insideAt = measured.find((m) => allowed.has(m.branch.id) && m.distance <= m.branch.radius_m);
+  const nearest = insideAt || measured[0] || null;
+  const inside = !!insideAt;
+  const home = db.prepare('SELECT * FROM branches WHERE id = ?').get(emp.branch_id);
+  const homeLocated = !!home?.location_set;
+  const homeDist = homeLocated ? measured.find((m) => m.branch.id === home.id)?.distance : null;
+
+  const flags = [];
+  // Inside a company site that isn't one of theirs: say so, so the admin sees why it was flagged.
+  const otherSite = !inside && measured.find((m) => !allowed.has(m.branch.id) && m.distance <= m.branch.radius_m)?.branch;
+  if (otherSite) flags.push(`at ${otherSite.name}, which is not one of their locations`);
+  else if (!homeLocated && !inside) flags.push(`location of ${home?.name || 'home branch'} not set yet`);
+  else if (!inside) {
+    flags.push(nearest
+      ? `outside geofence (${fmtKm(nearest.distance)} from ${nearest.branch.name}${allowed.has(nearest.branch.id) ? '' : ', not one of their locations'})`
+      : 'no branch configured');
+  }
+  if (!inside && homeDist != null && nearest && nearest.branch.id !== home.id) flags.push(`${fmtKm(homeDist)} from their branch ${home.name}`);
+  if (acc === null || acc === undefined) flags.push('GPS accuracy unknown');
+  else if (acc > settings.max_accuracy_m) flags.push(`low GPS accuracy (±${Math.round(acc)} m)`);
+  return { nearest, inside, flags, mode: homeLocated ? home.geofence_mode : 'flag' };
 }
 
 /** Branches an employee may punch at: their own plus any extra locations an admin allowed. */
@@ -148,6 +181,6 @@ function assertMonthOpen(db, month) {
 }
 
 module.exports = {
-  allowedBranchIds, profileMissing, paymentDetails, publicEmployee, validPin, punchState, createDocument, normalizeDocNumber, sendStoredFile, notFound,
+  allowedBranchIds, measurePunch, profileMissing, paymentDetails, publicEmployee, validPin, punchState, createDocument, normalizeDocNumber, sendStoredFile, notFound,
   assertMonthOpen, DOC_COLUMNS, DOC_TYPES,
 };

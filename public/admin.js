@@ -979,7 +979,15 @@ async function checkLocations() {
         ? h('div', {}, `${r.punches} · ${r.inside_share}% inside`, h('div', { class: 'small muted' }, `usually ${fmtDistance(r.staff_distance_m)} from pin `, mapLink(r.staff_lat, r.staff_lng, 'map')))
         : h('span', { class: 'muted' }, 'none yet')) },
       { label: 'What to look at', render: (r) => h('div', { class: 'small' }, [...r.issues.map((t) => h('div', { style: { color: 'var(--bad)' } }, `• ${t}`)), ...r.notes.map((t) => h('div', { class: 'muted' }, `• ${t}`))]) },
-      { label: '', render: (r) => h('button', { class: 'btn btn-sm', onclick: () => { dlg.close(); branchForm(A.branches.find((b) => b.id === r.id)); } }, 'Fix') },
+      { label: '', render: (r) => h('div', { class: 'row' },
+        r.punches >= 3 && r.staff_distance_m > Math.max(2 * r.radius_m, 500)
+          ? h('button', { class: 'btn btn-sm btn-primary', title: 'Move the pin to where this branch’s staff usually punch', onclick: async (ev) => {
+            if (!(await confirmDialog(`Move the ${r.name} pin?`, `The pin will move ${fmtDistance(r.staff_distance_m)} to where its staff usually punch (${r.staff_lat.toFixed(5)}, ${r.staff_lng.toFixed(5)}). Open the map first if you want to double-check. Recent punches will be measured again.`, 'Move pin'))) return;
+            const res = await run(() => api('POST', `/api/admin/branches/${r.id}/pin`, { lat: r.staff_lat, lng: r.staff_lng }), ev.currentTarget);
+            if (res) { toast(`Pin moved. ${res.remeasured} recent punch(es) measured again.`); dlg.close(); await loadBranches(); route(); }
+          } }, 'Move pin here')
+          : '',
+        h('button', { class: 'btn btn-sm', onclick: () => { dlg.close(); branchForm(A.branches.find((b) => b.id === r.id)); } }, 'Fix')) },
     ], rows, { rowClass: (r) => (r.verdict === 'bad' ? 'row-flag' : null) })));
 }
 
@@ -1000,7 +1008,7 @@ function autoLocateFromLink(form) {
       if (mine !== seq) return;
       form.querySelector('[name=lat]').value = r.lat.toFixed(6);
       form.querySelector('[name=lng]').value = r.lng.toFixed(6);
-      status.replaceChildren('✅ Location found: ', mapLink(r.lat, r.lng, `${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}`), ' — check it is the right place.');
+      status.replaceChildren('✅ Location found', r.place ? [': ', h('strong', {}, r.place)] : '', ' (', mapLink(r.lat, r.lng, `${r.lat.toFixed(5)}, ${r.lng.toFixed(5)}`), ') — check it is the right place.');
     } catch (err) {
       if (mine === seq) status.textContent = `⚠ ${err.message}`;
     }
@@ -1045,9 +1053,8 @@ function branchForm(b) {
     ],
     async onSubmit(v) {
       const body = { ...v, radius_m: Number(v.radius_m), active: b ? v.active : true };
-      if (b) await api('PUT', `/api/admin/branches/${b.id}`, body);
-      else await api('POST', '/api/admin/branches', body);
-      toast('Branch saved');
+      const r = b ? await api('PUT', `/api/admin/branches/${b.id}`, body) : await api('POST', '/api/admin/branches', body);
+      toast(r.remeasured ? `Branch saved. ${r.remeasured} recent punch(es) were measured again against the new location.` : 'Branch saved');
       route();
       return true;
     },

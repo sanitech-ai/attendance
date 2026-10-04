@@ -35,8 +35,10 @@ function parseCoords(text) {
 /** Coordinates embedded in a Google Maps HTML page (static map centre/marker or @lat,lng URLs). */
 function coordsFromPage(html) {
   const patterns = [
-    /[?&;](?:markers|center)=(-?\d+\.\d+)(?:%2C|,)(-?\d+\.\d+)/,
+    // The place's own marker first; the map view centre can be somewhere else entirely.
     /!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/,
+    /[?&;]markers=(-?\d+\.\d+)(?:%2C|,)(-?\d+\.\d+)/,
+    /[?&;]center=(-?\d+\.\d+)(?:%2C|,)(-?\d+\.\d+)/,
     /\/@(-?\d+\.\d+),(-?\d+\.\d+)/,
   ];
   for (const re of patterns) {

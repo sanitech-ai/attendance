@@ -261,6 +261,7 @@ function punchFlow(kind, today, note = '') {
   }
 
   const maxAcc = today.max_accuracy_m || 100;
+  const home = today.branches.find((b) => b.id === today.home_branch_id);
   const opened = Date.now();
   // Phones often report a rough network location first and a precise GPS fix a few seconds later.
   // Wait for a good fix (or 25 seconds) so the punch isn't measured from a wrong spot.
@@ -277,6 +278,8 @@ function punchFlow(kind, today, note = '') {
         ? h('div', {}, h('strong', {}, '⏳ Finding your exact location…'), h('div', { class: 'small' }, 'Stay still for a few seconds, ideally near a window or outdoors.'))
         : h('div', {}, h('strong', {}, n?.inside ? `✓ At ${n.b.name}` : n ? `${fmtDistance(n.dist)} from ${n.b.name}` : 'No branch set up'),
           n && !n.inside ? h('span', {}, n.b.mine === false ? ' — not one of your locations' : ' — outside branch area') : ''),
+      !rough && n && !n.inside && n.b.id !== today.home_branch_id && home
+        ? h('div', { class: 'small' }, `Your branch ${home.name}: ${fmtDistance(distanceM(latitude, longitude, home.lat, home.lng))}`) : '',
       h('div', { class: 'small' }, `GPS accuracy ±${Math.round(accuracy)} m`));
     if (captured) confirm.disabled = !gpsReady();
   }

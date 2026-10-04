@@ -7,7 +7,7 @@ const {
   bad, HttpError, istDate, haversineMeters, fmtKm, decodeDataUrl, requireDate, requireMonth, daysInMonth, hashSecret,
 } = require('../util');
 const {
-  allowedBranchIds, profileMissing, paymentDetails, publicEmployee, validPin, punchState, createDocument, sendStoredFile, notFound, DOC_COLUMNS,
+  allowedBranchIds, measurePunch, profileMissing, paymentDetails, publicEmployee, validPin, punchState, createDocument, sendStoredFile, notFound, DOC_COLUMNS,
 } = require('../common');
 
 const PUNCH_KINDS = ['IN', 'OUT', 'OT_IN', 'OT_OUT'];
@@ -166,39 +166,11 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     }
 
     const settings = getSettings(db);
-    // Only the employee's own branch and their extra locations count. Branches whose GPS location
-    // hasn't been entered yet can't be measured against.
-    const allowed = allowedBranchIds(db, emp);
-    const allBranches = db.prepare('SELECT * FROM branches WHERE active = 1 AND location_set = 1').all();
-    // Inside any of their sites counts (closest first). Otherwise report the distance to the closest
-    // company site of any kind, so a person standing next to the head office isn't shown as
-    // "300 km from <some other site>".
-    const measured = allBranches.map((b) => ({ branch: b, distance: haversineMeters(lat, lng, b.lat, b.lng) }))
-      .sort((x, y) => x.distance - y.distance);
-    const insideAt = measured.find((m) => allowed.has(m.branch.id) && m.distance <= m.branch.radius_m);
-    const nearest = insideAt || measured[0] || null;
-    const inside = !!insideAt;
-    const home = db.prepare('SELECT * FROM branches WHERE id = ?').get(emp.branch_id);
-    const homeLocated = !!home?.location_set;
-    const mode = homeLocated ? home.geofence_mode : 'flag';
-
+    const { nearest, inside, mode, flags } = measurePunch(db, emp, lat, lng, acc, settings);
     if (!inside && mode === 'block') {
       const where = nearest ? `${fmtKm(nearest.distance)} from ${nearest.branch.name}` : 'not near any branch';
       throw new HttpError(403, `You are ${where}. Punch from inside one of your sites. If you are inside, wait for a better GPS signal and retry.`);
     }
-
-    const flags = [];
-    // Inside a company site that isn't one of theirs: say so, so the admin sees why it was flagged.
-    const otherSite = !inside && measured.find((m) => !allowed.has(m.branch.id) && m.distance <= m.branch.radius_m)?.branch;
-    if (otherSite) flags.push(`at ${otherSite.name}, which is not one of their locations`);
-    else if (!homeLocated && !inside) flags.push(`location of ${home?.name || 'home branch'} not set yet`);
-    else if (!inside) {
-      flags.push(nearest
-        ? `outside geofence (${fmtKm(nearest.distance)} from ${nearest.branch.name}${allowed.has(nearest.branch.id) ? '' : ', not one of their locations'})`
-        : 'no branch configured');
-    }
-    if (acc === null) flags.push('GPS accuracy unknown');
-    else if (acc > settings.max_accuracy_m) flags.push(`low GPS accuracy (±${Math.round(acc)} m)`);
 
     const workDate = kind === 'OUT' ? state.openIn.work_date : kind === 'OT_OUT' ? state.openOt.work_date : istDate(now);
     const file = ctx.saveFile(buf);
