@@ -32,7 +32,7 @@ function parseCookies(header = '') {
   return out;
 }
 
-function createApp({ dataDir, secret, secureCookies = false, now = () => Date.now() } = {}) {
+function createApp({ dataDir, secret, secureCookies = false, now = () => Date.now(), fetchImpl = (...a) => fetch(...a) } = {}) {
   fs.mkdirSync(path.join(dataDir, 'files'), { recursive: true });
   const db = openDb(path.join(dataDir, 'attendance.db'));
   const key = loadKey(dataDir, secret);
@@ -41,6 +41,7 @@ function createApp({ dataDir, secret, secureCookies = false, now = () => Date.no
   const ctx = {
     db,
     now,
+    fetch: fetchImpl,
     saveFile(buf) {
       const name = `${crypto.randomUUID()}.bin`;
       fs.writeFileSync(path.join(filesDir, name), encrypt(buf, key));

@@ -928,7 +928,9 @@ function uploadFor(employeeId) {
 async function pageBranches(el) {
   await loadBranches();
   el.replaceChildren(
-    pageHead('Branches', h('button', { class: 'btn btn-primary', onclick: () => branchForm() }, '+ Add branch')),
+    pageHead('Branches',
+      h('button', { class: 'btn', onclick: checkLocations }, '🔎 Check all locations'),
+      h('button', { class: 'btn btn-primary', onclick: () => branchForm() }, '+ Add branch')),
     h('p', { class: 'muted small' }, 'Staff punch at their own branch, plus any extra locations you allow on their employee page. Anywhere else, the punch is flagged for your review or blocked, depending on their branch’s setting.'),
     table([
       { label: 'Branch', render: (b) => h('div', {}, h('strong', {}, b.name), b.address ? h('div', { class: 'small muted' }, b.address) : '') },
@@ -947,6 +949,38 @@ async function pageBranches(el) {
           if (await run(() => api('DELETE', `/api/admin/branches/${b.id}`), ev.currentTarget)) route();
         } }, 'Delete')) },
     ], A.branches, { empty: 'No branches yet. Add your first branch — stand inside it and use “Use my current location”.' }));
+}
+
+/** Checks every branch pin against its Google Maps link, its place name and where its staff punch. */
+async function checkLocations() {
+  const body = h('div', { class: 'empty' }, '⏳ Checking each branch (Google Maps link, place name, staff punches)… this takes a few seconds per branch.');
+  const dlg = modal('Branch location check', body, { wide: true });
+  body.closest('.modal').style.maxWidth = '1240px';
+  let rows;
+  try {
+    rows = await api('GET', '/api/admin/branches/check');
+  } catch (err) {
+    body.textContent = `Error: ${err.message}`;
+    return;
+  }
+  const kind = { ok: ['Looks right', 'ok'], check: ['Check', 'warn'], bad: ['Looks off', 'bad'] };
+  const off = rows.filter((r) => r.verdict === 'bad').length;
+  body.replaceWith(h('div', { class: 'stack' },
+    h('p', {}, off ? h('strong', { style: { color: 'var(--bad)' } }, `⚠ ${off} branch location(s) look off.`) : h('strong', { style: { color: 'var(--ok)' } }, '✅ No branch location looks off.'),
+      ' Also read the place name of each pin — if it isn’t where that office or site really is, fix the pin.'),
+    table([
+      { label: 'Branch', render: (r) => h('div', {}, h('strong', {}, r.name), r.address ? h('div', { class: 'small muted' }, r.address) : '') },
+      { label: 'Result', render: (r) => badge(...kind[r.verdict]) },
+      { label: 'Saved pin is in', render: (r) => (r.location_set ? h('div', {}, r.place || '—', h('div', { class: 'small' }, mapLink(r.lat, r.lng, 'Open pin'))) : '—') },
+      { label: 'Google Maps link', render: (r) => (r.link_distance_m !== undefined
+        ? h('div', {}, r.link_distance_m <= Math.max(r.radius_m, 200) ? 'Matches' : `${fmtDistance(r.link_distance_m)} apart`, h('div', { class: 'small' }, h('a', { href: r.maps_link, target: '_blank', rel: 'noopener' }, 'Open link')))
+        : r.maps_link ? h('a', { href: r.maps_link, target: '_blank', rel: 'noopener' }, 'Open link') : '—') },
+      { label: 'Staff punches (60 days)', render: (r) => (r.punches
+        ? h('div', {}, `${r.punches} · ${r.inside_share}% inside`, h('div', { class: 'small muted' }, `usually ${fmtDistance(r.staff_distance_m)} from pin `, mapLink(r.staff_lat, r.staff_lng, 'map')))
+        : h('span', { class: 'muted' }, 'none yet')) },
+      { label: 'What to look at', render: (r) => h('div', { class: 'small' }, [...r.issues.map((t) => h('div', { style: { color: 'var(--bad)' } }, `• ${t}`)), ...r.notes.map((t) => h('div', { class: 'muted' }, `• ${t}`))]) },
+      { label: '', render: (r) => h('button', { class: 'btn btn-sm', onclick: () => { dlg.close(); branchForm(A.branches.find((b) => b.id === r.id)); } }, 'Fix') },
+    ], rows, { rowClass: (r) => (r.verdict === 'bad' ? 'row-flag' : null) })));
 }
 
 /** Reads coordinates from a pasted Google Maps link as soon as it is entered. */

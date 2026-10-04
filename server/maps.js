@@ -77,4 +77,18 @@ async function resolveMapsLink(input, fetchImpl = fetch) {
   throw bad('Could not find a location in that link. In Google Maps, long-press the spot to drop a pin, then Share → Copy link.');
 }
 
-module.exports = { parseCoords, coordsFromPage, resolveMapsLink };
+/** Town / district / state for a point, from OpenStreetMap (free; max ~1 request per second). */
+async function placeName(lat, lng, fetchImpl = fetch) {
+  const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=14&addressdetails=1&lat=${lat}&lon=${lng}`;
+  const res = await fetchImpl(url, {
+    signal: AbortSignal.timeout(8000),
+    headers: { 'User-Agent': 'Sanitech-Attendance/1.0 (https://app.sanitech.in)', 'Accept-Language': 'en-IN,en' },
+  });
+  if (!res.ok) throw new Error(`lookup failed (${res.status})`);
+  const a = (await res.json()).address || {};
+  const local = a.suburb || a.neighbourhood || a.village || a.town || a.city_district || a.city || a.hamlet || '';
+  const district = a.state_district || a.county || (local !== a.city ? a.city : '') || '';
+  return [...new Set([local, district, a.state].filter(Boolean))].join(', ');
+}
+
+module.exports = { parseCoords, coordsFromPage, resolveMapsLink, placeName };

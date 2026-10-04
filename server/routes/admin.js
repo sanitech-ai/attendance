@@ -4,9 +4,9 @@ const { getSettings, tx } = require('../db');
 const { computeRange, summarize } = require('../attendance');
 const { computePayroll } = require('../payroll');
 const { planImport, randomPin } = require('../importer');
-const { resolveMapsLink } = require('../maps');
+const { resolveMapsLink, placeName } = require('../maps');
 const {
-  bad, HttpError, istDate, requireDate, requireMonth, daysInMonth, hashSecret, toPaise, isTime, isDate,
+  bad, HttpError, istDate, requireDate, requireMonth, daysInMonth, hashSecret, toPaise, isTime, isDate, haversineMeters, fmtKm,
 } = require('../util');
 const {
   profileMissing, paymentDetails, publicEmployee, validPin, createDocument, sendStoredFile, notFound, assertMonthOpen, DOC_COLUMNS,
@@ -204,6 +204,61 @@ module.exports = function adminRoutes(ctx) {
          (SELECT COUNT(*) FROM employees e WHERE e.branch_id = b.id) AS all_employee_count
        FROM branches b ORDER BY b.active DESC, b.name`,
     ).all());
+  });
+
+  // Sanity check of every branch pin: does it match its Google Maps link, where is it, and where do its
+  // staff actually punch from?
+  r.get('/branches/check', async (req, res) => {
+    const branches = db.prepare('SELECT * FROM branches WHERE active = 1 ORDER BY name').all();
+    const since = ctx.now() - 60 * 24 * 3600 * 1000;
+    const median = (xs) => { const s = [...xs].sort((a, b) => a - b); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+    const out = [];
+    for (const [i, b] of branches.entries()) {
+      const row = { id: b.id, name: b.name, address: b.address, maps_link: b.maps_link, radius_m: b.radius_m, location_set: !!b.location_set, lat: b.lat, lng: b.lng, issues: [], notes: [] };
+      if (!b.location_set) {
+        row.issues.push('No location saved yet');
+        row.verdict = 'bad';
+        out.push(row);
+        continue;
+      }
+      if (b.maps_link) {
+        try {
+          const l = await resolveMapsLink(b.maps_link, ctx.fetch);
+          row.link_lat = l.lat; row.link_lng = l.lng;
+          row.link_distance_m = Math.round(haversineMeters(b.lat, b.lng, l.lat, l.lng));
+          if (row.link_distance_m > Math.max(b.radius_m, 200)) row.issues.push(`Saved pin is ${fmtKm(row.link_distance_m)} away from where the Google Maps link points`);
+        } catch (err) {
+          row.notes.push(`Could not read the Google Maps link (${err.message})`);
+        }
+      } else {
+        row.notes.push('No Google Maps link saved — the pin was set by hand or from a phone');
+      }
+      try {
+        if (i) await new Promise((r2) => setTimeout(r2, 1100));
+        row.place = await placeName(b.lat, b.lng, ctx.fetch);
+      } catch (err) {
+        row.notes.push(`Could not look up the place name (${err.message})`);
+      }
+      const pts = db.prepare(
+        `SELECT p.lat, p.lng FROM punches p JOIN employees e ON e.id = p.employee_id
+         WHERE e.branch_id = ? AND p.at > ? AND p.status != 'rejected' AND (p.accuracy_m IS NULL OR p.accuracy_m <= 100)`,
+      ).all(b.id, since);
+      row.punches = pts.length;
+      if (pts.length) {
+        const mid = { lat: median(pts.map((p) => p.lat)), lng: median(pts.map((p) => p.lng)) };
+        row.staff_lat = mid.lat; row.staff_lng = mid.lng;
+        row.staff_distance_m = Math.round(haversineMeters(b.lat, b.lng, mid.lat, mid.lng));
+        row.inside_share = Math.round(100 * pts.filter((p) => haversineMeters(b.lat, b.lng, p.lat, p.lng) <= b.radius_m).length / pts.length);
+        if (pts.length >= 3 && row.staff_distance_m > Math.max(2 * b.radius_m, 500)) {
+          row.issues.push(`Staff of this branch usually punch ${fmtKm(row.staff_distance_m)} from the pin (${100 - row.inside_share}% of their punches are outside the radius)`);
+        } else if (pts.length >= 3 && row.inside_share < 50) {
+          row.notes.push(`${100 - row.inside_share}% of staff punches are outside the ${b.radius_m} m radius — the radius may be too small`);
+        }
+      }
+      row.verdict = row.issues.length ? 'bad' : row.notes.length ? 'check' : 'ok';
+      out.push(row);
+    }
+    res.json(out);
   });
 
   /** Validates a branch; a Google Maps link, when given, is the source of the coordinates. */

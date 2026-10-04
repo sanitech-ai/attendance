@@ -11,10 +11,10 @@ const PDF = `data:application/pdf;base64,${Buffer.from('%PDF-1.4\n%test\n').toSt
 /** IST wall-clock -> epoch ms. */
 const ist = (date, time) => Date.parse(`${date}T${time}:00+05:30`);
 
-async function startServer(startAt) {
+async function startServer(startAt, opts = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'attendance-test-'));
   const clock = { now: startAt };
-  const { app, db } = createApp({ dataDir, secret: 'test-secret', now: () => clock.now });
+  const { app, db } = createApp({ dataDir, secret: 'test-secret', now: () => clock.now, ...opts });
   const server = await new Promise((resolve) => {
     const s = app.listen(0, () => resolve(s));
   });
