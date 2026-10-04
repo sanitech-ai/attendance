@@ -240,7 +240,7 @@ async function pagePunches(el, params) {
   const statusKind = { ok: 'ok', flagged: 'warn', approved: 'info', rejected: 'bad' };
 
   el.replaceChildren(
-    pageHead('Punches & selfies', A.me.admin.can_edit_attendance ? h('button', { class: 'btn', onclick: purgeSelfies }, '🗑 Delete selfies…') : ''),
+    pageHead('Punches & selfies'),
     h('div', { class: 'toolbar' },
       h('input', { type: 'date', value: f.date, onchange: (e) => set('date')(e.target.value), 'aria-label': 'Date' }),
       f.date ? h('button', { class: 'btn btn-sm', onclick: () => set('date')('') }, 'All dates') : '',
@@ -264,32 +264,21 @@ async function pagePunches(el, params) {
     rows.length === 500 ? h('p', { class: 'small muted' }, 'Showing the latest 500 punches. Use filters to narrow down.') : '');
 }
 
-function purgeSelfies() {
-  formDialog({
-    title: 'Delete selfies',
-    fields: [
-      { type: 'heading', label: 'This cannot be undone' },
-      { name: 'mode', label: 'What to delete', type: 'select', value: 'photos', options: [
-        { value: 'photos', label: 'Only the selfie photos — keep punch times & locations (attendance stays the same)' },
-        { value: 'punches', label: 'The whole punches with their selfies — those days lose their punches' },
-      ] },
-      { name: 'up_to', label: 'Up to and including (leave blank for everything until now)', type: 'date', value: '' },
-      { name: 'include_visits', label: 'Also delete field visit selfies', type: 'checkbox', value: true },
-      { name: 'password', label: 'Your admin password', type: 'password', required: true, autocomplete: 'current-password' },
-      { name: 'confirm', label: 'Type DELETE to confirm', required: true, placeholder: 'DELETE' },
-    ],
-    submitLabel: 'Delete',
-    async onSubmit(v) {
-      if (v.confirm !== 'DELETE') throw new Error('Type DELETE in capital letters to confirm');
-      const r = await api('POST', '/api/admin/punches/purge', v);
-      toast(r.mode === 'photos'
-        ? `Deleted the photos of ${r.punches} punch(es)${r.visits ? ` and ${r.visits} field visit(s)` : ''}. Punch times and locations are kept.`
-        : `Deleted ${r.punches} punch(es)${r.visits ? ` and ${r.visits} field visit(s)` : ''}.${r.skipped ? ` ${r.skipped} punch(es) in finalized payroll months were kept.` : ''}`);
-      route();
-      return true;
-    },
-  });
+/** Delete one punch or field visit (with its selfie) after confirming. */
+async function deleteEntry(kind, row, after) {
+  const what = kind === 'punch' ? `${PUNCH_LABEL[row.kind]} of ${row.name} at ${fmtDateTime(row.at)}` : `field visit of ${row.name} at ${fmtDateTime(row.at)} (${row.note})`;
+  const extra = kind === 'punch' ? ' Attendance for that day is worked out again without it.' : '';
+  if (!(await confirmDialog('Delete this entry?', `The ${what} and its selfie will be deleted permanently.${extra}`, 'Delete', true))) return;
+  if (await run(() => api('DELETE', `/api/admin/${kind === 'punch' ? 'punches' : 'visits'}/${row.id}`))) {
+    toast('Entry deleted');
+    if (after) after();
+    route();
+  }
 }
+
+const deleteButton = (kind, row, after) => (A.me.admin.can_edit_attendance
+  ? h('button', { class: 'btn btn-sm btn-danger-text', title: 'Delete this entry and its selfie', onclick: () => deleteEntry(kind, row, after) }, '🗑 Delete')
+  : '');
 
 function reviewButtons(p, after) {
   const act = (status) => async (e) => {
@@ -301,7 +290,8 @@ function reviewButtons(p, after) {
   };
   return h('div', { class: 'row' },
     p.status !== 'approved' && p.status !== 'ok' ? h('button', { class: 'btn btn-sm btn-ok', onclick: act('approved') }, 'Approve') : '',
-    p.status !== 'rejected' ? h('button', { class: 'btn btn-sm', onclick: act('rejected') }, 'Reject') : '');
+    p.status !== 'rejected' ? h('button', { class: 'btn btn-sm', onclick: act('rejected') }, 'Reject') : '',
+    deleteButton('punch', p, after));
 }
 
 function punchDetail(p) {
@@ -373,7 +363,8 @@ function visitButtons(v, after) {
   };
   return h('div', { class: 'row' },
     v.status !== 'approved' ? h('button', { class: 'btn btn-sm btn-ok', onclick: act('approved') }, 'Approve') : '',
-    v.status !== 'rejected' ? h('button', { class: 'btn btn-sm', onclick: act('rejected') }, 'Reject') : '');
+    v.status !== 'rejected' ? h('button', { class: 'btn btn-sm', onclick: act('rejected') }, 'Reject') : '',
+    deleteButton('visit', v, after));
 }
 
 function visitDetail(v) {

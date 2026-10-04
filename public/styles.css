@@ -82,6 +82,7 @@ h3 { font-size: 15px; }
 .btn-primary:hover { background: var(--primary); filter: brightness(1.08); }
 .btn-danger { background: var(--bad); border-color: var(--bad); color: #fff; }
 .btn-ok { background: var(--ok); border-color: var(--ok); color: #fff; }
+.btn-danger-text { color: var(--bad); }
 .btn-sm { min-height: 30px; padding: 4px 10px; font-size: 13px; border-radius: 8px; }
 .btn-block { width: 100%; }
 .icon-btn {
