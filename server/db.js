@@ -98,6 +98,23 @@ CREATE TABLE IF NOT EXISTS late_decisions (
   PRIMARY KEY (employee_id, work_date)
 );
 
+-- Selfies taken during the day at outside places (banks, GST office, clients); reviewed by an admin.
+CREATE TABLE IF NOT EXISTS visits (
+  id          INTEGER PRIMARY KEY,
+  employee_id INTEGER NOT NULL REFERENCES employees(id),
+  at          INTEGER NOT NULL,
+  work_date   TEXT NOT NULL,
+  lat         REAL NOT NULL,
+  lng         REAL NOT NULL,
+  accuracy_m  REAL,
+  note        TEXT NOT NULL,
+  selfie_file TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+  reviewed_by INTEGER REFERENCES admins(id),
+  reviewed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS visits_date ON visits(work_date);
+
 -- Extra branches (besides their own) where an employee may punch in/out.
 CREATE TABLE IF NOT EXISTS employee_locations (
   employee_id INTEGER NOT NULL REFERENCES employees(id),
@@ -244,6 +261,7 @@ function migrate(db) {
     db.exec('ALTER TABLE branches ADD COLUMN location_set INTEGER NOT NULL DEFAULT 1');
   }
   if (!cols.includes('maps_link')) db.exec("ALTER TABLE branches ADD COLUMN maps_link TEXT NOT NULL DEFAULT ''");
+  if (!cols.includes('field_visits')) db.exec('ALTER TABLE branches ADD COLUMN field_visits INTEGER NOT NULL DEFAULT 0');
   if (!cols.includes('shift_start')) {
     // Office timings per branch; staff who follow their branch get these copied into their shift.
     db.exec("ALTER TABLE branches ADD COLUMN shift_start TEXT NOT NULL DEFAULT '09:00'");
@@ -263,6 +281,12 @@ function migrate(db) {
   }
 
   const empCols = db.prepare('PRAGMA table_info(employees)').all().map((c) => c.name);
+  if (!empCols.includes('upi_id')) {
+    // Where staff want their salary paid (they can fill these in themselves).
+    db.exec("ALTER TABLE employees ADD COLUMN upi_id TEXT NOT NULL DEFAULT ''");
+    db.exec("ALTER TABLE employees ADD COLUMN bank_account TEXT NOT NULL DEFAULT ''");
+    db.exec("ALTER TABLE employees ADD COLUMN bank_ifsc TEXT NOT NULL DEFAULT ''");
+  }
   if (!empCols.includes('follow_branch_shift')) {
     db.exec('ALTER TABLE employees ADD COLUMN follow_branch_shift INTEGER NOT NULL DEFAULT 1');
     // Anyone already on a personal shift keeps it.

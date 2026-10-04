@@ -7,7 +7,7 @@ const {
   bad, HttpError, istDate, haversineMeters, decodeDataUrl, requireDate, requireMonth, daysInMonth, hashSecret,
 } = require('../util');
 const {
-  allowedBranchIds, publicEmployee, validPin, punchState, createDocument, sendStoredFile, notFound, DOC_COLUMNS,
+  allowedBranchIds, profileMissing, paymentDetails, publicEmployee, validPin, punchState, createDocument, sendStoredFile, notFound, DOC_COLUMNS,
 } = require('../common');
 
 const PUNCH_KINDS = ['IN', 'OUT', 'OT_IN', 'OT_OUT'];
@@ -46,17 +46,30 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
   }
 
   r.get('/me', (req, res) => {
-    const branch = db.prepare('SELECT id, name, address FROM branches WHERE id = ?').get(req.employee.branch_id);
+    const branch = db.prepare('SELECT id, name, address, field_visits FROM branches WHERE id = ?').get(req.employee.branch_id);
     const settings = getSettings(db);
     res.json({
       employee: publicEmployee(req.employee),
       branch,
+      can_visit: !!branch?.field_visits,
+      profile_missing: profileMissing(db, req.employee),
       company_name: settings.company_name,
       late_warnings: settings.late_warnings,
       late_max_minutes: settings.late_max_minutes,
       salary_visible_from: settings.salary_visible_from,
       grace_minutes: settings.grace_minutes,
     });
+  });
+
+  // Staff fill in their own phone number and where they want to be paid.
+  r.post('/profile', (req, res) => {
+    const v = paymentDetails(req.body || {});
+    const cols = Object.keys(v);
+    if (!cols.length) throw bad('Nothing to save');
+    db.prepare(`UPDATE employees SET ${cols.map((c) => `${c} = ?`).join(', ')} WHERE id = ?`).run(...cols.map((c) => v[c]), req.employee.id);
+    ctx.audit(req, 'employee.profile_updated', { fields: cols });
+    const fresh = db.prepare('SELECT * FROM employees WHERE id = ?').get(req.employee.id);
+    res.json({ ok: true, profile_missing: profileMissing(db, fresh) });
   });
 
   r.post('/pin', (req, res) => {
@@ -94,7 +107,40 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       branches,
       home_branch_id: emp.branch_id,
       shift: { start: emp.shift_start, end: emp.shift_end },
+      can_visit: !!db.prepare('SELECT field_visits FROM branches WHERE id = ?').get(emp.branch_id)?.field_visits,
+      on_duty: !!state.openIn,
+      visits: db.prepare('SELECT id, at, note, status, lat, lng FROM visits WHERE employee_id = ? AND work_date = ? ORDER BY at').all(emp.id, workDate),
     });
+  });
+
+  // ---- visit selfies: staff who go out during the day (banks, GST office, clients) ----
+  r.post('/visit', (req, res) => {
+    const now = ctx.now();
+    const emp = req.employee;
+    const branch = db.prepare('SELECT field_visits FROM branches WHERE id = ?').get(emp.branch_id);
+    if (!branch?.field_visits) throw new HttpError(403, 'Visit selfies are not turned on for your branch');
+    const { lat, lng, accuracy, selfie, note } = req.body || {};
+    const place = String(note || '').trim();
+    if (!place) throw bad('Write where you are (e.g. HDFC Bank, Banjara Hills)');
+    if (typeof lat !== 'number' || typeof lng !== 'number' || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+      throw bad('Location is required. Allow location access and try again.');
+    }
+    const { buf } = decodeDataUrl(selfie, ['image/jpeg'], SELFIE_MAX_BYTES);
+    const state = punchState(db, emp.id, now);
+    if (!state.openIn) throw new HttpError(409, 'Punch in first — visit selfies are for while you are on duty.');
+    const last = db.prepare('SELECT at FROM visits WHERE employee_id = ? ORDER BY at DESC LIMIT 1').get(emp.id);
+    if (last && now - last.at < 60000) throw new HttpError(409, 'You just added a visit. Wait a minute before adding another.');
+    const file = ctx.saveFile(buf);
+    const id = db.prepare(
+      'INSERT INTO visits (employee_id, at, work_date, lat, lng, accuracy_m, note, selfie_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    ).run(emp.id, now, state.openIn.work_date, lat, lng, typeof accuracy === 'number' ? accuracy : null, place.slice(0, 200), file).lastInsertRowid;
+    res.json({ ok: true, id: Number(id), at: now });
+  });
+
+  r.get('/visits/:id/selfie', (req, res) => {
+    const v = db.prepare('SELECT selfie_file FROM visits WHERE id = ? AND employee_id = ?').get(Number(req.params.id), req.employee.id);
+    if (!v) throw notFound();
+    sendStoredFile(ctx, res, v.selfie_file, 'image/jpeg', `visit-${req.params.id}.jpg`);
   });
 
   r.post('/punch', (req, res) => {

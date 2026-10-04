@@ -6,6 +6,48 @@ const DOC_TYPES = ['aadhaar', 'pan', 'bank', 'photo', 'other'];
 const DOC_MIME = ['image/jpeg', 'image/png', 'application/pdf'];
 const DOC_MAX_BYTES = 8 * 1024 * 1024;
 
+/**
+ * What an employee still has to provide: phone, Aadhaar, PAN, and a way to be paid (UPI or bank).
+ * A rejected document counts as missing.
+ */
+function profileMissing(db, emp) {
+  const docs = new Set(db.prepare("SELECT doc_type FROM documents WHERE employee_id = ? AND status != 'rejected'").all(emp.id).map((d) => d.doc_type));
+  const missing = [];
+  if (!/\d{10}$/.test(String(emp.phone || '').replace(/\D/g, ''))) missing.push('phone');
+  if (!docs.has('aadhaar')) missing.push('aadhaar');
+  if (!docs.has('pan')) missing.push('pan');
+  if (!emp.upi_id && !(emp.bank_account && emp.bank_ifsc)) missing.push('payment');
+  return missing;
+}
+
+const UPI_RE = /^[a-zA-Z0-9._-]{2,256}@[a-zA-Z][a-zA-Z0-9]{1,63}$/;
+const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+
+/** Validates phone / UPI / bank fields (any subset); returns normalised values. */
+function paymentDetails(b) {
+  const out = {};
+  if (b.phone !== undefined) {
+    const digits = String(b.phone || '').replace(/\D/g, '').replace(/^91(?=\d{10}$)/, '');
+    if (digits && !/^[6-9]\d{9}$/.test(digits)) throw bad('Enter a 10-digit mobile number');
+    out.phone = digits;
+  }
+  if (b.upi_id !== undefined) {
+    const upi = String(b.upi_id || '').trim();
+    if (upi && !UPI_RE.test(upi)) throw bad('UPI ID looks wrong — it should look like name@okhdfcbank or 98xxxxxx@ybl');
+    out.upi_id = upi;
+  }
+  if (b.bank_account !== undefined || b.bank_ifsc !== undefined) {
+    const acct = String(b.bank_account || '').replace(/\s/g, '');
+    const ifsc = String(b.bank_ifsc || '').trim().toUpperCase();
+    if (acct && !/^\d{9,18}$/.test(acct)) throw bad('Bank account number should be 9 to 18 digits');
+    if (ifsc && !IFSC_RE.test(ifsc)) throw bad('IFSC should look like HDFC0001234');
+    if (!!acct !== !!ifsc) throw bad('Enter both the bank account number and the IFSC code');
+    out.bank_account = acct;
+    out.bank_ifsc = ifsc;
+  }
+  return out;
+}
+
 /** Branches an employee may punch at: their own plus any extra locations an admin allowed. */
 function allowedBranchIds(db, emp) {
   const extra = db.prepare('SELECT branch_id FROM employee_locations WHERE employee_id = ?').all(emp.id).map((r) => r.branch_id);
@@ -106,6 +148,6 @@ function assertMonthOpen(db, month) {
 }
 
 module.exports = {
-  allowedBranchIds, publicEmployee, validPin, punchState, createDocument, normalizeDocNumber, sendStoredFile, notFound,
+  allowedBranchIds, profileMissing, paymentDetails, publicEmployee, validPin, punchState, createDocument, normalizeDocNumber, sendStoredFile, notFound,
   assertMonthOpen, DOC_COLUMNS, DOC_TYPES,
 };

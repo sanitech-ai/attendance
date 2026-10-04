@@ -111,7 +111,8 @@ const STATUS_SHORT = {
   present: 'P', half_day: 'HD', absent: 'A', paid_leave: 'PL', unpaid_leave: 'UL', week_off: 'WO', holiday: 'H',
   not_marked: '–', upcoming: '', not_joined: '', working: 'W',
 };
-const PUNCH_LABEL = { IN: 'Punch In', OUT: 'Punch Out', OT_IN: 'Start Overtime', OT_OUT: 'End Overtime' };
+const PUNCH_LABEL = { IN: 'Punch In', OUT: 'Punch Out', OT_IN: 'Start Overtime', OT_OUT: 'End Overtime', VISIT: 'Visit selfie' };
+const MISSING_LABEL = { phone: 'Mobile number', aadhaar: 'Aadhaar card', pan: 'PAN card', payment: 'Bank account or UPI ID (for salary)' };
 const DOC_LABEL = { aadhaar: 'Aadhaar', pan: 'PAN', bank: 'Bank passbook / cheque', photo: 'Photo', other: 'Other' };
 const FLAG_LABEL = {
   flagged_punch: 'Location flagged', missing_out: 'No punch out', short_hours: 'Short hours', missing_ot_out: 'OT not ended',

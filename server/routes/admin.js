@@ -9,7 +9,7 @@ const {
   bad, HttpError, istDate, requireDate, requireMonth, daysInMonth, hashSecret, toPaise, isTime, isDate,
 } = require('../util');
 const {
-  publicEmployee, validPin, createDocument, sendStoredFile, notFound, assertMonthOpen, DOC_COLUMNS,
+  profileMissing, paymentDetails, publicEmployee, validPin, createDocument, sendStoredFile, notFound, assertMonthOpen, DOC_COLUMNS,
 } = require('../common');
 
 const OVERRIDE_STATUSES = ['present', 'half_day', 'absent', 'paid_leave', 'unpaid_leave', 'week_off', 'holiday'];
@@ -167,7 +167,7 @@ module.exports = function adminRoutes(ctx) {
     checkPassword(req);
     tx(db, () => {
       // Keep the records this admin approved; just drop the link to the deleted account.
-      for (const [table, col] of [['punches', 'reviewed_by'], ['ot_decisions', 'decided_by'], ['late_decisions', 'decided_by'], ['day_overrides', 'set_by'],
+      for (const [table, col] of [['punches', 'reviewed_by'], ['ot_decisions', 'decided_by'], ['late_decisions', 'decided_by'], ['visits', 'reviewed_by'], ['day_overrides', 'set_by'],
         ['leave_requests', 'decided_by'], ['documents', 'reviewed_by'], ['payroll_runs', 'finalized_by']]) {
         db.prepare(`UPDATE ${table} SET ${col} = NULL WHERE ${col} = ?`).run(target.id);
       }
@@ -230,13 +230,14 @@ module.exports = function adminRoutes(ctx) {
     const shiftStart = b.shift_start || '09:00';
     const shiftEnd = b.shift_end || '18:00';
     if (!isTime(shiftStart) || !isTime(shiftEnd)) throw bad('Office timings must be HH:MM');
-    return [name, String(b.address || '').slice(0, 300), lat, lng, radius, b.geofence_mode, b.active === false ? 0 : 1, link, shiftStart, shiftEnd];
+    return [name, String(b.address || '').slice(0, 300), lat, lng, radius, b.geofence_mode, b.active === false ? 0 : 1, link, shiftStart, shiftEnd,
+      b.field_visits ? 1 : 0];
   }
 
   r.post('/branches', async (req, res) => {
     const v = await branchInput(req.body || {});
     const newId = db
-      .prepare('INSERT INTO branches (name, address, lat, lng, radius_m, geofence_mode, active, maps_link, shift_start, shift_end, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .prepare('INSERT INTO branches (name, address, lat, lng, radius_m, geofence_mode, active, maps_link, shift_start, shift_end, field_visits, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(...v, ctx.now()).lastInsertRowid;
     ctx.audit(req, 'branch.created', { id: Number(newId), name: v[0] });
     res.json({ ok: true, id: Number(newId) });
@@ -245,7 +246,7 @@ module.exports = function adminRoutes(ctx) {
   r.put('/branches/:id', async (req, res) => {
     const v = await branchInput(req.body || {});
     const result = db
-      .prepare('UPDATE branches SET name = ?, address = ?, lat = ?, lng = ?, radius_m = ?, geofence_mode = ?, active = ?, maps_link = ?, shift_start = ?, shift_end = ?, location_set = 1 WHERE id = ?')
+      .prepare('UPDATE branches SET name = ?, address = ?, lat = ?, lng = ?, radius_m = ?, geofence_mode = ?, active = ?, maps_link = ?, shift_start = ?, shift_end = ?, field_visits = ?, location_set = 1 WHERE id = ?')
       .run(...v, id(req.params.id));
     if (!result.changes) throw notFound();
     // Staff who follow their branch's timing get the new office hours.
@@ -281,7 +282,7 @@ module.exports = function adminRoutes(ctx) {
          (SELECT group_concat(l.branch_id) FROM employee_locations l WHERE l.employee_id = e.id) AS extra_location_ids
        FROM employees e JOIN branches b ON b.id = e.branch_id ORDER BY e.active DESC, e.name`,
     ).all();
-    res.json(rows.map(publicEmployee));
+    res.json(rows.map((e) => ({ ...publicEmployee(e), profile_missing: profileMissing(db, e) })));
   });
 
   r.get('/employees/:id', (req, res) => {
@@ -290,7 +291,7 @@ module.exports = function adminRoutes(ctx) {
     res.json(publicEmployee(e));
   });
 
-  function employeeInput(b) {
+  function employeeInput(b, before = null) {
     const code = String(b.code || '').trim();
     const name = String(b.name || '').trim();
     if (!/^[A-Za-z0-9_-]{1,20}$/.test(code)) throw bad('Employee ID must be 1-20 letters, digits, - or _');
@@ -319,11 +320,18 @@ module.exports = function adminRoutes(ctx) {
     if (joinedOn && !isDate(joinedOn)) throw bad('Joining date must be a valid date');
     return {
       code, name, branch_id: branchId, salary_type: b.salary_type, salary_paise: salary,
-      phone: String(b.phone || '').slice(0, 20), designation: String(b.designation || '').slice(0, 60),
+      designation: String(b.designation || '').slice(0, 60),
       shift_start: b.shift_start, shift_end: b.shift_end, weekly_offs: [...new Set(offs.map(String))].sort().join(','),
       joined_on: joinedOn, active: b.active === false ? 0 : 1,
       is_manager: b.is_manager ? 1 : 0, manager_scope: b.manager_scope === 'all' ? 'all' : 'branch',
       follow_branch_shift: follow ? 1 : 0, extra_locations: extra,
+      // Fields not sent keep their current value (staff may have filled them in themselves).
+      ...paymentDetails({
+        phone: b.phone ?? before?.phone ?? '',
+        upi_id: b.upi_id ?? before?.upi_id ?? '',
+        bank_account: b.bank_account ?? before?.bank_account ?? '',
+        bank_ifsc: b.bank_ifsc ?? before?.bank_ifsc ?? '',
+      }),
     };
   }
 
@@ -333,10 +341,12 @@ module.exports = function adminRoutes(ctx) {
     const newId = db
       .prepare(
         `INSERT INTO employees (code, name, phone, designation, branch_id, salary_type, salary_paise, shift_start, shift_end,
-           weekly_offs, joined_on, active, is_manager, manager_scope, follow_branch_shift, pin_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           weekly_offs, joined_on, active, is_manager, manager_scope, follow_branch_shift, upi_id, bank_account, bank_ifsc, pin_hash, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(v.code, v.name, v.phone, v.designation, v.branch_id, v.salary_type, v.salary_paise, v.shift_start, v.shift_end,
-        v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, v.follow_branch_shift, hashSecret(pin), ctx.now()).lastInsertRowid;
+        v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, v.follow_branch_shift, v.upi_id, v.bank_account, v.bank_ifsc,
+        hashSecret(pin), ctx.now()).lastInsertRowid;
     setExtraLocations(Number(newId), v.extra_locations);
     ctx.audit(req, 'employee.created', { id: Number(newId), code: v.code });
     res.json({ ok: true, id: Number(newId) });
@@ -346,12 +356,13 @@ module.exports = function adminRoutes(ctx) {
     const empId = id(req.params.id);
     const before = db.prepare('SELECT * FROM employees WHERE id = ?').get(empId);
     if (!before) throw notFound();
-    const v = employeeInput(req.body || {});
+    const v = employeeInput(req.body || {}, before);
     db.prepare(
       `UPDATE employees SET code = ?, name = ?, phone = ?, designation = ?, branch_id = ?, salary_type = ?, salary_paise = ?,
-         shift_start = ?, shift_end = ?, weekly_offs = ?, joined_on = ?, active = ?, is_manager = ?, manager_scope = ?, follow_branch_shift = ? WHERE id = ?`,
+         shift_start = ?, shift_end = ?, weekly_offs = ?, joined_on = ?, active = ?, is_manager = ?, manager_scope = ?, follow_branch_shift = ?,
+         upi_id = ?, bank_account = ?, bank_ifsc = ? WHERE id = ?`,
     ).run(v.code, v.name, v.phone, v.designation, v.branch_id, v.salary_type, v.salary_paise, v.shift_start, v.shift_end,
-      v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, v.follow_branch_shift, empId);
+      v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, v.follow_branch_shift, v.upi_id, v.bank_account, v.bank_ifsc, empId);
     setExtraLocations(empId, v.extra_locations);
     if (!v.active) ctx.endAllSessions('employee', empId);
     const changed = Object.keys(v).filter((k) => k !== 'extra_locations' && String(before[k]) !== String(v[k]));
@@ -382,9 +393,10 @@ module.exports = function adminRoutes(ctx) {
     const files = [
       ...db.prepare(`SELECT selfie_file AS f FROM punches WHERE employee_id IN (${marks})`).all(...ids),
       ...db.prepare(`SELECT stored_file AS f FROM documents WHERE employee_id IN (${marks})`).all(...ids),
+      ...db.prepare(`SELECT selfie_file AS f FROM visits WHERE employee_id IN (${marks})`).all(...ids),
     ].map((r) => r.f);
     tx(db, () => {
-      for (const table of ['punches', 'documents', 'leave_requests', 'day_overrides', 'ot_decisions', 'late_decisions', 'advances', 'adjustments', 'pay_items', 'employee_locations']) {
+      for (const table of ['punches', 'documents', 'leave_requests', 'day_overrides', 'ot_decisions', 'late_decisions', 'advances', 'adjustments', 'pay_items', 'employee_locations', 'visits']) {
         db.prepare(`DELETE FROM ${table} WHERE employee_id IN (${marks})`).run(...ids);
       }
       db.prepare(`DELETE FROM verifications WHERE manager_id IN (${marks})`).run(...ids);
@@ -457,6 +469,8 @@ module.exports = function adminRoutes(ctx) {
   function pendingCounts() {
     return {
       late_approvals: pendingLateCount(),
+      visits: db.prepare("SELECT COUNT(*) AS n FROM visits WHERE status = 'pending'").get().n,
+      incomplete_profiles: db.prepare('SELECT * FROM employees WHERE active = 1').all().filter((e) => profileMissing(db, e).length).length,
       flagged_punches: db.prepare("SELECT COUNT(*) AS n FROM punches WHERE status = 'flagged'").get().n,
       leaves: db.prepare("SELECT COUNT(*) AS n FROM leave_requests WHERE status = 'pending'").get().n,
       documents: db.prepare("SELECT COUNT(*) AS n FROM documents WHERE status = 'pending'").get().n,
@@ -769,6 +783,37 @@ module.exports = function adminRoutes(ctx) {
     res.json({ ok: true });
   });
 
+  // ---- visit selfies (field staff) ----
+  r.get('/visits', (req, res) => {
+    const where = [];
+    const params = [];
+    if (req.query.date) { where.push('v.work_date = ?'); params.push(requireDate(req.query.date)); }
+    if (req.query.status) { where.push('v.status = ?'); params.push(String(req.query.status)); }
+    if (req.query.employee_id) { where.push('v.employee_id = ?'); params.push(id(req.query.employee_id)); }
+    res.json(db.prepare(
+      `SELECT v.id, v.employee_id, v.at, v.work_date, v.lat, v.lng, v.accuracy_m, v.note, v.status, v.reviewed_at,
+         e.code, e.name, b.name AS branch_name, b.lat AS branch_lat, b.lng AS branch_lng
+       FROM visits v JOIN employees e ON e.id = v.employee_id JOIN branches b ON b.id = e.branch_id
+       ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY v.status = 'pending' DESC, v.at DESC LIMIT 500`,
+    ).all(...params));
+  });
+
+  r.get('/visits/:id/selfie', (req, res) => {
+    const v = db.prepare('SELECT selfie_file FROM visits WHERE id = ?').get(id(req.params.id));
+    if (!v) throw notFound();
+    sendStoredFile(ctx, res, v.selfie_file, 'image/jpeg', `visit-${req.params.id}.jpg`);
+  });
+
+  r.post('/visits/:id/review', (req, res) => {
+    const { status } = req.body || {};
+    if (!['approved', 'rejected', 'pending'].includes(status)) throw bad('Status must be approved or rejected');
+    const result = db.prepare('UPDATE visits SET status = ?, reviewed_by = ?, reviewed_at = ? WHERE id = ?')
+      .run(status, status === 'pending' ? null : req.admin.id, status === 'pending' ? null : ctx.now(), id(req.params.id));
+    if (!result.changes) throw notFound();
+    ctx.audit(req, `visit.${status}`, { id: Number(req.params.id) });
+    res.json({ ok: true });
+  });
+
   // ---- very late arrivals: admin decides full or half day ----
   r.get('/late-approvals', (req, res) => {
     const month = requireMonth(req.query.month);
@@ -1049,14 +1094,19 @@ module.exports = function adminRoutes(ctx) {
     const rows = [[
       'Employee ID', 'Name', 'Branch', 'Salary type', 'Salary (Rs)', 'Paid days', 'Present', 'Half days', 'Absent',
       'Paid leave', 'Week off', 'Holiday', 'OT hours', 'Base pay', 'OT pay', 'Additions', 'Deductions', 'Advances', 'Net pay',
+      'Phone', 'UPI ID', 'Bank account', 'IFSC',
     ]];
+    // Current payment details, so the sheet can be used to pay salaries.
+    const pay = new Map(db.prepare('SELECT id, phone, upi_id, bank_account, bank_ifsc FROM employees').all().map((e) => [e.id, e]));
     for (const x of p.rows) {
+      const e = pay.get(x.employee_id) || {};
       const a = x.attendance;
       const sum = (xs) => xs.reduce((t, y) => t + y.amount_paise, 0);
       rows.push([
         x.code, x.name, x.branch_name, x.salary_type, rupees(x.salary_paise), x.paid_days, a.present, a.half_day,
         a.absent + a.not_marked, a.paid_leave, a.week_off, a.holiday, x.ot_hours, rupees(x.base_paise), rupees(x.ot_paise),
         rupees(sum(x.additions)), rupees(sum(x.deductions)), rupees(sum(x.advances)), rupees(x.net_paise),
+        e.phone || '', e.upi_id || '', e.bank_account || '', e.bank_ifsc || '',
       ]);
     }
     rows.push(['TOTAL', '', '', '', '', '', '', '', '', '', '', '', '', rupees(p.totals.base_paise), rupees(p.totals.ot_paise), '', '', '', rupees(p.totals.net_paise)]);

@@ -81,6 +81,7 @@ function showSetup() {
 const PAGES = [
   ['dashboard', 'Dashboard'],
   ['punches', 'Punches & selfies', 'flagged_punches'],
+  ['visits', 'Field visits', 'visits'],
   ['attendance', 'Attendance register'],
   ['overtime', 'Overtime'],
   ['late', 'Late approvals', 'late_approvals'],
@@ -206,7 +207,9 @@ async function pageDashboard(el, params) {
       tile(d.pending.flagged_punches, 'Flagged punches to review', '#/punches?status=flagged'),
       tile(d.pending.leaves, 'Leave requests pending', '#/leaves?status=pending'),
       tile(d.pending.documents, 'Documents to verify', '#/documents?status=pending'),
-      tile(d.pending.late_approvals, 'Very late arrivals to review', '#/late')),
+      tile(d.pending.late_approvals, 'Very late arrivals to review', '#/late'),
+      tile(d.pending.visits, 'Field visit selfies to review', '#/visits?status=pending'),
+      tile(d.pending.incomplete_profiles, 'Staff with missing details', '#/employees?missing=1')),
     h('h2', { style: { margin: '20px 0 10px' } }, `Staff on ${fmtDate(date)}`),
     table([
       { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)) },
@@ -282,6 +285,67 @@ function punchDetail(p) {
       h('dt', {}, 'GPS'), h('dd', {}, `${p.lat.toFixed(6)}, ${p.lng.toFixed(6)} `, p.accuracy_m !== null ? `±${Math.round(p.accuracy_m)} m ` : '', mapLink(p.lat, p.lng, 'Open map')),
       h('dt', {}, 'Status'), h('dd', {}, p.status, p.flag_reason ? ` — ${p.flag_reason}` : '')),
     reviewButtons(p, () => dlg.close())), { wide: true });
+}
+
+// ---------------------------------------------------------------- field visits
+
+async function pageVisits(el, params) {
+  await Promise.all([loadBranches(), loadEmployees()]);
+  const f = {
+    date: params.has('date') ? params.get('date') : (params.get('status') === 'pending' ? '' : todayIST()),
+    employee_id: params.get('employee_id') || '',
+    status: params.get('status') || '',
+  };
+  const qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v)).toString();
+  const rows = await api('GET', `/api/admin/visits?${qs}`);
+  const set = (k) => (v) => go('visits', { ...f, [k]: v });
+  const statusKind = { pending: 'warn', approved: 'ok', rejected: 'bad' };
+  const visitBranches = A.branches.filter((b) => b.field_visits).map((b) => b.name);
+  el.replaceChildren(
+    pageHead('Field visits'),
+    h('p', { class: 'muted small' }, 'Staff of ',
+      visitBranches.length ? visitBranches.join(', ') : h('a', { href: '#/branches' }, 'branches with “visit selfies” turned on'),
+      ' take a selfie at every place they visit during the day (bank, GST office, client office…). Check each one and approve or reject it.'),
+    h('div', { class: 'toolbar' },
+      h('input', { type: 'date', value: f.date, onchange: (e) => set('date')(e.target.value), 'aria-label': 'Date' }),
+      f.date ? h('button', { class: 'btn btn-sm', onclick: () => set('date')('') }, 'All dates') : '',
+      employeeSelect(f.employee_id, set('employee_id')),
+      h('select', { onchange: (e) => set('status')(e.target.value), 'aria-label': 'Status' },
+        [['', 'All statuses'], ['pending', 'Pending review'], ['approved', 'Approved'], ['rejected', 'Rejected']]
+          .map(([v, l]) => h('option', { value: v, selected: v === f.status }, l)))),
+    table([
+      { label: 'Selfie', render: (v) => h('img', { class: 'thumb', src: `/api/admin/visits/${v.id}/selfie`, alt: 'Selfie', loading: 'lazy', onclick: () => visitDetail(v) }) },
+      { label: 'Employee', render: (v) => h('div', {}, h('strong', {}, v.name), h('div', { class: 'small muted' }, `${v.code} · ${v.branch_name}`)) },
+      { label: 'Place / purpose', render: (v) => h('div', {}, v.note, h('div', { class: 'small muted' }, fmtDateTime(v.at))) },
+      { label: 'Location', render: (v) => h('div', {}, mapLink(v.lat, v.lng, 'Open map'),
+        h('div', { class: 'small muted' }, v.accuracy_m !== null ? `±${Math.round(v.accuracy_m)} m` : '')) },
+      { label: 'Status', render: (v) => badge(v.status, statusKind[v.status]) },
+      { label: '', render: (v) => visitButtons(v) },
+    ], rows, { empty: 'No visit selfies match these filters.', rowClass: (v) => (v.status === 'pending' ? 'row-flag' : null) }));
+}
+
+function visitButtons(v, after) {
+  const act = (status) => async (e) => {
+    if (await run(() => api('POST', `/api/admin/visits/${v.id}/review`, { status }), e.currentTarget)) {
+      toast(status === 'approved' ? 'Visit approved' : 'Visit rejected');
+      if (after) after();
+      route();
+    }
+  };
+  return h('div', { class: 'row' },
+    v.status !== 'approved' ? h('button', { class: 'btn btn-sm btn-ok', onclick: act('approved') }, 'Approve') : '',
+    v.status !== 'rejected' ? h('button', { class: 'btn btn-sm', onclick: act('rejected') }, 'Reject') : '');
+}
+
+function visitDetail(v) {
+  const dlg = modal(`${v.name} · visit`, h('div', { class: 'stack' },
+    h('img', { class: 'selfie-big', src: `/api/admin/visits/${v.id}/selfie`, alt: 'Selfie' }),
+    h('dl', { class: 'kv' },
+      h('dt', {}, 'Time'), h('dd', {}, fmtDateTime(v.at)),
+      h('dt', {}, 'Place / purpose'), h('dd', {}, v.note),
+      h('dt', {}, 'GPS'), h('dd', {}, `${v.lat.toFixed(6)}, ${v.lng.toFixed(6)} `, v.accuracy_m !== null ? `±${Math.round(v.accuracy_m)} m ` : '', mapLink(v.lat, v.lng, 'Open map')),
+      h('dt', {}, 'Status'), h('dd', {}, v.status)),
+    visitButtons(v, () => dlg.close())), { wide: true });
 }
 
 // ---------------------------------------------------------------- attendance register
@@ -482,14 +546,21 @@ async function pageLeaves(el, params) {
 
 // ---------------------------------------------------------------- employees
 
-async function pageEmployees(el) {
+async function pageEmployees(el, params) {
   await Promise.all([loadBranches(), loadEmployees()]);
+  const onlyMissing = params?.get('missing') === '1';
+  const incomplete = A.employees.filter((e) => e.active && e.profile_missing?.length);
+  const list = onlyMissing ? incomplete : A.employees;
   const rate = (e) => `${money(e.salary_paise)} / ${{ monthly: 'month', daily: 'day', hourly: 'hour' }[e.salary_type]}`;
   el.replaceChildren(
     pageHead('Employees',
       h('button', { class: 'btn', onclick: importEmployees }, 'Import from CSV'),
       h('button', { class: 'btn btn-primary', onclick: () => employeeForm() }, '+ Add employee')),
     !A.branches.length ? h('div', { class: 'card' }, 'Add a ', h('a', { href: '#/branches' }, 'branch'), ' first — every employee belongs to a branch.') : '',
+    h('div', { class: 'toolbar' },
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: onlyMissing, onchange: (ev) => go('employees', { missing: ev.target.checked ? '1' : '' }) }),
+        `Only staff with missing details (${incomplete.length})`),
+      incomplete.length ? h('span', { class: 'small muted' }, 'They see a reminder every time they open the app until they add them.') : ''),
     table([
       { label: 'Employee', render: (e) => h('div', {}, h('strong', {}, e.name), e.is_manager ? [' ', badge(e.manager_scope === 'all' ? 'Manager · all branches' : 'Manager', 'info')] : '', h('div', { class: 'small muted' }, `${e.code}${e.designation ? ` · ${e.designation}` : ''}${e.phone ? ` · ${e.phone}` : ''}`)) },
       { label: 'Branch', render: (e) => h('div', {}, e.branch_name, e.extra_location_ids ? h('div', { class: 'small muted' }, `+ ${e.extra_location_ids.split(',').length} more location(s)`) : '') },
@@ -497,14 +568,16 @@ async function pageEmployees(el) {
       { label: 'Shift', render: (e) => h('div', {}, `${e.shift_start}–${e.shift_end}`, h('div', { class: 'small muted' }, e.follow_branch_shift ? 'branch timing' : 'personal')) },
       { label: 'Week off', render: (e) => e.weekly_offs.split(',').filter(Boolean).map((d) => WEEKDAYS[d]).join(', ') || 'None' },
       { label: 'Docs', class: 'num', render: (e) => h('a', { href: `#/documents?employee_id=${e.id}` }, String(e.document_count)) },
-      { label: 'Status', render: (e) => (e.active ? badge('active', 'ok') : badge('inactive', 'neutral')) },
+      { label: 'Status', render: (e) => h('div', {}, e.active ? badge('active', 'ok') : badge('inactive', 'neutral'),
+        e.profile_missing?.length ? h('div', { class: 'small', style: { color: 'var(--warn)', marginTop: '4px' } },
+          `Missing: ${e.profile_missing.map((m) => MISSING_LABEL[m].split(' (')[0]).join(', ')}`) : '') },
       { label: '', render: (e) => h('div', { class: 'row' },
         h('button', { class: 'btn btn-sm', onclick: () => employeeForm(e) }, 'Edit'),
         h('button', { class: 'btn btn-sm', onclick: () => payItems(e) }, 'PF / allowances'),
         h('a', { class: 'btn btn-sm', href: `#/preview?employee_id=${e.id}` }, 'Preview'),
         h('button', { class: 'btn btn-sm', onclick: () => resetPin(e) }, 'Reset PIN'),
         h('button', { class: 'btn btn-sm', title: 'Delete permanently', onclick: () => deleteEmployee(e) }, 'Delete')) },
-    ], A.employees, { empty: 'No employees yet. Click “Add employee”.' }));
+    ], list, { empty: onlyMissing ? 'Everyone has given their details. 🎉' : 'No employees yet. Click “Add employee”.' }));
 }
 
 function employeeForm(e) {
@@ -517,6 +590,10 @@ function employeeForm(e) {
     { name: 'designation', label: 'Designation', value: e?.designation },
     { name: 'branch_id', label: 'Branch', type: 'select', required: true, value: e?.branch_id, options: A.branches.filter((b) => b.active || b.id === e?.branch_id).map((b) => ({ value: b.id, label: b.name })) },
     { name: 'joined_on', label: 'Joining date', type: 'date', value: e ? e.joined_on : todayIST(), hint: 'Leave blank if not known.' },
+    { type: 'heading', label: 'Salary payment (staff can also fill this in themselves)' },
+    { name: 'upi_id', label: 'UPI ID', value: e?.upi_id, placeholder: 'e.g. 98xxxxxxxx@ybl' },
+    { name: 'bank_account', label: 'Bank account number', inputmode: 'numeric', value: e?.bank_account },
+    { name: 'bank_ifsc', label: 'IFSC code', value: e?.bank_ifsc, placeholder: 'e.g. SBIN0001234' },
     { type: 'heading', label: 'Salary & shift' },
     { name: 'salary_type', label: 'Salary type', type: 'select', value: e?.salary_type || 'monthly',
       options: [{ value: 'monthly', label: 'Monthly' }, { value: 'daily', label: 'Daily wage' }, { value: 'hourly', label: 'Hourly' }] },
@@ -773,7 +850,7 @@ async function pageBranches(el) {
       { label: 'Location', render: (b) => (b.location_set
         ? h('div', {}, `${b.lat.toFixed(5)}, ${b.lng.toFixed(5)} `, mapLink(b.lat, b.lng))
         : h('button', { class: 'btn btn-sm btn-primary', onclick: () => branchForm(b) }, '⚠ Set location')) },
-      { label: 'Timing', render: (b) => `${b.shift_start}–${b.shift_end}` },
+      { label: 'Timing', render: (b) => h('div', {}, `${b.shift_start}–${b.shift_end}`, b.field_visits ? h('div', {}, badge('visit selfies', 'info')) : '') },
       { label: 'Radius', class: 'num', render: (b) => `${b.radius_m} m` },
       { label: 'Outside radius', render: (b) => (b.geofence_mode === 'block' ? badge('Block punch', 'bad') : badge('Allow & flag', 'warn')) },
       { label: 'Staff', class: 'num', render: (b) => String(b.employee_count) },
@@ -844,6 +921,7 @@ function branchForm(b) {
       { name: 'radius_m', label: 'Allowed radius (metres)', type: 'number', min: 20, max: 5000, required: true, value: b?.radius_m ?? 150, hint: 'Phone GPS is usually accurate to 10–50 m. 100–200 m works well for most offices.' },
       { name: 'geofence_mode', label: 'When an employee of this branch is outside every branch radius', type: 'select', value: b?.geofence_mode || 'flag',
         options: [{ value: 'flag', label: 'Allow the punch but flag it for review' }, { value: 'block', label: 'Block the punch' }] },
+      { name: 'field_visits', label: 'Visit selfies — staff of this branch travel during the day (banks, GST office, clients) and take a selfie at each place', type: 'checkbox', value: !!b?.field_visits },
       ...(b ? [{ name: 'active', label: 'Active', type: 'checkbox', value: !!b.active }] : []),
     ],
     async onSubmit(v) {
@@ -1175,6 +1253,7 @@ async function pageSettings(el, params) {
 const PAGE_FNS = {
   dashboard: pageDashboard,
   punches: pagePunches,
+  visits: pageVisits,
   attendance: pageAttendance,
   overtime: pageOvertime,
   late: pageLate,

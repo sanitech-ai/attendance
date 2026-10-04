@@ -113,6 +113,22 @@ function showLogin() {
 
 // ---------------------------------------------------------------- shell
 
+async function refreshMe() {
+  S.me = await api('GET', `${EMP}/me`);
+}
+
+/** Shown every time the app is opened until all details are in. */
+function remindProfile() {
+  const missing = S.me.profile_missing || [];
+  if (!missing.length || PREVIEW_ID) return;
+  const dlg = modal('Please complete your details', h('div', {},
+    h('p', {}, 'The company needs these to pay your salary and keep your records:'),
+    h('ul', { class: 'checklist' }, Object.keys(MISSING_LABEL).map((k) => h('li', { class: missing.includes(k) ? 'todo' : 'done' }, missing.includes(k) ? '◻ ' : '✅ ', MISSING_LABEL[k]))),
+    h('div', { class: 'form-actions' },
+      h('button', { class: 'btn', onclick: () => dlg.close() }, 'Later'),
+      h('button', { class: 'btn btn-primary', onclick: () => { dlg.close(); S.tab = 'more'; renderShell(); } }, 'Do it now'))));
+}
+
 async function boot() {
   try {
     S.me = await api('GET', `${EMP}/me`);
@@ -122,6 +138,7 @@ async function boot() {
     return;
   }
   renderShell();
+  remindProfile();
 }
 
 const TABS = [
@@ -139,8 +156,11 @@ function renderShell() {
   const bar = h('nav', { class: 'tabbar', style: { gridTemplateColumns: `repeat(${tabs.length}, 1fr)` } }, tabs.map(([key, ico, label]) =>
     h('button', { class: S.tab === key ? 'active' : '', onclick: () => { S.tab = key; renderShell(); } },
       h('span', { class: 'ico', 'aria-hidden': 'true' }, ico), label)));
+  const missing = S.me.profile_missing || [];
   root.replaceChildren(
     PREVIEW_ID ? h('div', { class: 'preview-banner' }, `👁 Preview of ${S.me.employee.name}'s app · read-only`) : '',
+    missing.length ? h('button', { class: 'profile-banner', onclick: () => { S.tab = 'more'; renderShell(); } },
+      `⚠ Please add your ${missing.map((m) => MISSING_LABEL[m].split(' (')[0]).join(', ')} — tap here`) : '',
     h('header', { class: 'app-header' },
       h('div', {}, h('div', { class: 'who' }, S.me.employee.name), h('div', { class: 'small muted' }, `${S.me.employee.code} · ${S.me.branch?.name || ''}`)),
       h('div', { class: 'small muted' }, S.me.company_name)),
@@ -160,7 +180,8 @@ async function renderHome(main) {
   if (!t) return;
   const d = t.day;
   const actions = h('div', { class: 'punch-actions' }, t.allowed.map((kind) =>
-    h('button', { class: `btn btn-primary punch-btn ${kind.startsWith('OT') ? 'ot' : ''}`, onclick: () => punchFlow(kind, t) }, PUNCH_LABEL[kind])));
+    h('button', { class: `btn btn-primary punch-btn ${kind.startsWith('OT') ? 'ot' : ''}`, onclick: () => punchFlow(kind, t) }, PUNCH_LABEL[kind])),
+    t.can_visit && t.on_duty ? h('button', { class: 'btn punch-btn visit', onclick: () => visitFlow(t) }, '📍 Visit selfie (bank, client, office…)') : '');
 
   const facts = h('dl', { class: 'kv' },
     h('dt', {}, 'Shift'), h('dd', {}, `${t.shift.start} – ${t.shift.end}`),
@@ -169,14 +190,22 @@ async function renderHome(main) {
     h('dt', {}, 'Worked'), h('dd', {}, fmtMinutes(d.worked_minutes)),
     d.ot_minutes || d.ot_start ? [h('dt', {}, 'Overtime'), h('dd', {}, `${fmtMinutes(d.ot_minutes)} `, d.ot_status ? badge(d.ot_status, d.ot_status === 'approved' ? 'ok' : d.ot_status === 'rejected' ? 'bad' : 'warn') : '')] : '');
 
-  const timeline = t.punches.length
-    ? h('ul', { class: 'timeline' }, t.punches.map((p) => h('li', {},
+  const visitKind = { pending: ['Waiting for review', 'warn'], approved: ['Approved', 'ok'], rejected: ['Rejected', 'bad'] };
+  const visitItems = (t.visits || []).map((v) => ({ at: v.at, el: h('li', {},
+    h('img', { src: `${EMP}/visits/${v.id}/selfie`, alt: 'Visit selfie', loading: 'lazy' }),
+    h('div', { style: { flex: 1 } },
+      h('div', {}, h('span', { class: 't' }, fmtTime(v.at)), ' 📍 ', v.note),
+      h('div', { class: 'small muted' }, mapLink(v.lat, v.lng, 'Map'), ' · ', badge(...visitKind[v.status])))) }));
+  const punchItems = t.punches.map((p) => ({ at: p.at, el: h('li', {},
       h('img', { src: `${EMP}/punches/${p.id}/selfie`, alt: 'Selfie', loading: 'lazy' }),
       h('div', { style: { flex: 1 } },
         h('div', {}, h('span', { class: 't' }, fmtTime(p.at)), ' ', PUNCH_LABEL[p.kind]),
         h('div', { class: 'small muted' },
           p.inside_geofence ? `At branch (${p.distance_m} m)` : p.distance_m !== null ? `${p.distance_m} m from branch` : '',
-          p.status === 'flagged' ? [' · ', badge('Under review', 'warn')] : p.status === 'rejected' ? [' · ', badge('Rejected', 'bad')] : '')))))
+          p.status === 'flagged' ? [' · ', badge('Under review', 'warn')] : p.status === 'rejected' ? [' · ', badge('Rejected', 'bad')] : ''))) }));
+  const items = [...punchItems, ...visitItems].sort((a, b) => a.at - b.at);
+  const timeline = items.length
+    ? h('ul', { class: 'timeline' }, items.map((x) => x.el))
     : h('div', { class: 'empty' }, 'No punches yet today.');
 
   main.replaceChildren(
@@ -187,7 +216,19 @@ async function renderHome(main) {
     h('div', { class: 'card' }, h('h2', {}, 'Punches'), timeline));
 }
 
-function punchFlow(kind, today) {
+function visitFlow(today) {
+  formDialog({
+    title: '📍 Visit selfie',
+    fields: [{ name: 'note', label: 'Where are you?', required: true, placeholder: 'e.g. HDFC Bank, Banjara Hills / GST office / client name' }],
+    submitLabel: 'Open camera',
+    async onSubmit(v) {
+      setTimeout(() => punchFlow('VISIT', today, v.note), 0);
+      return true;
+    },
+  });
+}
+
+function punchFlow(kind, today, note = '') {
   if (PREVIEW_ID) {
     toast(`Preview: ${S.me.employee.name} would now take a selfie and confirm "${PUNCH_LABEL[kind]}" on their phone.`);
     return;
@@ -284,7 +325,7 @@ function punchFlow(kind, today) {
     c.drawImage(video, 0, 0, canvas.width, canvas.height);
     // Stamp name, time and location onto the photo (like a geotag camera).
     const lines = [
-      `${S.me.employee.name} (${S.me.employee.code}) · ${PUNCH_LABEL[kind]}`,
+      `${S.me.employee.name} (${S.me.employee.code}) · ${PUNCH_LABEL[kind]}${note ? ` · ${note}` : ''}`,
       new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }),
     ];
     if (position) {
@@ -321,13 +362,16 @@ function punchFlow(kind, today) {
 
   confirm.addEventListener('click', async () => {
     if (!captured || !position) return;
-    const res = await run(() => api('POST', `${EMP}/punch`, {
-      kind,
-      lat: position.coords.latitude,
-      lng: position.coords.longitude,
-      accuracy: position.coords.accuracy,
-      selfie: captured,
-    }), confirm);
+    const body = { lat: position.coords.latitude, lng: position.coords.longitude, accuracy: position.coords.accuracy, selfie: captured };
+    if (kind === 'VISIT') {
+      const done = await run(() => api('POST', `${EMP}/visit`, { ...body, note }), confirm);
+      if (!done) return;
+      close();
+      toast(`Visit saved at ${fmtTime(done.at)}. The admin will review it.`);
+      renderShell();
+      return;
+    }
+    const res = await run(() => api('POST', `${EMP}/punch`, { kind, ...body }), confirm);
     if (!res) return;
     close();
     if (res.status === 'flagged') toast(`${PUNCH_LABEL[kind]} saved at ${fmtTime(res.at)}, but flagged for review: ${res.flag_reason}`, 'error');
@@ -444,6 +488,7 @@ async function renderMore(main) {
         h('dt', {}, 'Branch'), h('dd', {}, S.me.branch?.name || '—'),
         h('dt', {}, 'Shift'), h('dd', {}, `${e.shift_start} – ${e.shift_end}`),
         h('dt', {}, 'Joined'), h('dd', {}, e.joined_on ? fmtDate(e.joined_on) : '—'))),
+    paymentCard(e),
     h('div', { class: 'card' },
       h('div', { class: 'spread' }, h('h2', {}, 'My documents'), h('button', { class: 'btn btn-primary btn-sm', onclick: uploadDocument }, '+ Upload')),
       h('p', { class: 'small muted' }, 'Upload Aadhaar, PAN and other KYC documents. Files are encrypted and only visible to your employer’s admins.'),
@@ -578,6 +623,44 @@ async function renderSalary(main) {
     past);
 }
 
+/** Phone + where salary should be paid, with a checklist of what is still missing. */
+function paymentCard(e) {
+  const missing = S.me.profile_missing || [];
+  return h('div', { class: 'card' },
+    h('div', { class: 'spread' }, h('h2', {}, 'Payment & contact details'),
+      h('button', { class: `btn btn-sm${missing.includes('phone') || missing.includes('payment') ? ' btn-primary' : ''}`, onclick: () => editPayment(e) }, 'Edit')),
+    missing.length
+      ? h('ul', { class: 'checklist' }, Object.keys(MISSING_LABEL).map((k) => h('li', { class: missing.includes(k) ? 'todo' : 'done' }, missing.includes(k) ? '◻ ' : '✅ ', MISSING_LABEL[k])))
+      : h('p', { class: 'small ok-text' }, '✅ All details received. Thank you!'),
+    h('dl', { class: 'kv' },
+      h('dt', {}, 'Mobile'), h('dd', {}, e.phone || '—'),
+      h('dt', {}, 'UPI ID'), h('dd', {}, e.upi_id || '—'),
+      h('dt', {}, 'Bank account'), h('dd', {}, e.bank_account ? `${e.bank_account} · ${e.bank_ifsc}` : '—')),
+    missing.includes('aadhaar') || missing.includes('pan')
+      ? h('p', { class: 'small muted' }, 'Upload Aadhaar and PAN under “My documents” below.') : '');
+}
+
+function editPayment(e) {
+  formDialog({
+    title: 'Payment & contact details',
+    fields: [
+      { name: 'phone', label: 'Mobile number', type: 'tel', inputmode: 'numeric', value: e.phone, required: true, maxlength: 20, placeholder: '98xxxxxxxx' },
+      { type: 'heading', label: 'Where should we pay your salary? (UPI or bank — either is fine)' },
+      { name: 'upi_id', label: 'UPI ID', value: e.upi_id, placeholder: 'e.g. 98xxxxxxxx@ybl', hint: 'Find it in PhonePe / GPay / Paytm under your profile.' },
+      { name: 'bank_account', label: 'Bank account number', inputmode: 'numeric', value: e.bank_account, maxlength: 20 },
+      { name: 'bank_ifsc', label: 'IFSC code', value: e.bank_ifsc, placeholder: 'e.g. SBIN0001234', maxlength: 11, hint: 'Printed on your passbook or cheque book.' },
+    ],
+    async onSubmit(v) {
+      if (!v.upi_id.trim() && !v.bank_account.trim()) throw new Error('Enter a UPI ID or bank account so we can pay you');
+      await api('POST', `${EMP}/profile`, v);
+      await refreshMe();
+      toast('Details saved');
+      renderShell();
+      return true;
+    },
+  });
+}
+
 function uploadDocument() {
   formDialog({
     title: 'Upload document',
@@ -592,6 +675,7 @@ function uploadDocument() {
       const file = await prepareUpload(v.file);
       await api('POST', `${EMP}/documents`, { doc_type: v.doc_type, doc_number: v.doc_number, label: v.label, file });
       toast('Document uploaded');
+      await refreshMe();
       renderShell();
       return true;
     },
