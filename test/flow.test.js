@@ -78,7 +78,7 @@ test('end-to-end: punches, overtime, leaves, documents and payroll', async (t) =
   await strict('POST', '/api/employee/login', { code: 'E002', pin: '5678' });
   r = await strict('POST', '/api/employee/punch', { kind: 'IN', ...FAR, accuracy: 10, selfie: JPEG });
   assert.equal(r.status, 403);
-  assert.match(r.data.error, /Punch from inside the branch/);
+  assert.match(r.data.error, /Punch from inside one of your sites/);
 
   // Selfie is stored encrypted and served to admin only
   const punchRes = await admin('GET', '/api/admin/punches?employee_id=' + empId);
@@ -222,7 +222,7 @@ test('overnight shift: OUT after midnight counts for the day the shift started',
   assert.equal(pay.base_paise, 80000, '8 hours x Rs 100');
 });
 
-test('late rules: every 3rd late is a half day; over 1 hour late needs an admin decision', async (t) => {
+test('late rules: every 3rd late is a half day; over 1 hour late is a half day for review', async (t) => {
   const s = await startServer(ist('2026-10-01', '08:00'));
   t.after(() => s.close());
   const admin = s.client();
@@ -296,13 +296,15 @@ test('late rules: every 3rd late is a half day; over 1 hour late needs an admin 
   assert.equal(d['10'].status, 'half_day', 'admin gave a half day');
   assert.ok(!d['09'].flags.includes('late_approval'));
 
-  // Finalizing is blocked while a very-late day is undecided
+  // Undecided very-late days count as half days and don't hold up payroll
   await admin('POST', '/api/admin/late-approvals/decision', { employee_id: emp.data.id, date: '2026-10-10', status: null });
+  d = await get();
+  assert.equal(d['10'].status, 'half_day', 'over 1 hour late = half day until reviewed');
+  assert.equal(d['10'].late_review, 'pending');
   s.clock.now = ist('2026-11-02', '10:00');
   await admin('POST', '/api/admin/login', { username: 'owner', password: 'password123' });
   r = await admin('POST', '/api/admin/payroll/2026-10/finalize', {});
-  assert.equal(r.status, 409);
-  assert.match(r.data.error, /late arrivals/);
+  assert.equal(r.status, 200, JSON.stringify(r.data));
 });
 
 test('bulk mark: 1-3 October present for everyone', async (t) => {

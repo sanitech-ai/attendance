@@ -227,13 +227,16 @@ module.exports = function adminRoutes(ctx) {
     const radius = Number(b.radius_m ?? 150);
     if (!Number.isInteger(radius) || radius < 20 || radius > 5000) throw bad('Radius must be 20 to 5000 metres');
     if (!['block', 'flag'].includes(b.geofence_mode)) throw bad('Geofence mode must be block or flag');
-    return [name, String(b.address || '').slice(0, 300), lat, lng, radius, b.geofence_mode, b.active === false ? 0 : 1, link];
+    const shiftStart = b.shift_start || '09:00';
+    const shiftEnd = b.shift_end || '18:00';
+    if (!isTime(shiftStart) || !isTime(shiftEnd)) throw bad('Office timings must be HH:MM');
+    return [name, String(b.address || '').slice(0, 300), lat, lng, radius, b.geofence_mode, b.active === false ? 0 : 1, link, shiftStart, shiftEnd];
   }
 
   r.post('/branches', async (req, res) => {
     const v = await branchInput(req.body || {});
     const newId = db
-      .prepare('INSERT INTO branches (name, address, lat, lng, radius_m, geofence_mode, active, maps_link, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .prepare('INSERT INTO branches (name, address, lat, lng, radius_m, geofence_mode, active, maps_link, shift_start, shift_end, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(...v, ctx.now()).lastInsertRowid;
     ctx.audit(req, 'branch.created', { id: Number(newId), name: v[0] });
     res.json({ ok: true, id: Number(newId) });
@@ -242,9 +245,11 @@ module.exports = function adminRoutes(ctx) {
   r.put('/branches/:id', async (req, res) => {
     const v = await branchInput(req.body || {});
     const result = db
-      .prepare('UPDATE branches SET name = ?, address = ?, lat = ?, lng = ?, radius_m = ?, geofence_mode = ?, active = ?, maps_link = ?, location_set = 1 WHERE id = ?')
+      .prepare('UPDATE branches SET name = ?, address = ?, lat = ?, lng = ?, radius_m = ?, geofence_mode = ?, active = ?, maps_link = ?, shift_start = ?, shift_end = ?, location_set = 1 WHERE id = ?')
       .run(...v, id(req.params.id));
     if (!result.changes) throw notFound();
+    // Staff who follow their branch's timing get the new office hours.
+    db.prepare('UPDATE employees SET shift_start = ?, shift_end = ? WHERE branch_id = ? AND follow_branch_shift = 1').run(v[8], v[9], id(req.params.id));
     ctx.audit(req, 'branch.updated', { id: Number(req.params.id) });
     res.json({ ok: true });
   });
@@ -257,6 +262,7 @@ module.exports = function adminRoutes(ctx) {
     tx(db, () => {
       db.prepare('UPDATE punches SET branch_id = NULL WHERE branch_id = ?').run(b.id);
       db.prepare('DELETE FROM holidays WHERE branch_id = ?').run(b.id);
+      db.prepare('DELETE FROM employee_locations WHERE branch_id = ?').run(b.id);
       db.prepare('DELETE FROM branches WHERE id = ?').run(b.id);
     });
     ctx.audit(req, 'branch.deleted', { name: b.name });
@@ -271,7 +277,8 @@ module.exports = function adminRoutes(ctx) {
   r.get('/employees', (req, res) => {
     const rows = db.prepare(
       `SELECT e.*, b.name AS branch_name,
-         (SELECT COUNT(*) FROM documents d WHERE d.employee_id = e.id) AS document_count
+         (SELECT COUNT(*) FROM documents d WHERE d.employee_id = e.id) AS document_count,
+         (SELECT group_concat(l.branch_id) FROM employee_locations l WHERE l.employee_id = e.id) AS extra_location_ids
        FROM employees e JOIN branches b ON b.id = e.branch_id ORDER BY e.active DESC, e.name`,
     ).all();
     res.json(rows.map(publicEmployee));
@@ -289,7 +296,20 @@ module.exports = function adminRoutes(ctx) {
     if (!/^[A-Za-z0-9_-]{1,20}$/.test(code)) throw bad('Employee ID must be 1-20 letters, digits, - or _');
     if (!name) throw bad('Name is required');
     const branchId = id(b.branch_id);
-    if (!db.prepare('SELECT 1 FROM branches WHERE id = ?').get(branchId)) throw bad('Branch not found');
+    const branch = db.prepare('SELECT shift_start, shift_end FROM branches WHERE id = ?').get(branchId);
+    if (!branch) throw bad('Branch not found');
+    // Not stated: follow the branch unless a different shift was given.
+    const follow = b.follow_branch_shift === undefined
+      ? (!b.shift_start && !b.shift_end) || (b.shift_start === branch.shift_start && b.shift_end === branch.shift_end)
+      : !!b.follow_branch_shift;
+    if (follow) {
+      b.shift_start = branch.shift_start;
+      b.shift_end = branch.shift_end;
+    }
+    const extra = [...new Set((Array.isArray(b.extra_locations) ? b.extra_locations : []).map(Number))].filter((x) => x !== branchId);
+    for (const x of extra) {
+      if (!Number.isInteger(x) || !db.prepare('SELECT 1 FROM branches WHERE id = ?').get(x)) throw bad('Unknown extra location');
+    }
     if (!['monthly', 'daily', 'hourly'].includes(b.salary_type)) throw bad('Salary type must be monthly, daily or hourly');
     const salary = toPaise(b.salary, 'Salary');
     if (!isTime(b.shift_start) || !isTime(b.shift_end)) throw bad('Shift times must be HH:MM');
@@ -303,6 +323,7 @@ module.exports = function adminRoutes(ctx) {
       shift_start: b.shift_start, shift_end: b.shift_end, weekly_offs: [...new Set(offs.map(String))].sort().join(','),
       joined_on: joinedOn, active: b.active === false ? 0 : 1,
       is_manager: b.is_manager ? 1 : 0, manager_scope: b.manager_scope === 'all' ? 'all' : 'branch',
+      follow_branch_shift: follow ? 1 : 0, extra_locations: extra,
     };
   }
 
@@ -312,10 +333,11 @@ module.exports = function adminRoutes(ctx) {
     const newId = db
       .prepare(
         `INSERT INTO employees (code, name, phone, designation, branch_id, salary_type, salary_paise, shift_start, shift_end,
-           weekly_offs, joined_on, active, is_manager, manager_scope, pin_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           weekly_offs, joined_on, active, is_manager, manager_scope, follow_branch_shift, pin_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(v.code, v.name, v.phone, v.designation, v.branch_id, v.salary_type, v.salary_paise, v.shift_start, v.shift_end,
-        v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, hashSecret(pin), ctx.now()).lastInsertRowid;
+        v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, v.follow_branch_shift, hashSecret(pin), ctx.now()).lastInsertRowid;
+    setExtraLocations(Number(newId), v.extra_locations);
     ctx.audit(req, 'employee.created', { id: Number(newId), code: v.code });
     res.json({ ok: true, id: Number(newId) });
   });
@@ -327,14 +349,21 @@ module.exports = function adminRoutes(ctx) {
     const v = employeeInput(req.body || {});
     db.prepare(
       `UPDATE employees SET code = ?, name = ?, phone = ?, designation = ?, branch_id = ?, salary_type = ?, salary_paise = ?,
-         shift_start = ?, shift_end = ?, weekly_offs = ?, joined_on = ?, active = ?, is_manager = ?, manager_scope = ? WHERE id = ?`,
+         shift_start = ?, shift_end = ?, weekly_offs = ?, joined_on = ?, active = ?, is_manager = ?, manager_scope = ?, follow_branch_shift = ? WHERE id = ?`,
     ).run(v.code, v.name, v.phone, v.designation, v.branch_id, v.salary_type, v.salary_paise, v.shift_start, v.shift_end,
-      v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, empId);
+      v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, v.follow_branch_shift, empId);
+    setExtraLocations(empId, v.extra_locations);
     if (!v.active) ctx.endAllSessions('employee', empId);
-    const changed = Object.keys(v).filter((k) => String(before[k]) !== String(v[k]));
+    const changed = Object.keys(v).filter((k) => k !== 'extra_locations' && String(before[k]) !== String(v[k]));
     ctx.audit(req, 'employee.updated', { id: empId, changed });
     res.json({ ok: true });
   });
+
+  function setExtraLocations(empId, branchIds) {
+    db.prepare('DELETE FROM employee_locations WHERE employee_id = ?').run(empId);
+    const ins = db.prepare('INSERT INTO employee_locations (employee_id, branch_id) VALUES (?, ?)');
+    for (const b of branchIds) ins.run(empId, b);
+  }
 
   r.post('/employees/:id/reset-pin', (req, res) => {
     const empId = id(req.params.id);
@@ -355,7 +384,7 @@ module.exports = function adminRoutes(ctx) {
       ...db.prepare(`SELECT stored_file AS f FROM documents WHERE employee_id IN (${marks})`).all(...ids),
     ].map((r) => r.f);
     tx(db, () => {
-      for (const table of ['punches', 'documents', 'leave_requests', 'day_overrides', 'ot_decisions', 'late_decisions', 'advances', 'adjustments', 'pay_items']) {
+      for (const table of ['punches', 'documents', 'leave_requests', 'day_overrides', 'ot_decisions', 'late_decisions', 'advances', 'adjustments', 'pay_items', 'employee_locations']) {
         db.prepare(`DELETE FROM ${table} WHERE employee_id IN (${marks})`).run(...ids);
       }
       db.prepare(`DELETE FROM verifications WHERE manager_id IN (${marks})`).run(...ids);
@@ -394,6 +423,7 @@ module.exports = function adminRoutes(ctx) {
     deleteEmployees(ids);
     const branches = tx(db, () => {
       db.prepare('DELETE FROM holidays WHERE branch_id IS NOT NULL').run();
+      db.prepare('DELETE FROM employee_locations').run();
       return db.prepare('DELETE FROM branches').run().changes;
     });
     ctx.audit(req, 'staff.reset', { employees: ids.length, branches });
@@ -519,13 +549,17 @@ module.exports = function adminRoutes(ctx) {
       }
       const insEmp = db.prepare(
         `INSERT INTO employees (code, name, phone, designation, branch_id, salary_type, salary_paise, shift_start, shift_end,
-           weekly_offs, joined_on, active, pin_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+           weekly_offs, joined_on, active, follow_branch_shift, pin_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
       );
+      const branchShift = db.prepare('SELECT shift_start, shift_end FROM branches WHERE id = ?');
       const insItem = db.prepare('INSERT INTO pay_items (employee_id, kind, label, amount_paise, created_at) VALUES (?, ?, ?, ?, ?)');
       return plan.rows.map(({ data: d, items }) => {
         const pin = d.pin || randomPin();
-        const empId = insEmp.run(d.code, d.name, d.phone, d.designation, branchIds.get(d.branchKey), d.salary_type, d.salary_paise,
-          d.shift_start, d.shift_end, d.weekly_offs, d.joined_on, hashSecret(pin), ctx.now()).lastInsertRowid;
+        // No shift in the file: follow the branch's office timings.
+        const bid = branchIds.get(d.branchKey);
+        const shift = d.shift_given ? d : branchShift.get(bid);
+        const empId = insEmp.run(d.code, d.name, d.phone, d.designation, bid, d.salary_type, d.salary_paise,
+          shift.shift_start, shift.shift_end, d.weekly_offs, d.joined_on, d.shift_given ? 0 : 1, hashSecret(pin), ctx.now()).lastInsertRowid;
         for (const it of items) insItem.run(empId, it.kind, it.label, it.amount_paise, ctx.now());
         return { code: d.code, name: d.name, branch: d.branch, pin };
       });
@@ -993,10 +1027,6 @@ module.exports = function adminRoutes(ctx) {
       const pendingOt = data.rows.filter((x) => x.attendance.ot_pending_minutes > 0);
       if (pendingOt.length && !req.body?.ignore_pending_ot) {
         throw new HttpError(409, `${pendingOt.length} employee(s) have overtime waiting for approval. Approve or reject it first.`);
-      }
-      const pendingLate = data.rows.filter((x) => x.attendance.late_pending > 0);
-      if (pendingLate.length) {
-        throw new HttpError(409, `${pendingLate.length} employee(s) have late arrivals (over ${getSettings(db).late_max_minutes} min) waiting for your full/half-day decision.`);
       }
       db.prepare('INSERT INTO payroll_runs (month, finalized_at, finalized_by, data_json) VALUES (?, ?, ?, ?)')
         .run(month, ctx.now(), req.admin.id, JSON.stringify(data));

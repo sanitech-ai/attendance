@@ -155,7 +155,7 @@ function planImport(db, csvText) {
       data: {
         code, name, branch, branchKey, phone: get('phone').slice(0, 20), designation: get('designation').slice(0, 60),
         salary_type: salaryType, salary_paise: salary, joined_on: joined || '', shift_start: shiftStart, shift_end: shiftEnd,
-        weekly_offs: offs, pin,
+        weekly_offs: offs, pin, shift_given: !!(get('shift_start') || get('shift_end')),
       },
     });
   });

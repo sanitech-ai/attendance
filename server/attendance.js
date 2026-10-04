@@ -183,7 +183,12 @@ function computeDay(emp, date, ctx, settings, today) {
       } else if (day.status === 'absent') {
         flags.push('short_hours');
       }
-      if (veryLate) flags.push('late_approval'); // provisional status until an admin decides
+      if (veryLate) {
+        // More than late_max_minutes late: at most a half day, flagged so an admin can review it
+        // later (and grant a full day if justified).
+        if (day.status === 'present') day.status = 'half_day';
+        flags.push('late_approval');
+      }
     }
   } else if (leave) {
     day.status = leave.leave_type === 'paid' ? 'paid_leave' : 'unpaid_leave';

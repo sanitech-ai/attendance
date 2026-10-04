@@ -115,7 +115,7 @@ const PUNCH_LABEL = { IN: 'Punch In', OUT: 'Punch Out', OT_IN: 'Start Overtime',
 const DOC_LABEL = { aadhaar: 'Aadhaar', pan: 'PAN', bank: 'Bank passbook / cheque', photo: 'Photo', other: 'Other' };
 const FLAG_LABEL = {
   flagged_punch: 'Location flagged', missing_out: 'No punch out', short_hours: 'Short hours', missing_ot_out: 'OT not ended',
-  late_warning: 'Late (warning)', late_penalty: 'Late → half day', late_approval: 'Very late — needs your decision',
+  late_warning: 'Late (warning)', late_penalty: 'Late → half day', late_approval: 'Very late — half day, to review',
 };
 
 /** "Late 20m · warning 1 of 2" / "Late 20m · 3rd late → half day" */
@@ -124,7 +124,7 @@ function lateText(day, warnings) {
   if (!day.late_minutes) return '';
   const ord = (n) => `${n}${({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 100 >= 11 && n % 100 <= 13 ? 0 : n % 10] || 'th'}`;
   const late = `Late ${fmtMinutes(day.late_minutes)}`;
-  if (day.late_review === 'pending') return `${late} · waiting for approval`;
+  if (day.late_review === 'pending') return `${late} · counted as half day (to be reviewed)`;
   if (day.late_review === 'present') return `${late} · approved as full day`;
   if (day.late_review === 'half_day') return `${late} · marked half day`;
   if (!day.late_mark) return late;

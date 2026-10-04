@@ -6,6 +6,12 @@ const DOC_TYPES = ['aadhaar', 'pan', 'bank', 'photo', 'other'];
 const DOC_MIME = ['image/jpeg', 'image/png', 'application/pdf'];
 const DOC_MAX_BYTES = 8 * 1024 * 1024;
 
+/** Branches an employee may punch at: their own plus any extra locations an admin allowed. */
+function allowedBranchIds(db, emp) {
+  const extra = db.prepare('SELECT branch_id FROM employee_locations WHERE employee_id = ?').all(emp.id).map((r) => r.branch_id);
+  return new Set([emp.branch_id, ...extra]);
+}
+
 function publicEmployee(e) {
   if (!e) return e;
   const { pin_hash, failed_logins, locked_until, ...rest } = e;
@@ -100,6 +106,6 @@ function assertMonthOpen(db, month) {
 }
 
 module.exports = {
-  publicEmployee, validPin, punchState, createDocument, normalizeDocNumber, sendStoredFile, notFound,
+  allowedBranchIds, publicEmployee, validPin, punchState, createDocument, normalizeDocNumber, sendStoredFile, notFound,
   assertMonthOpen, DOC_COLUMNS, DOC_TYPES,
 };

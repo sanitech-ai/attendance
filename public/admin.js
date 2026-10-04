@@ -206,7 +206,7 @@ async function pageDashboard(el, params) {
       tile(d.pending.flagged_punches, 'Flagged punches to review', '#/punches?status=flagged'),
       tile(d.pending.leaves, 'Leave requests pending', '#/leaves?status=pending'),
       tile(d.pending.documents, 'Documents to verify', '#/documents?status=pending'),
-      tile(d.pending.late_approvals, 'Very late arrivals to decide', '#/late')),
+      tile(d.pending.late_approvals, 'Very late arrivals to review', '#/late')),
     h('h2', { style: { margin: '20px 0 10px' } }, `Staff on ${fmtDate(date)}`),
     table([
       { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)) },
@@ -425,7 +425,7 @@ async function pageLate(el, params) {
   const month = params.get('month') || thisMonth();
   const data = await api('GET', `/api/admin/late-approvals?month=${month}`);
   const kind = { pending: 'warn', present: 'ok', half_day: 'bad' };
-  const label = { pending: 'Waiting for you', present: 'Full day', half_day: 'Half day' };
+  const label = { pending: 'Half day · not reviewed', present: 'Full day (granted)', half_day: 'Half day (confirmed)' };
   const decide = (r, status) => run(async () => {
     await api('POST', '/api/admin/late-approvals/decision', { employee_id: r.employee_id, date: r.date, status });
     toast(status ? `${r.name}: ${label[status]} on ${fmtDate(r.date)}` : 'Decision cleared');
@@ -434,7 +434,7 @@ async function pageLate(el, params) {
   el.replaceChildren(
     pageHead('Late approvals'),
     h('div', { class: 'toolbar' }, monthPicker(month, (m) => go('late', { month: m }))),
-    h('p', { class: 'muted small' }, `Staff who arrive more than ${data.late_max_minutes} minutes late are sent here. Decide whether the day counts as a full day or a half day. These days are not part of the "every 3rd late is a half day" count. Payroll can't be finalized while any are waiting.`),
+    h('p', { class: 'muted small' }, `Arriving more than ${data.late_max_minutes} minutes late counts as a half day and is flagged here for review. Review whenever convenient: grant a full day if it was justified, or confirm the half day. These days are not part of the "every 3rd late is a half day" count.`),
     table([
       { label: 'Date', render: (r) => fmtDate(r.date) },
       { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)) },
@@ -492,9 +492,9 @@ async function pageEmployees(el) {
     !A.branches.length ? h('div', { class: 'card' }, 'Add a ', h('a', { href: '#/branches' }, 'branch'), ' first — every employee belongs to a branch.') : '',
     table([
       { label: 'Employee', render: (e) => h('div', {}, h('strong', {}, e.name), e.is_manager ? [' ', badge(e.manager_scope === 'all' ? 'Manager · all branches' : 'Manager', 'info')] : '', h('div', { class: 'small muted' }, `${e.code}${e.designation ? ` · ${e.designation}` : ''}${e.phone ? ` · ${e.phone}` : ''}`)) },
-      { label: 'Branch', render: (e) => e.branch_name },
+      { label: 'Branch', render: (e) => h('div', {}, e.branch_name, e.extra_location_ids ? h('div', { class: 'small muted' }, `+ ${e.extra_location_ids.split(',').length} more location(s)`) : '') },
       { label: 'Salary', render: (e) => rate(e) },
-      { label: 'Shift', render: (e) => `${e.shift_start}–${e.shift_end}` },
+      { label: 'Shift', render: (e) => h('div', {}, `${e.shift_start}–${e.shift_end}`, h('div', { class: 'small muted' }, e.follow_branch_shift ? 'branch timing' : 'personal')) },
       { label: 'Week off', render: (e) => e.weekly_offs.split(',').filter(Boolean).map((d) => WEEKDAYS[d]).join(', ') || 'None' },
       { label: 'Docs', class: 'num', render: (e) => h('a', { href: `#/documents?employee_id=${e.id}` }, String(e.document_count)) },
       { label: 'Status', render: (e) => (e.active ? badge('active', 'ok') : badge('inactive', 'neutral')) },
@@ -521,9 +521,14 @@ function employeeForm(e) {
     { name: 'salary_type', label: 'Salary type', type: 'select', value: e?.salary_type || 'monthly',
       options: [{ value: 'monthly', label: 'Monthly' }, { value: 'daily', label: 'Daily wage' }, { value: 'hourly', label: 'Hourly' }] },
     { name: 'salary', label: 'Salary amount (₹)', type: 'number', step: '0.01', min: 0, required: true, value: e ? e.salary_paise / 100 : '', hint: 'Per month, per day or per hour depending on salary type. Overtime is paid at the same hourly rate.' },
-    { name: 'shift_start', label: 'Shift start', type: 'time', required: true, value: e?.shift_start || '09:00' },
-    { name: 'shift_end', label: 'Shift end', type: 'time', required: true, value: e?.shift_end || '18:00' },
+    { name: 'follow_branch_shift', label: 'Use the branch’s office timings', type: 'checkbox', value: e ? !!e.follow_branch_shift : true },
+    { name: 'shift_start', label: 'Personal shift start', type: 'time', value: e?.shift_start || '09:00', hint: 'Only used when “Use the branch’s office timings” is unticked.' },
+    { name: 'shift_end', label: 'Personal shift end', type: 'time', value: e?.shift_end || '18:00' },
     { name: 'weekly_offs', label: 'Weekly off days', type: 'checks', value: e ? e.weekly_offs.split(',').filter(Boolean) : ['0'], options: WEEKDAYS.map((d, i) => ({ value: String(i), label: d })) },
+    { type: 'heading', label: 'Locations' },
+    { name: 'extra_locations', label: 'Also allowed to check in/out at', type: 'checks',
+      value: String(e?.extra_location_ids || '').split(',').filter(Boolean),
+      options: A.branches.filter((b) => b.active && b.id !== e?.branch_id).map((b) => ({ value: b.id, label: b.name })) },
     { type: 'heading', label: 'Manager' },
     { name: 'is_manager', label: 'Manager — can check what the app flags for their team (no power to change anything)', type: 'checkbox', value: !!e?.is_manager },
     { name: 'manager_scope', label: 'Manager covers', type: 'select', value: e?.manager_scope || 'branch',
@@ -762,12 +767,13 @@ async function pageBranches(el) {
   await loadBranches();
   el.replaceChildren(
     pageHead('Branches', h('button', { class: 'btn btn-primary', onclick: () => branchForm() }, '+ Add branch')),
-    h('p', { class: 'muted small' }, 'Staff can punch at any active branch. If they are outside every branch’s radius, the punch is either flagged for your review or blocked, depending on their home branch’s setting.'),
+    h('p', { class: 'muted small' }, 'Staff punch at their own branch, plus any extra locations you allow on their employee page. Anywhere else, the punch is flagged for your review or blocked, depending on their branch’s setting.'),
     table([
       { label: 'Branch', render: (b) => h('div', {}, h('strong', {}, b.name), b.address ? h('div', { class: 'small muted' }, b.address) : '') },
       { label: 'Location', render: (b) => (b.location_set
         ? h('div', {}, `${b.lat.toFixed(5)}, ${b.lng.toFixed(5)} `, mapLink(b.lat, b.lng))
         : h('button', { class: 'btn btn-sm btn-primary', onclick: () => branchForm(b) }, '⚠ Set location')) },
+      { label: 'Timing', render: (b) => `${b.shift_start}–${b.shift_end}` },
       { label: 'Radius', class: 'num', render: (b) => `${b.radius_m} m` },
       { label: 'Outside radius', render: (b) => (b.geofence_mode === 'block' ? badge('Block punch', 'bad') : badge('Allow & flag', 'warn')) },
       { label: 'Staff', class: 'num', render: (b) => String(b.employee_count) },
@@ -833,6 +839,8 @@ function branchForm(b) {
         } },
       { name: 'lat', label: 'Latitude', type: 'number', step: 'any', value: b?.location_set ? b.lat : '', placeholder: 'filled from the link' },
       { name: 'lng', label: 'Longitude', type: 'number', step: 'any', value: b?.location_set ? b.lng : '', placeholder: 'filled from the link' },
+      { name: 'shift_start', label: 'Office opens', type: 'time', required: true, value: b?.shift_start || '09:00' },
+      { name: 'shift_end', label: 'Office closes', type: 'time', required: true, value: b?.shift_end || '18:00', hint: 'Staff of this branch who follow the branch timing get these hours automatically (late marks and full days are counted from them).' },
       { name: 'radius_m', label: 'Allowed radius (metres)', type: 'number', min: 20, max: 5000, required: true, value: b?.radius_m ?? 150, hint: 'Phone GPS is usually accurate to 10–50 m. 100–200 m works well for most offices.' },
       { name: 'geofence_mode', label: 'When an employee of this branch is outside every branch radius', type: 'select', value: b?.geofence_mode || 'flag',
         options: [{ value: 'flag', label: 'Allow the punch but flag it for review' }, { value: 'block', label: 'Block the punch' }] },
@@ -923,8 +931,8 @@ async function pagePayroll(el, params) {
       h('div', { class: 'row' }, h('a', { class: 'btn', href: `/api/admin/payroll.csv?month=${month}` }, 'Download Excel (CSV)'), finalizeBtn)),
     p.rows.some((r) => r.attendance.late_pending) && !p.finalized
       ? h('div', { class: 'card', style: { marginBottom: '12px', borderColor: 'var(--warn)' } },
-        `⚠ Very late arrivals need your full/half-day decision: ${p.rows.filter((r) => r.attendance.late_pending).map((r) => r.name).join(', ')}. `,
-        h('a', { href: `#/late?month=${month}` }, 'Decide now →'))
+        `ℹ Very late arrivals counted as half days, not yet reviewed: ${p.rows.filter((r) => r.attendance.late_pending).map((r) => r.name).join(', ')}. `,
+        h('a', { href: `#/late?month=${month}` }, 'Review →'))
       : '',
     pendingOt.length && !p.finalized
       ? h('div', { class: 'card', style: { marginBottom: '12px', borderColor: 'var(--warn)' } },
@@ -953,7 +961,7 @@ async function pagePayroll(el, params) {
         h('li', {}, 'Hourly: rate × hours worked (paid leave counts as one full shift).'),
         h('li', {}, 'Overtime: approved OT hours × the same hourly rate (monthly: per-day ÷ shift hours; daily: daily rate ÷ shift hours).'),
         h('li', {}, `Full day = the employee’s shift length minus the ${A.me.settings.grace_minutes}-minute grace (9:00–18:00 → ${fmtMinutes(540 - A.me.settings.grace_minutes)} worked). Half day needs ${A.me.settings.half_day_hours} h. A missing punch-out counts as a half day until you correct it.`),
-        h('li', {}, `Late arrivals: every ${A.me.settings.late_warnings + 1}${A.me.settings.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month counts as a half day; the others are warnings. Someone up to ${A.me.settings.late_max_minutes} min late who stays until shift end is otherwise a full day. Later than ${A.me.settings.late_max_minutes} min: you decide full or half day (Late approvals).`),
+        h('li', {}, `Late arrivals: every ${A.me.settings.late_warnings + 1}${A.me.settings.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month counts as a half day; the others are warnings. Someone up to ${A.me.settings.late_max_minutes} min late who stays until shift end is otherwise a full day. Later than ${A.me.settings.late_max_minutes} min: half day, flagged on Late approvals where you can grant a full day.`),
         h('li', {}, 'Net = base + OT + additions − deductions − advances.'))));
 }
 
@@ -1133,7 +1141,7 @@ async function pageSettings(el, params) {
       h('dt', {}, 'Half day'), h('dd', {}, `${s.half_day_hours} hours worked`),
       h('dt', {}, 'Late after'), h('dd', {}, `${s.grace_minutes} minutes past shift start`),
       h('dt', {}, 'Late rule'), h('dd', {}, `Every ${s.late_warnings + 1}${s.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month is a half day (others are warnings)`),
-      h('dt', {}, 'Very late'), h('dd', {}, `More than ${s.late_max_minutes} min late: you decide full or half day`),
+      h('dt', {}, 'Very late'), h('dd', {}, `More than ${s.late_max_minutes} min late: half day, flagged for your review`),
       h('dt', {}, 'Staff salary view'), h('dd', {}, `From ${fmtMonth(s.salary_visible_from)} onwards`),
       h('dt', {}, 'GPS accuracy'), h('dd', {}, `Flag punches worse than ±${s.max_accuracy_m} m`),
       h('dt', {}, 'Overtime'), h('dd', {}, s.ot_requires_approval ? 'Needs admin approval before it is paid' : 'Paid automatically')),
@@ -1144,7 +1152,7 @@ async function pageSettings(el, params) {
         { name: 'half_day_hours', label: 'Hours for a half day', type: 'number', step: '0.25', min: 0.5, max: 24, required: true, value: s.half_day_hours, hint: 'Less than this counts as absent.' },
         { name: 'grace_minutes', label: 'Late grace period (minutes)', type: 'number', min: 0, max: 240, required: true, value: s.grace_minutes, hint: 'Also sets the full day: shift length minus this grace.' },
         { name: 'late_warnings', label: 'Warnings between half days', type: 'number', min: 0, max: 31, step: 1, required: true, value: s.late_warnings, hint: 'With 2: the 3rd, 6th, 9th… late in a month is a half day; the others are warnings.' },
-        { name: 'late_max_minutes', label: 'Arrivals later than this (minutes) need your full/half-day decision', type: 'number', min: 0, max: 480, required: true, value: s.late_max_minutes },
+        { name: 'late_max_minutes', label: 'Arrivals later than this (minutes) count as a half day and are flagged for review', type: 'number', min: 0, max: 480, required: true, value: s.late_max_minutes },
         { name: 'salary_visible_from', label: 'Staff can see salary from (month)', type: 'month', required: true, value: s.salary_visible_from },
         { name: 'max_accuracy_m', label: 'Flag punches with GPS accuracy worse than (metres)', type: 'number', min: 10, max: 5000, required: true, value: s.max_accuracy_m },
         { name: 'ot_requires_approval', label: 'Overtime needs admin approval', type: 'checkbox', value: s.ot_requires_approval },

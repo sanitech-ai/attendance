@@ -334,7 +334,7 @@ function punchFlow(kind, today) {
     else toast(`${PUNCH_LABEL[kind]} done at ${fmtTime(res.at)}`);
     if (res.late) {
       toast(res.late.review
-        ? `You are ${fmtMinutes(res.late.minutes)} late. Your manager will decide whether today counts as a full day or a half day.`
+        ? `You are ${fmtMinutes(res.late.minutes)} late. More than ${S.me.late_max_minutes} minutes late counts as a half day; the admin may review it later.`
         : res.late.half_day
           ? `You are late by ${fmtMinutes(res.late.minutes)}. This is late #${res.late.mark} this month — every ${res.late.every}rd late counts as a half day, so today is a half day.`
           : `You are late by ${fmtMinutes(res.late.minutes)}. This is late #${res.late.mark} this month — every ${res.late.every}rd late counts as a half day.`, 'error');

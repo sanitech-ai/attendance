@@ -98,6 +98,13 @@ CREATE TABLE IF NOT EXISTS late_decisions (
   PRIMARY KEY (employee_id, work_date)
 );
 
+-- Extra branches (besides their own) where an employee may punch in/out.
+CREATE TABLE IF NOT EXISTS employee_locations (
+  employee_id INTEGER NOT NULL REFERENCES employees(id),
+  branch_id   INTEGER NOT NULL REFERENCES branches(id),
+  PRIMARY KEY (employee_id, branch_id)
+);
+
 -- A manager's check of something the app flagged. ref is the punch id, or "employee_id:date".
 CREATE TABLE IF NOT EXISTS verifications (
   kind        TEXT NOT NULL CHECK (kind IN ('punch', 'late', 'overtime')),
@@ -237,6 +244,11 @@ function migrate(db) {
     db.exec('ALTER TABLE branches ADD COLUMN location_set INTEGER NOT NULL DEFAULT 1');
   }
   if (!cols.includes('maps_link')) db.exec("ALTER TABLE branches ADD COLUMN maps_link TEXT NOT NULL DEFAULT ''");
+  if (!cols.includes('shift_start')) {
+    // Office timings per branch; staff who follow their branch get these copied into their shift.
+    db.exec("ALTER TABLE branches ADD COLUMN shift_start TEXT NOT NULL DEFAULT '09:00'");
+    db.exec("ALTER TABLE branches ADD COLUMN shift_end TEXT NOT NULL DEFAULT '18:00'");
+  }
 
   const adminCols = db.prepare('PRAGMA table_info(admins)').all().map((c) => c.name);
   if (!adminCols.includes('can_edit_attendance')) {
@@ -251,6 +263,11 @@ function migrate(db) {
   }
 
   const empCols = db.prepare('PRAGMA table_info(employees)').all().map((c) => c.name);
+  if (!empCols.includes('follow_branch_shift')) {
+    db.exec('ALTER TABLE employees ADD COLUMN follow_branch_shift INTEGER NOT NULL DEFAULT 1');
+    // Anyone already on a personal shift keeps it.
+    db.exec(`UPDATE employees SET follow_branch_shift = 0 WHERE shift_start != '09:00' OR shift_end != '18:00'`);
+  }
   if (!empCols.includes('is_manager')) {
     // Managers can mark app-flagged items as verified/doubtful; they cannot change anything.
     db.exec('ALTER TABLE employees ADD COLUMN is_manager INTEGER NOT NULL DEFAULT 0');
