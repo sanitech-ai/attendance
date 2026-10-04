@@ -92,7 +92,7 @@ test('import: preview, create branches + employees + fixed pay items, PINs, payr
   const staff = s.client();
   assert.equal((await staff('POST', '/api/employee/login', { code: 'SECPL0008', pin: pins.SECPL0008 })).status, 200);
   s.clock.now = ist('2026-10-01', '09:00');
-  r = await staff('POST', '/api/employee/punch', { kind: 'IN', lat: 17.41, lng: 78.44, accuracy: 10, selfie: JPEG });
+  r = await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', lat: 17.41, lng: 78.44, accuracy: 10, selfie: JPEG });
   assert.equal(r.data.status, 'flagged');
   assert.match(r.data.flag_reason, /location of Head Office - Hyderabad not set/);
 
@@ -102,7 +102,7 @@ test('import: preview, create branches + employees + fixed pay items, PINs, payr
   assert.equal(r.status, 200);
   assert.equal((await admin('GET', '/api/admin/branches')).data.find((b) => b.id === ho.id).location_set, 1);
   s.clock.now = ist('2026-10-01', '18:00');
-  r = await staff('POST', '/api/employee/punch', { kind: 'OUT', lat: 17.41, lng: 78.44, accuracy: 10, selfie: JPEG });
+  r = await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'OUT', lat: 17.41, lng: 78.44, accuracy: 10, selfie: JPEG });
   assert.equal(r.data.status, 'ok');
 
   // Payroll: fixed items apply in full when there are paid days; not for someone with none
@@ -179,7 +179,7 @@ test('delete employees / branches and full reset before re-import', async (t) =>
   const staff = s.client();
   await staff('POST', '/api/employee/login', { code: 'SECPL0008', pin });
   s.clock.now = ist('2026-10-01', '09:00');
-  await staff('POST', '/api/employee/punch', { kind: 'IN', lat: 17.41, lng: 78.44, accuracy: 10, selfie: JPEG });
+  await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', lat: 17.41, lng: 78.44, accuracy: 10, selfie: JPEG });
   const filesDir = require('node:path').join(s.dataDir, 'files');
   assert.equal(fs.readdirSync(filesDir).length, 1);
 

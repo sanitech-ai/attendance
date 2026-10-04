@@ -10,6 +10,8 @@ const {
   allowedBranchIds, measurePunch, profileMissing, paymentDetails, publicEmployee, validPin, punchState, createDocument, sendStoredFile, notFound, DOC_COLUMNS,
 } = require('../common');
 
+const { addressAt } = require('../maps');
+
 const PUNCH_KINDS = ['IN', 'OUT', 'OT_IN', 'OT_OUT'];
 const monthName = (m) => new Date(`${m}-01T00:00:00Z`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 const SELFIE_MAX_BYTES = 2 * 1024 * 1024;
@@ -92,7 +94,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     const [day] = computeRange(db, emp, workDate, workDate, settings, now);
     const punches = db
       .prepare(
-        `SELECT p.id, p.kind, p.at, p.status, p.flag_reason, p.distance_m, p.inside_geofence, p.branch_id, b.name AS branch_name
+        `SELECT p.id, p.kind, p.at, p.status, p.flag_reason, p.distance_m, p.inside_geofence, p.branch_id, p.note, p.place, b.name AS branch_name
          FROM punches p LEFT JOIN branches b ON b.id = p.branch_id
          WHERE p.employee_id = ? AND p.work_date = ? ORDER BY p.at`,
       )
@@ -108,11 +110,12 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       punches,
       branches,
       home_branch_id: emp.branch_id,
+      offsite_allowed: !!emp.allow_offsite || db.prepare('SELECT geofence_mode, location_set FROM branches WHERE id = ?').get(emp.branch_id)?.geofence_mode !== 'block',
       max_accuracy_m: settings.max_accuracy_m,
       shift: { start: emp.shift_start, end: emp.shift_end },
       can_visit: !!db.prepare('SELECT field_visits FROM branches WHERE id = ?').get(emp.branch_id)?.field_visits,
       on_duty: !!state.openIn,
-      visits: db.prepare('SELECT id, at, note, status, lat, lng FROM visits WHERE employee_id = ? AND work_date = ? ORDER BY at').all(emp.id, workDate),
+      visits: db.prepare('SELECT id, at, note, place, status, lat, lng FROM visits WHERE employee_id = ? AND work_date = ? ORDER BY at').all(emp.id, workDate),
     });
   });
 
@@ -137,6 +140,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     const id = db.prepare(
       'INSERT INTO visits (employee_id, at, work_date, lat, lng, accuracy_m, note, selfie_file) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     ).run(emp.id, now, state.openIn.work_date, lat, lng, typeof accuracy === 'number' ? accuracy : null, place.slice(0, 200), file).lastInsertRowid;
+    fillPlace('visits', id, lat, lng);
     res.json({ ok: true, id: Number(id), at: now });
   });
 
@@ -146,10 +150,30 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     sendStoredFile(ctx, res, v.selfie_file, 'image/jpeg', `visit-${req.params.id}.jpg`);
   });
 
+  /** Looks up the street address in the background so the punch itself is never slowed down. */
+  function fillPlace(table, rowId, lat, lng) {
+    addressAt(lat, lng, ctx.fetch)
+      .then((place) => { if (place) db.prepare(`UPDATE ${table} SET place = ? WHERE id = ?`).run(place, Number(rowId)); })
+      .catch(() => {});
+  }
+
+  // Address preview for the camera screen (at most one lookup every 3 seconds per person).
+  const lastLookup = new Map();
+  r.get('/place', async (req, res) => {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw bad('lat and lng are required');
+    const t = Date.now();
+    if (t - (lastLookup.get(req.employee.id) || 0) < 3000) throw new HttpError(429, 'Too many lookups');
+    lastLookup.set(req.employee.id, t);
+    res.json({ place: await addressAt(lat, lng, ctx.fetch).catch(() => '') });
+  });
+
   r.post('/punch', (req, res) => {
     const now = ctx.now();
     const emp = req.employee;
     const { kind, lat, lng, accuracy, selfie } = req.body || {};
+    const note = String(req.body?.note || '').trim().slice(0, 200);
     if (!PUNCH_KINDS.includes(kind)) throw bad('Unknown punch type');
     if (typeof lat !== 'number' || typeof lng !== 'number' || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
       throw bad('Location is required. Allow location access and try again.');
@@ -166,25 +190,29 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     }
 
     const settings = getSettings(db);
-    const { nearest, inside, mode, flags } = measurePunch(db, emp, lat, lng, acc, settings);
-    if (!inside && mode === 'block') {
+    const { nearest, inside, mode, flags } = measurePunch(db, emp, lat, lng, acc, settings, note);
+    if (!inside && mode === 'block' && !emp.allow_offsite) {
       const where = nearest ? `${fmtKm(nearest.distance)} from ${nearest.branch.name}` : 'not near any branch';
       throw new HttpError(403, `You are ${where}. Punch from inside one of your sites. If you are inside, wait for a better GPS signal and retry.`);
     }
+    // Punching from a bank, GST office, client office…: they must say where; an admin approves it.
+    if (!inside && note.length < 3) throw bad('You are not at one of your sites. Write where you are punching from (e.g. HDFC Bank Ameerpet, client office).');
 
     const workDate = kind === 'OUT' ? state.openIn.work_date : kind === 'OT_OUT' ? state.openOt.work_date : istDate(now);
     const file = ctx.saveFile(buf);
     const result = db
       .prepare(
         `INSERT INTO punches (employee_id, kind, at, work_date, lat, lng, accuracy_m, branch_id, distance_m,
-           inside_geofence, selfie_file, status, flag_reason, user_agent)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           inside_geofence, selfie_file, status, flag_reason, user_agent, note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         emp.id, kind, now, workDate, lat, lng, acc, nearest?.branch.id ?? null,
         nearest ? Math.round(nearest.distance) : null, inside ? 1 : 0, file,
         flags.length ? 'flagged' : 'ok', flags.join('; ') || null, String(req.headers['user-agent'] || '').slice(0, 200),
+        inside ? null : note,
       );
+    if (!inside) fillPlace('punches', result.lastInsertRowid, lat, lng);
     let late = null;
     if (kind === 'IN') {
       const [day] = computeRange(db, emp, workDate, workDate, settings, now);
@@ -302,7 +330,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     const ids = [...team.keys()];
     const punches = ids.length
       ? db.prepare(
-        `SELECT p.id, p.employee_id, p.kind, p.at, p.work_date, p.lat, p.lng, p.accuracy_m, p.distance_m, p.flag_reason, b.name AS near_branch
+        `SELECT p.id, p.employee_id, p.kind, p.at, p.work_date, p.lat, p.lng, p.accuracy_m, p.distance_m, p.flag_reason, p.note, p.place, b.name AS near_branch
          FROM punches p LEFT JOIN branches b ON b.id = p.branch_id
          WHERE p.status = 'flagged' AND p.employee_id IN (${ids.map(() => '?').join(',')}) ORDER BY p.at DESC LIMIT 200`,
       ).all(...ids)

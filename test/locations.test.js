@@ -37,15 +37,15 @@ test('extra punch locations and per-office timings', async (t) => {
 
   s.clock.now = ist('2026-10-05', '09:00');
   // Office-only staff punching at Pashamylaram: flagged as not one of their sites
-  let r = await officeOnly('POST', '/api/employee/punch', { kind: 'IN', ...PASHA, accuracy: 10, selfie: JPEG });
+  let r = await officeOnly('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', ...PASHA, accuracy: 10, selfie: JPEG });
   assert.equal(r.data.status, 'flagged');
   assert.match(r.data.flag_reason, /at Pashamylaram, which is not one of their locations/);
   // The roamer is allowed there
-  r = await roamer('POST', '/api/employee/punch', { kind: 'IN', ...PASHA, accuracy: 10, selfie: JPEG });
+  r = await roamer('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', ...PASHA, accuracy: 10, selfie: JPEG });
   assert.equal(r.data.status, 'ok');
   assert.equal(r.data.branch_name, 'Pashamylaram');
   // Site staff (block mode) can't punch from the head office
-  r = await siteGuy('POST', '/api/employee/punch', { kind: 'IN', ...HQ, accuracy: 10, selfie: JPEG });
+  r = await siteGuy('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', ...HQ, accuracy: 10, selfie: JPEG });
   assert.equal(r.status, 403);
   // ...their app marks which sites are theirs (all sites are listed so distances make sense)
   const mine = async (c) => (await c('GET', '/api/employee/today')).data.branches.filter((b) => b.mine).map((b) => b.name).sort();
@@ -53,7 +53,7 @@ test('extra punch locations and per-office timings', async (t) => {
   assert.deepEqual(await mine(roamer), ['Head Office', 'Pashamylaram']);
 
   // Late is measured against the branch timing: 09:00 at Pashamylaram (opens 08:30) is 30 min late
-  r = await siteGuy('POST', '/api/employee/punch', { kind: 'IN', ...PASHA, accuracy: 10, selfie: JPEG });
+  r = await siteGuy('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', ...PASHA, accuracy: 10, selfie: JPEG });
   assert.equal(r.status, 200);
   assert.equal(r.data.late.minutes, 30);
 
@@ -105,13 +105,13 @@ test('distance is reported from the closest site, not just the closest allowed o
 
   s.clock.now = ist('2026-10-05', '09:00');
   const nearHq = { lat: HQ.lat + 0.003, lng: HQ.lng }; // ~330 m north of the head office
-  let r = await (await login('M1'))('POST', '/api/employee/punch', { kind: 'IN', ...nearHq, accuracy: 15, selfie: JPEG });
+  let r = await (await login('M1'))('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', ...nearHq, accuracy: 15, selfie: JPEG });
   assert.equal(r.data.status, 'flagged');
   assert.equal(r.data.branch_name, 'Head Office');
   assert.ok(r.data.distance_m > 300 && r.data.distance_m < 360, String(r.data.distance_m));
   assert.match(r.data.flag_reason, /0\.3\d km from Head Office, not one of their locations/);
 
-  r = await (await login('M2'))('POST', '/api/employee/punch', { kind: 'IN', ...HQ, accuracy: 15, selfie: JPEG });
+  r = await (await login('M2'))('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', ...HQ, accuracy: 15, selfie: JPEG });
   assert.equal(r.data.status, 'ok');
   assert.equal(r.data.branch_name, 'Head Office');
   void hq;

@@ -93,4 +93,23 @@ async function placeName(lat, lng, fetchImpl = fetch) {
   return [...new Set([local, district, a.state].filter(Boolean))].join(', ');
 }
 
-module.exports = { parseCoords, coordsFromPage, resolveMapsLink, placeName };
+/** Street-level address for a point (building / shop name, road, area, city), from OpenStreetMap. */
+async function addressAt(lat, lng, fetchImpl = fetch) {
+  const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&addressdetails=1&lat=${lat}&lon=${lng}`;
+  const res = await fetchImpl(url, {
+    signal: AbortSignal.timeout(6000),
+    headers: { 'User-Agent': 'Sanitech-Attendance/1.0 (https://app.sanitech.in)', 'Accept-Language': 'en-IN,en' },
+  });
+  if (!res.ok) throw new Error(`lookup failed (${res.status})`);
+  const j = await res.json();
+  const a = j.address || {};
+  const parts = [
+    j.name || a.amenity || a.office || a.shop || a.building || '',
+    [a.house_number, a.road].filter(Boolean).join(' '),
+    a.suburb || a.neighbourhood || a.village || a.hamlet || '',
+    a.city || a.town || a.state_district || a.county || '',
+  ];
+  return [...new Set(parts.filter(Boolean))].join(', ').slice(0, 200);
+}
+
+module.exports = { parseCoords, coordsFromPage, resolveMapsLink, placeName, addressAt };

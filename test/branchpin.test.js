@@ -38,7 +38,7 @@ test('editing a branch keeps its pin; moving a pin re-measures recent punches', 
   const staff = s.client();
   await staff('POST', '/api/employee/login', { code: 'H1', pin: '1234' });
   s.clock.now = ist('2026-10-05', '09:00');
-  r = await staff('POST', '/api/employee/punch', { kind: 'IN', ...HQ, accuracy: 10, selfie: JPEG });
+  r = await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', ...HQ, accuracy: 10, selfie: JPEG });
   assert.equal(r.data.status, 'flagged');
   assert.equal(r.data.branch_name, 'Pashamylaram');
   assert.match(r.data.flag_reason, /km from their branch Head Office/);

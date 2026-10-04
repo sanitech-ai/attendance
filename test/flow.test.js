@@ -50,33 +50,33 @@ test('end-to-end: punches, overtime, leaves, documents and payroll', async (t) =
 
   // Day 1: on time, full day, 2h overtime
   s.clock.now = ist('2026-09-01', '09:28');
-  r = await staff('POST', '/api/employee/punch', { kind: 'IN', ...OFFICE, accuracy: 12, selfie: JPEG });
+  r = await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', ...OFFICE, accuracy: 12, selfie: JPEG });
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.equal(r.data.status, 'ok');
-  assert.equal((await staff('POST', '/api/employee/punch', { kind: 'OUT', ...OFFICE, accuracy: 12, selfie: JPEG })).status, 409, 'double tap blocked');
-  assert.equal((await staff('POST', '/api/employee/punch', { kind: 'OT_IN', ...OFFICE, accuracy: 12, selfie: JPEG })).status, 409, 'OT needs regular OUT first');
-  assert.equal((await staff('POST', '/api/employee/punch', { kind: 'IN', ...OFFICE, accuracy: 12, selfie: 'data:image/png;base64,AAAA' })).status, 400);
+  assert.equal((await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'OUT', ...OFFICE, accuracy: 12, selfie: JPEG })).status, 409, 'double tap blocked');
+  assert.equal((await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'OT_IN', ...OFFICE, accuracy: 12, selfie: JPEG })).status, 409, 'OT needs regular OUT first');
+  assert.equal((await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', ...OFFICE, accuracy: 12, selfie: 'data:image/png;base64,AAAA' })).status, 400);
   s.clock.now = ist('2026-09-01', '18:30');
-  assert.equal((await staff('POST', '/api/employee/punch', { kind: 'OUT', ...OFFICE, accuracy: 12, selfie: JPEG })).status, 200);
+  assert.equal((await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'OUT', ...OFFICE, accuracy: 12, selfie: JPEG })).status, 200);
   s.clock.now = ist('2026-09-01', '19:00');
-  assert.equal((await staff('POST', '/api/employee/punch', { kind: 'OT_IN', ...OFFICE, accuracy: 12, selfie: JPEG })).status, 200);
+  assert.equal((await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'OT_IN', ...OFFICE, accuracy: 12, selfie: JPEG })).status, 200);
   r = await staff('GET', '/api/employee/today');
   assert.deepEqual(r.data.allowed, ['OT_OUT']);
   s.clock.now = ist('2026-09-01', '21:00');
-  assert.equal((await staff('POST', '/api/employee/punch', { kind: 'OT_OUT', ...OFFICE, accuracy: 12, selfie: JPEG })).status, 200);
+  assert.equal((await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'OT_OUT', ...OFFICE, accuracy: 12, selfie: JPEG })).status, 200);
 
   // Day 2: late, half day, punch OUT from far away (flag mode -> flagged, not blocked)
   s.clock.now = ist('2026-09-02', '10:00');
-  await staff('POST', '/api/employee/punch', { kind: 'IN', ...OFFICE, accuracy: 300, selfie: JPEG });
+  await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', ...OFFICE, accuracy: 300, selfie: JPEG });
   s.clock.now = ist('2026-09-02', '15:00');
-  r = await staff('POST', '/api/employee/punch', { kind: 'OUT', ...FAR, accuracy: 10, selfie: JPEG });
+  r = await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'OUT', ...FAR, accuracy: 10, selfie: JPEG });
   assert.equal(r.data.status, 'flagged');
   assert.match(r.data.flag_reason, /outside geofence/);
 
   // Block-mode branch refuses punches from outside
   const strict = s.client();
   await strict('POST', '/api/employee/login', { code: 'E002', pin: '5678' });
-  r = await strict('POST', '/api/employee/punch', { kind: 'IN', ...FAR, accuracy: 10, selfie: JPEG });
+  r = await strict('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', ...FAR, accuracy: 10, selfie: JPEG });
   assert.equal(r.status, 403);
   assert.match(r.data.error, /Punch from inside one of your sites/);
 
@@ -210,9 +210,9 @@ test('overnight shift: OUT after midnight counts for the day the shift started',
   const staff = s.client();
   await staff('POST', '/api/employee/login', { code: 'N1', pin: '1234' });
   s.clock.now = ist('2026-09-01', '22:00');
-  await staff('POST', '/api/employee/punch', { kind: 'IN', ...OFFICE, accuracy: 10, selfie: JPEG });
+  await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', ...OFFICE, accuracy: 10, selfie: JPEG });
   s.clock.now = ist('2026-09-02', '06:00');
-  await staff('POST', '/api/employee/punch', { kind: 'OUT', ...OFFICE, accuracy: 10, selfie: JPEG });
+  await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'OUT', ...OFFICE, accuracy: 10, selfie: JPEG });
   const r = await staff('GET', '/api/employee/attendance?month=2026-09');
   const d1 = r.data.days.find((d) => d.date === '2026-09-01');
   assert.equal(d1.status, 'present');
@@ -240,7 +240,7 @@ test('late rules: every 3rd late is a half day; over 1 hour late is a half day f
   await staff('POST', '/api/employee/login', { code: 'D1', pin: '1234' });
   const punch = async (date, time, kind) => {
     s.clock.now = ist(date, time);
-    const r = await staff('POST', '/api/employee/punch', { kind, ...OFFICE, accuracy: 10, selfie: JPEG });
+    const r = await staff('POST', '/api/employee/punch', { note: 'Client office',  kind, ...OFFICE, accuracy: 10, selfie: JPEG });
     assert.equal(r.status, 200, JSON.stringify(r.data));
     return r.data;
   };

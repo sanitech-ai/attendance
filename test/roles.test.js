@@ -40,7 +40,7 @@ test('managers check flagged items for their team but cannot change anything', a
   const far = await login('FAR');
   const punch = async (c, time, kind, where) => {
     s.clock.now = ist('2026-10-05', time);
-    return (await c('POST', '/api/employee/punch', { kind, ...where, accuracy: 10, selfie: JPEG })).data;
+    return (await c('POST', '/api/employee/punch', { note: 'Client office',  kind, ...where, accuracy: 10, selfie: JPEG })).data;
   };
   // Member: punch from 5 km away (flagged), 90 min late, overtime
   const flagged = await punch(mem, '10:30', 'IN', { lat: 28.45, lng: 77.0 });

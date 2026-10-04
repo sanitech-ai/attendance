@@ -280,3 +280,5 @@ tr.row-flag td { background: var(--warn-bg); }
 .pick input { width: auto; }
 .login-msg { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
 .login-msg pre { white-space: pre-wrap; font: inherit; font-size: 13px; margin: 8px 0 0; color: var(--muted); }
+.camera-offsite { position: absolute; left: 12px; right: 12px; bottom: 12px; background: rgba(0, 0, 0, 0.72); border-radius: 12px; padding: 10px 12px; font-size: 14px; display: grid; gap: 6px; }
+.camera-offsite input { width: 100%; font: inherit; font-size: 16px; padding: 10px 12px; border-radius: 10px; border: 2px solid #fbbf24; background: #fff; color: #111; }

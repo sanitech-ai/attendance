@@ -345,7 +345,7 @@ module.exports = function adminRoutes(ctx) {
       for (const p of rows) {
         if (closed.has(p.work_date.slice(0, 7))) continue;
         if (!emps.has(p.employee_id)) emps.set(p.employee_id, db.prepare('SELECT * FROM employees WHERE id = ?').get(p.employee_id));
-        const m = measurePunch(db, emps.get(p.employee_id), p.lat, p.lng, p.accuracy_m, settings);
+        const m = measurePunch(db, emps.get(p.employee_id), p.lat, p.lng, p.accuracy_m, settings, p.note || '');
         const status = p.status === 'flagged' && !m.flags.length ? 'ok' : p.status;
         const reason = status === 'ok' && p.status === 'ok' ? p.flag_reason : m.flags.join('; ') || null;
         upd.run(m.nearest?.branch.id ?? null, m.nearest ? Math.round(m.nearest.distance) : null, m.inside ? 1 : 0, status, reason, p.id);
@@ -428,6 +428,7 @@ module.exports = function adminRoutes(ctx) {
       joined_on: joinedOn, active: b.active === false ? 0 : 1,
       is_manager: b.is_manager ? 1 : 0, manager_scope: b.manager_scope === 'all' ? 'all' : 'branch',
       follow_branch_shift: follow ? 1 : 0, extra_locations: extra,
+      allow_offsite: (b.allow_offsite ?? before?.allow_offsite) ? 1 : 0,
       // Fields not sent keep their current value (staff may have filled them in themselves).
       ...paymentDetails({
         phone: b.phone ?? before?.phone ?? '',
@@ -444,12 +445,12 @@ module.exports = function adminRoutes(ctx) {
     const newId = db
       .prepare(
         `INSERT INTO employees (code, name, phone, designation, branch_id, salary_type, salary_paise, shift_start, shift_end,
-           weekly_offs, joined_on, active, is_manager, manager_scope, follow_branch_shift, upi_id, bank_account, bank_ifsc, pin_hash, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           weekly_offs, joined_on, active, is_manager, manager_scope, follow_branch_shift, upi_id, bank_account, bank_ifsc, allow_offsite, pin_hash, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(v.code, v.name, v.phone, v.designation, v.branch_id, v.salary_type, v.salary_paise, v.shift_start, v.shift_end,
         v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, v.follow_branch_shift, v.upi_id, v.bank_account, v.bank_ifsc,
-        hashSecret(pin), ctx.now()).lastInsertRowid;
+        v.allow_offsite, hashSecret(pin), ctx.now()).lastInsertRowid;
     setExtraLocations(Number(newId), v.extra_locations);
     ctx.audit(req, 'employee.created', { id: Number(newId), code: v.code });
     res.json({ ok: true, id: Number(newId) });
@@ -463,9 +464,10 @@ module.exports = function adminRoutes(ctx) {
     db.prepare(
       `UPDATE employees SET code = ?, name = ?, phone = ?, designation = ?, branch_id = ?, salary_type = ?, salary_paise = ?,
          shift_start = ?, shift_end = ?, weekly_offs = ?, joined_on = ?, active = ?, is_manager = ?, manager_scope = ?, follow_branch_shift = ?,
-         upi_id = ?, bank_account = ?, bank_ifsc = ? WHERE id = ?`,
+         upi_id = ?, bank_account = ?, bank_ifsc = ?, allow_offsite = ? WHERE id = ?`,
     ).run(v.code, v.name, v.phone, v.designation, v.branch_id, v.salary_type, v.salary_paise, v.shift_start, v.shift_end,
-      v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, v.follow_branch_shift, v.upi_id, v.bank_account, v.bank_ifsc, empId);
+      v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, v.follow_branch_shift, v.upi_id, v.bank_account, v.bank_ifsc,
+      v.allow_offsite, empId);
     setExtraLocations(empId, v.extra_locations);
     if (!v.active) ctx.endAllSessions('employee', empId);
     const changed = Object.keys(v).filter((k) => k !== 'extra_locations' && String(before[k]) !== String(v[k]));
@@ -744,7 +746,7 @@ module.exports = function adminRoutes(ctx) {
     if (req.query.branch_id) { where.push('e.branch_id = ?'); params.push(id(req.query.branch_id)); }
     const rows = db.prepare(
       `SELECT p.id, p.employee_id, p.kind, p.at, p.work_date, p.lat, p.lng, p.accuracy_m, p.distance_m, p.inside_geofence,
-         p.status, p.flag_reason, p.reviewed_at, e.code, e.name, b.name AS branch_name, hb.name AS home_branch_name
+         p.status, p.flag_reason, p.reviewed_at, p.note, p.place, e.code, e.name, b.name AS branch_name, hb.name AS home_branch_name
        FROM punches p JOIN employees e ON e.id = p.employee_id
        LEFT JOIN branches b ON b.id = p.branch_id JOIN branches hb ON hb.id = e.branch_id
        ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY p.at DESC LIMIT 500`,
@@ -910,7 +912,7 @@ module.exports = function adminRoutes(ctx) {
     if (req.query.status) { where.push('v.status = ?'); params.push(String(req.query.status)); }
     if (req.query.employee_id) { where.push('v.employee_id = ?'); params.push(id(req.query.employee_id)); }
     res.json(db.prepare(
-      `SELECT v.id, v.employee_id, v.at, v.work_date, v.lat, v.lng, v.accuracy_m, v.note, v.status, v.reviewed_at,
+      `SELECT v.id, v.employee_id, v.at, v.work_date, v.lat, v.lng, v.accuracy_m, v.note, v.place, v.status, v.reviewed_at,
          e.code, e.name, b.name AS branch_name, b.lat AS branch_lat, b.lng AS branch_lng
        FROM visits v JOIN employees e ON e.id = v.employee_id JOIN branches b ON b.id = e.branch_id
        ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY v.status = 'pending' DESC, v.at DESC LIMIT 500`,

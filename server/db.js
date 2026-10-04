@@ -292,6 +292,18 @@ function migrate(db) {
     // Anyone already on a personal shift keeps it.
     db.exec(`UPDATE employees SET follow_branch_shift = 0 WHERE shift_start != '09:00' OR shift_end != '18:00'`);
   }
+  if (!empCols.includes('allow_offsite')) {
+    // Staff of "block" branches who may still punch from a bank, client office etc. (with a note).
+    db.exec('ALTER TABLE employees ADD COLUMN allow_offsite INTEGER NOT NULL DEFAULT 0');
+  }
+  const punchCols = db.prepare('PRAGMA table_info(punches)').all().map((c) => c.name);
+  if (!punchCols.includes('note')) {
+    // Off-site punches: where the employee says they are, and the address the GPS points to.
+    db.exec('ALTER TABLE punches ADD COLUMN note TEXT');
+    db.exec('ALTER TABLE punches ADD COLUMN place TEXT');
+  }
+  const visitCols = db.prepare('PRAGMA table_info(visits)').all().map((c) => c.name);
+  if (!visitCols.includes('place')) db.exec('ALTER TABLE visits ADD COLUMN place TEXT');
   if (!empCols.includes('last_login_at')) {
     // Tells the admin who has started using the app (and so already knows their PIN).
     db.exec('ALTER TABLE employees ADD COLUMN last_login_at INTEGER');

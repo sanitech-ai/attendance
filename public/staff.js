@@ -188,11 +188,13 @@ async function renderHome(main) {
     h('img', { src: `${EMP}/visits/${v.id}/selfie`, alt: 'Field visit selfie', loading: 'lazy' }),
     h('div', { style: { flex: 1 } },
       h('div', {}, h('span', { class: 't' }, fmtTime(v.at)), ' 📍 ', v.note),
+      v.place ? h('div', { class: 'small muted' }, v.place) : '',
       h('div', { class: 'small muted' }, mapLink(v.lat, v.lng, 'Map'), ' · ', badge(...visitKind[v.status])))) }));
   const punchItems = t.punches.map((p) => ({ at: p.at, el: h('li', {},
       h('img', { src: `${EMP}/punches/${p.id}/selfie`, alt: 'Selfie', loading: 'lazy' }),
       h('div', { style: { flex: 1 } },
         h('div', {}, h('span', { class: 't' }, fmtTime(p.at)), ' ', PUNCH_LABEL[p.kind]),
+        p.note ? h('div', { class: 'small' }, '📍 ', p.note, p.place ? h('span', { class: 'muted' }, ` · ${p.place}`) : '') : '',
         h('div', { class: 'small muted' },
           p.inside_geofence ? `At ${p.branch_name || 'branch'}` : p.distance_m !== null ? `${fmtDistance(p.distance_m)} from ${p.branch_name || 'branch'}` : '',
           p.status === 'flagged' ? [' · ', badge('Under review', 'warn')] : p.status === 'rejected' ? [' · ', badge('Rejected', 'bad')] : ''))) }));
@@ -238,10 +240,16 @@ function punchFlow(kind, today, note = '') {
   const shutter = h('button', { class: 'shutter', 'aria-label': 'Take selfie', disabled: true });
   const retake = h('button', { class: 'btn hidden' }, 'Retake');
   const confirm = h('button', { class: 'btn btn-primary hidden', style: { minWidth: '160px' } }, `Confirm ${PUNCH_LABEL[kind]}`);
+  // Punching from a bank, GST office, client office…: show the detected address and ask where they are.
+  const placeLine = h('div', { class: 'small' }, '📍 Finding the address…');
+  const offsiteNote = h('input', { type: 'text', maxlength: 200, placeholder: 'e.g. HDFC Bank Ameerpet – depositing cheques', 'aria-label': 'Where are you punching from?' });
+  const offsite = h('div', { class: 'camera-offsite hidden' },
+    h('strong', {}, 'You are not at your branch. Where are you punching from?'), placeLine, offsiteNote,
+    h('div', { class: 'small' }, 'Your selfie, exact location and this note go to the admin for approval.'));
   const overlay = h('div', { class: 'camera' },
     h('div', { class: 'camera-view' }, video, preview,
       h('div', { class: 'camera-top' }, h('strong', {}, PUNCH_LABEL[kind]), h('button', { class: 'icon-btn', 'aria-label': 'Close', onclick: () => close() }, '✕')),
-      geo),
+      geo, offsite),
     h('div', { class: 'camera-bar' }, shutter, retake, confirm));
   document.body.append(overlay);
 
@@ -281,7 +289,27 @@ function punchFlow(kind, today, note = '') {
       !rough && n && !n.inside && n.b.id !== today.home_branch_id && home
         ? h('div', { class: 'small' }, `Your branch ${home.name}: ${fmtDistance(distanceM(latitude, longitude, home.lat, home.lng))}`) : '',
       h('div', { class: 'small' }, `GPS accuracy ±${Math.round(accuracy)} m`));
+    updateOffsite(n, rough);
     if (captured) confirm.disabled = !gpsReady();
+  }
+
+  let lookedUpAt = null;
+  const needsNote = () => !offsite.classList.contains('hidden');
+  function updateOffsite(n, rough) {
+    const show = kind !== 'VISIT' && !rough && n && !n.inside;
+    offsite.classList.toggle('hidden', !show);
+    if (!show) return;
+    if (!today.offsite_allowed) {
+      offsite.replaceChildren(h('strong', {}, 'You are not at your site.'), h('div', { class: 'small' }, 'Punching from other places is not allowed for you. Go to your site, or ask the admin.'));
+      return;
+    }
+    const { latitude, longitude } = position.coords;
+    // Look the address up once, and again only if they move more than 100 m.
+    if (lookedUpAt && distanceM(latitude, longitude, lookedUpAt.lat, lookedUpAt.lng) < 100) return;
+    lookedUpAt = { lat: latitude, lng: longitude };
+    api('GET', `${EMP}/place?lat=${latitude}&lng=${longitude}`)
+      .then((r) => { placeLine.textContent = r.place ? `📍 ${r.place}` : `📍 ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`; })
+      .catch(() => { placeLine.textContent = `📍 ${latitude.toFixed(5)}, ${longitude.toFixed(5)}`; });
   }
   const readyTimer = setInterval(() => { if (done) clearInterval(readyTimer); else updateGeo(); }, 1000);
 
@@ -374,7 +402,13 @@ function punchFlow(kind, today, note = '') {
       renderShell();
       return;
     }
-    const res = await run(() => api('POST', `${EMP}/punch`, { kind, ...body }), confirm);
+    const where = needsNote() ? offsiteNote.value.trim() : '';
+    if (needsNote() && today.offsite_allowed && where.length < 3) {
+      toast('Write where you are punching from (bank, GST office, client name…)', 'error');
+      offsiteNote.focus();
+      return;
+    }
+    const res = await run(() => api('POST', `${EMP}/punch`, { kind, ...body, note: where }), confirm);
     if (!res) return;
     close();
     if (res.status === 'flagged') toast(`${PUNCH_LABEL[kind]} saved at ${fmtTime(res.at)}, but flagged for review: ${res.flag_reason}`, 'error');

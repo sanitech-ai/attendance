@@ -53,7 +53,7 @@ function paymentDetails(b) {
  * counts; otherwise the distance is to the closest company site of any kind (so someone next to the
  * head office isn't shown as "300 km from <another site>"), plus how far they are from their own branch.
  */
-function measurePunch(db, emp, lat, lng, acc, settings) {
+function measurePunch(db, emp, lat, lng, acc, settings, note = '') {
   const allowed = allowedBranchIds(db, emp);
   const measured = db.prepare('SELECT * FROM branches WHERE active = 1 AND location_set = 1').all()
     .map((b) => ({ branch: b, distance: haversineMeters(lat, lng, b.lat, b.lng) }))
@@ -68,6 +68,7 @@ function measurePunch(db, emp, lat, lng, acc, settings) {
   const flags = [];
   // Inside a company site that isn't one of theirs: say so, so the admin sees why it was flagged.
   const otherSite = !inside && measured.find((m) => !allowed.has(m.branch.id) && m.distance <= m.branch.radius_m)?.branch;
+  if (!inside && note) flags.push(`off-site: “${note}”`);
   if (otherSite) flags.push(`at ${otherSite.name}, which is not one of their locations`);
   else if (!homeLocated && !inside) flags.push(`location of ${home?.name || 'home branch'} not set yet`);
   else if (!inside) {

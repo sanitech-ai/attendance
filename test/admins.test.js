@@ -63,7 +63,7 @@ test('staff preview: admin sees the employee app read-only', async (t) => {
   const staff = s.client();
   await staff('POST', '/api/employee/login', { code: 'E1', pin: '1234' });
   s.clock.now = ist('2026-10-01', '09:05');
-  const punch = await staff('POST', '/api/employee/punch', { kind: 'IN', lat: 17.41, lng: 78.44, accuracy: 10, selfie: JPEG });
+  const punch = await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', lat: 17.41, lng: 78.44, accuracy: 10, selfie: JPEG });
 
   const base = `/api/admin/preview/${e.data.id}`;
   let r = await admin('GET', `${base}/me`);

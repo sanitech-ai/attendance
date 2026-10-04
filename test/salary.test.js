@@ -22,7 +22,7 @@ test('staff see their salary live, then the final payslip', async (t) => {
   await staff('POST', '/api/employee/login', { code: 'E1', pin: '1234' });
   const punch = async (date, time, kind) => {
     s.clock.now = ist(date, time);
-    assert.equal((await staff('POST', '/api/employee/punch', { kind, ...HQ, accuracy: 10, selfie: JPEG })).status, 200);
+    assert.equal((await staff('POST', '/api/employee/punch', { note: 'Client office',  kind, ...HQ, accuracy: 10, selfie: JPEG })).status, 200);
   };
 
   // Day 1 worked, plus 2 h overtime awaiting approval

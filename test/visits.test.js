@@ -27,7 +27,7 @@ test('head office staff add visit selfies during the day; admin reviews them', a
   s.clock.now = ist('2026-10-05', '09:00');
   let r = await staff('POST', '/api/employee/visit', { ...BANK, accuracy: 10, selfie: JPEG, note: 'HDFC Bank' });
   assert.equal(r.status, 409);
-  await staff('POST', '/api/employee/punch', { kind: 'IN', ...HQ, accuracy: 10, selfie: JPEG });
+  await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', ...HQ, accuracy: 10, selfie: JPEG });
   s.clock.now = ist('2026-10-05', '11:00');
   assert.equal((await staff('POST', '/api/employee/visit', { ...BANK, accuracy: 10, selfie: JPEG, note: '' })).status, 400, 'place is required');
   r = await staff('POST', '/api/employee/visit', { ...BANK, accuracy: 10, selfie: JPEG, note: 'HDFC Bank, Banjara Hills' });
@@ -38,7 +38,7 @@ test('head office staff add visit selfies during the day; admin reviews them', a
   r = await staff('POST', '/api/employee/visit', { lat: 17.39, lng: 78.47, accuracy: 10, selfie: JPEG, note: 'GST office' });
   const v2 = r.data.id;
   // Other branches can't
-  await siteStaff('POST', '/api/employee/punch', { kind: 'IN', lat: 16.5, lng: 81.7, accuracy: 10, selfie: JPEG });
+  await siteStaff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', lat: 16.5, lng: 81.7, accuracy: 10, selfie: JPEG });
   s.clock.now = ist('2026-10-05', '14:05');
   assert.equal((await siteStaff('POST', '/api/employee/visit', { ...BANK, accuracy: 10, selfie: JPEG, note: 'x' })).status, 403);
 
