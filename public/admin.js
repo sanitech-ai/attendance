@@ -253,7 +253,7 @@ async function pagePunches(el, params) {
       { label: 'Selfie', render: (p) => h('img', { class: 'thumb', src: `/api/admin/punches/${p.id}/selfie`, alt: 'Selfie', loading: 'lazy', onclick: () => punchDetail(p) }) },
       { label: 'Employee', render: (p) => h('div', {}, h('strong', {}, p.name), h('div', { class: 'small muted' }, p.code)) },
       { label: 'Punch', render: (p) => h('div', {}, PUNCH_LABEL[p.kind], h('div', { class: 'small muted' }, `${fmtDateTime(p.at)}`)) },
-      { label: 'Location', render: (p) => h('div', {}, p.inside_geofence ? `At ${p.branch_name}` : p.branch_name ? `${p.distance_m} m from ${p.branch_name}` : 'Unknown',
+      { label: 'Location', render: (p) => h('div', {}, p.inside_geofence ? `At ${p.branch_name}` : p.branch_name ? `${fmtDistance(p.distance_m)} from ${p.branch_name}` : 'Unknown',
         h('div', { class: 'small muted' }, p.accuracy_m !== null ? `±${Math.round(p.accuracy_m)} m · ` : '', mapLink(p.lat, p.lng))) },
       { label: 'Status', render: (p) => h('div', {}, badge(p.status, statusKind[p.status]), p.flag_reason ? h('div', { class: 'small muted' }, p.flag_reason) : '', verifBadge(p.verification)) },
       { label: '', render: (p) => reviewButtons(p) },
@@ -304,7 +304,7 @@ async function pageVisits(el, params) {
   el.replaceChildren(
     pageHead('Field visits'),
     h('p', { class: 'muted small' }, 'Staff of ',
-      visitBranches.length ? visitBranches.join(', ') : h('a', { href: '#/branches' }, 'branches with “visit selfies” turned on'),
+      visitBranches.length ? visitBranches.join(', ') : h('a', { href: '#/branches' }, 'branches with “field visit selfies” turned on'),
       ' take a selfie at every place they visit during the day (bank, GST office, client office…). Check each one and approve or reject it.'),
     h('div', { class: 'toolbar' },
       h('input', { type: 'date', value: f.date, onchange: (e) => set('date')(e.target.value), 'aria-label': 'Date' }),
@@ -317,11 +317,18 @@ async function pageVisits(el, params) {
       { label: 'Selfie', render: (v) => h('img', { class: 'thumb', src: `/api/admin/visits/${v.id}/selfie`, alt: 'Selfie', loading: 'lazy', onclick: () => visitDetail(v) }) },
       { label: 'Employee', render: (v) => h('div', {}, h('strong', {}, v.name), h('div', { class: 'small muted' }, `${v.code} · ${v.branch_name}`)) },
       { label: 'Place / purpose', render: (v) => h('div', {}, v.note, h('div', { class: 'small muted' }, fmtDateTime(v.at))) },
-      { label: 'Location', render: (v) => h('div', {}, mapLink(v.lat, v.lng, 'Open map'),
+      { label: 'Location', render: (v) => h('div', {}, nearestSite(v), ' ', mapLink(v.lat, v.lng, 'Open map'),
         h('div', { class: 'small muted' }, v.accuracy_m !== null ? `±${Math.round(v.accuracy_m)} m` : '')) },
       { label: 'Status', render: (v) => badge(v.status, statusKind[v.status]) },
       { label: '', render: (v) => visitButtons(v) },
-    ], rows, { empty: 'No visit selfies match these filters.', rowClass: (v) => (v.status === 'pending' ? 'row-flag' : null) }));
+    ], rows, { empty: 'No field visit selfies match these filters.', rowClass: (v) => (v.status === 'pending' ? 'row-flag' : null) }));
+}
+
+/** Closest company site to a visit — handy to spot a selfie that was really taken at the office. */
+function nearestSite(v) {
+  const near = A.branches.filter((b) => b.location_set).map((b) => ({ b, d: distanceM(v.lat, v.lng, b.lat, b.lng) })).sort((x, y) => x.d - y.d)[0];
+  if (!near) return '';
+  return near.d <= near.b.radius_m ? `At ${near.b.name}` : `${fmtDistance(near.d)} from ${near.b.name}`;
 }
 
 function visitButtons(v, after) {
@@ -850,7 +857,7 @@ async function pageBranches(el) {
       { label: 'Location', render: (b) => (b.location_set
         ? h('div', {}, `${b.lat.toFixed(5)}, ${b.lng.toFixed(5)} `, mapLink(b.lat, b.lng))
         : h('button', { class: 'btn btn-sm btn-primary', onclick: () => branchForm(b) }, '⚠ Set location')) },
-      { label: 'Timing', render: (b) => h('div', {}, `${b.shift_start}–${b.shift_end}`, b.field_visits ? h('div', {}, badge('visit selfies', 'info')) : '') },
+      { label: 'Timing', render: (b) => h('div', {}, `${b.shift_start}–${b.shift_end}`, b.field_visits ? h('div', {}, badge('field visit selfies', 'info')) : '') },
       { label: 'Radius', class: 'num', render: (b) => `${b.radius_m} m` },
       { label: 'Outside radius', render: (b) => (b.geofence_mode === 'block' ? badge('Block punch', 'bad') : badge('Allow & flag', 'warn')) },
       { label: 'Staff', class: 'num', render: (b) => String(b.employee_count) },
@@ -921,7 +928,7 @@ function branchForm(b) {
       { name: 'radius_m', label: 'Allowed radius (metres)', type: 'number', min: 20, max: 5000, required: true, value: b?.radius_m ?? 150, hint: 'Phone GPS is usually accurate to 10–50 m. 100–200 m works well for most offices.' },
       { name: 'geofence_mode', label: 'When an employee of this branch is outside every branch radius', type: 'select', value: b?.geofence_mode || 'flag',
         options: [{ value: 'flag', label: 'Allow the punch but flag it for review' }, { value: 'block', label: 'Block the punch' }] },
-      { name: 'field_visits', label: 'Visit selfies — staff of this branch travel during the day (banks, GST office, clients) and take a selfie at each place', type: 'checkbox', value: !!b?.field_visits },
+      { name: 'field_visits', label: 'Field visit selfies — staff of this branch travel during the day (banks, GST office, clients) and take a selfie at each place', type: 'checkbox', value: !!b?.field_visits },
       ...(b ? [{ name: 'active', label: 'Active', type: 'checkbox', value: !!b.active }] : []),
     ],
     async onSubmit(v) {

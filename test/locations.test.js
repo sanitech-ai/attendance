@@ -47,9 +47,10 @@ test('extra punch locations and per-office timings', async (t) => {
   // Site staff (block mode) can't punch from the head office
   r = await siteGuy('POST', '/api/employee/punch', { kind: 'IN', ...HQ, accuracy: 10, selfie: JPEG });
   assert.equal(r.status, 403);
-  // ...and their app only lists their own sites
-  assert.deepEqual((await siteGuy('GET', '/api/employee/today')).data.branches.map((b) => b.name), ['Pashamylaram']);
-  assert.deepEqual((await roamer('GET', '/api/employee/today')).data.branches.map((b) => b.name).sort(), ['Head Office', 'Pashamylaram']);
+  // ...their app marks which sites are theirs (all sites are listed so distances make sense)
+  const mine = async (c) => (await c('GET', '/api/employee/today')).data.branches.filter((b) => b.mine).map((b) => b.name).sort();
+  assert.deepEqual(await mine(siteGuy), ['Pashamylaram']);
+  assert.deepEqual(await mine(roamer), ['Head Office', 'Pashamylaram']);
 
   // Late is measured against the branch timing: 09:00 at Pashamylaram (opens 08:30) is 30 min late
   r = await siteGuy('POST', '/api/employee/punch', { kind: 'IN', ...PASHA, accuracy: 10, selfie: JPEG });
@@ -66,7 +67,7 @@ test('extra punch locations and per-office timings', async (t) => {
   // Removing the extra location takes the permission away
   const h2 = by('H2');
   await admin('PUT', `/api/admin/employees/${roam}`, { ...base, code: 'H2', name: 'Roamer', branch_id: hq, follow_branch_shift: true, extra_locations: [], shift_start: h2.shift_start, shift_end: h2.shift_end });
-  assert.deepEqual((await roamer('GET', '/api/employee/today')).data.branches.map((b) => b.name), ['Head Office']);
+  assert.deepEqual(await mine(roamer), ['Head Office']);
   assert.ok(site && night);
 });
 
@@ -86,3 +87,33 @@ test('import without shift columns follows the branch timing', async (t) => {
   assert.deepEqual([a1.shift_start, a1.follow_branch_shift], ['08:30', 1]);
   assert.deepEqual([a2.shift_start, a2.follow_branch_shift], ['10:00', 0]);
 });
+
+test('distance is reported from the closest site, not just the closest allowed one', async (t) => {
+  const s = await startServer(ist('2026-10-05', '08:00'));
+  t.after(() => s.close());
+  const admin = s.client();
+  await admin('POST', '/api/admin/setup', { username: 'firefueled', password: 'password123', name: 'Owner' });
+  const hq = (await admin('POST', '/api/admin/branches', { name: 'Head Office', ...HQ, radius_m: 150, geofence_mode: 'flag' })).data.id;
+  const far = (await admin('POST', '/api/admin/branches', { name: 'Palakollu', lat: 16.52, lng: 81.73, radius_m: 300, geofence_mode: 'flag' })).data.id;
+  const pasha = (await admin('POST', '/api/admin/branches', { name: 'Pashamylaram', ...PASHA, radius_m: 300, geofence_mode: 'flag' })).data.id;
+  const base = { salary_type: 'monthly', salary: 30000, weekly_offs: ['0'], joined_on: '', pin: '1234', follow_branch_shift: true };
+  // Home is a far site; also allowed at Pashamylaram, but not at the head office
+  await admin('POST', '/api/admin/employees', { ...base, code: 'M1', name: 'Multi', branch_id: far, extra_locations: [pasha] });
+  // A big radius at one allowed site must not hide being inside another
+  await admin('POST', '/api/admin/employees', { ...base, code: 'M2', name: 'Office + site', branch_id: hq, extra_locations: [pasha] });
+  const login = async (code) => { const c = s.client(); await c('POST', '/api/employee/login', { code, pin: '1234' }); return c; };
+
+  s.clock.now = ist('2026-10-05', '09:00');
+  const nearHq = { lat: HQ.lat + 0.003, lng: HQ.lng }; // ~330 m north of the head office
+  let r = await (await login('M1'))('POST', '/api/employee/punch', { kind: 'IN', ...nearHq, accuracy: 15, selfie: JPEG });
+  assert.equal(r.data.status, 'flagged');
+  assert.equal(r.data.branch_name, 'Head Office');
+  assert.ok(r.data.distance_m > 300 && r.data.distance_m < 360, String(r.data.distance_m));
+  assert.match(r.data.flag_reason, /m from Head Office, not one of their locations/);
+
+  r = await (await login('M2'))('POST', '/api/employee/punch', { kind: 'IN', ...HQ, accuracy: 15, selfie: JPEG });
+  assert.equal(r.data.status, 'ok');
+  assert.equal(r.data.branch_name, 'Head Office');
+  void hq;
+});
+

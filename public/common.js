@@ -111,7 +111,7 @@ const STATUS_SHORT = {
   present: 'P', half_day: 'HD', absent: 'A', paid_leave: 'PL', unpaid_leave: 'UL', week_off: 'WO', holiday: 'H',
   not_marked: '–', upcoming: '', not_joined: '', working: 'W',
 };
-const PUNCH_LABEL = { IN: 'Punch In', OUT: 'Punch Out', OT_IN: 'Start Overtime', OT_OUT: 'End Overtime', VISIT: 'Visit selfie' };
+const PUNCH_LABEL = { IN: 'Punch In', OUT: 'Punch Out', OT_IN: 'Start Overtime', OT_OUT: 'End Overtime', VISIT: 'Field visit selfie' };
 const MISSING_LABEL = { phone: 'Mobile number', aadhaar: 'Aadhaar card', pan: 'PAN card', payment: 'Bank account or UPI ID (for salary)' };
 const DOC_LABEL = { aadhaar: 'Aadhaar', pan: 'PAN', bank: 'Bank passbook / cheque', photo: 'Photo', other: 'Other' };
 const FLAG_LABEL = {
@@ -294,6 +294,19 @@ function monthPicker(month, onChange) {
     h('button', { class: 'icon-btn', 'aria-label': 'Previous month', onclick: () => onChange(shiftMonth(month, -1)) }, '‹'),
     h('span', {}, fmtMonth(month)),
     h('button', { class: 'icon-btn', 'aria-label': 'Next month', onclick: () => onChange(shiftMonth(month, 1)) }, '›'));
+}
+
+/** Straight-line distance in metres. */
+function distanceM(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const rad = (x) => (x * Math.PI) / 180;
+  const a = Math.sin(rad(lat2 - lat1) / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(rad(lng2 - lng1) / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+/** 850 m / 3.2 km */
+function fmtDistance(m) {
+  return m >= 1000 ? `${(m / 1000).toFixed(m >= 10000 ? 0 : 1)} km` : `${Math.round(m)} m`;
 }
 
 function mapLink(lat, lng, text = 'Map') {

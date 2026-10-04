@@ -91,13 +91,14 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     const [day] = computeRange(db, emp, workDate, workDate, settings, now);
     const punches = db
       .prepare(
-        `SELECT id, kind, at, status, flag_reason, distance_m, inside_geofence, branch_id FROM punches
-         WHERE employee_id = ? AND work_date = ? ORDER BY at`,
+        `SELECT p.id, p.kind, p.at, p.status, p.flag_reason, p.distance_m, p.inside_geofence, p.branch_id, b.name AS branch_name
+         FROM punches p LEFT JOIN branches b ON b.id = p.branch_id
+         WHERE p.employee_id = ? AND p.work_date = ? ORDER BY p.at`,
       )
       .all(emp.id, workDate);
     const allowed = allowedBranchIds(db, emp);
     const branches = db.prepare('SELECT id, name, lat, lng, radius_m FROM branches WHERE active = 1 AND location_set = 1').all()
-      .filter((b) => allowed.has(b.id));
+      .map((b) => ({ ...b, mine: allowed.has(b.id) }));
     res.json({
       server_time: now,
       work_date: workDate,
@@ -106,6 +107,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       punches,
       branches,
       home_branch_id: emp.branch_id,
+      max_accuracy_m: settings.max_accuracy_m,
       shift: { start: emp.shift_start, end: emp.shift_end },
       can_visit: !!db.prepare('SELECT field_visits FROM branches WHERE id = ?').get(emp.branch_id)?.field_visits,
       on_duty: !!state.openIn,
@@ -118,7 +120,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     const now = ctx.now();
     const emp = req.employee;
     const branch = db.prepare('SELECT field_visits FROM branches WHERE id = ?').get(emp.branch_id);
-    if (!branch?.field_visits) throw new HttpError(403, 'Visit selfies are not turned on for your branch');
+    if (!branch?.field_visits) throw new HttpError(403, 'Field visit selfies are not turned on for your branch');
     const { lat, lng, accuracy, selfie, note } = req.body || {};
     const place = String(note || '').trim();
     if (!place) throw bad('Write where you are (e.g. HDFC Bank, Banjara Hills)');
@@ -127,7 +129,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     }
     const { buf } = decodeDataUrl(selfie, ['image/jpeg'], SELFIE_MAX_BYTES);
     const state = punchState(db, emp.id, now);
-    if (!state.openIn) throw new HttpError(409, 'Punch in first — visit selfies are for while you are on duty.');
+    if (!state.openIn) throw new HttpError(409, 'Punch in first — field visit selfies are for while you are on duty.');
     const last = db.prepare('SELECT at FROM visits WHERE employee_id = ? ORDER BY at DESC LIMIT 1').get(emp.id);
     if (last && now - last.at < 60000) throw new HttpError(409, 'You just added a visit. Wait a minute before adding another.');
     const file = ctx.saveFile(buf);
@@ -167,13 +169,14 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     // hasn't been entered yet can't be measured against.
     const allowed = allowedBranchIds(db, emp);
     const allBranches = db.prepare('SELECT * FROM branches WHERE active = 1 AND location_set = 1').all();
-    const branches = allBranches.filter((b) => allowed.has(b.id));
-    let nearest = null;
-    for (const b of branches) {
-      const d = haversineMeters(lat, lng, b.lat, b.lng);
-      if (!nearest || d < nearest.distance) nearest = { branch: b, distance: d };
-    }
-    const inside = !!nearest && nearest.distance <= nearest.branch.radius_m;
+    // Inside any of their sites counts (closest first). Otherwise report the distance to the closest
+    // company site of any kind, so a person standing next to the head office isn't shown as
+    // "300 km from <some other site>".
+    const measured = allBranches.map((b) => ({ branch: b, distance: haversineMeters(lat, lng, b.lat, b.lng) }))
+      .sort((x, y) => x.distance - y.distance);
+    const insideAt = measured.find((m) => allowed.has(m.branch.id) && m.distance <= m.branch.radius_m);
+    const nearest = insideAt || measured[0] || null;
+    const inside = !!insideAt;
     const home = db.prepare('SELECT * FROM branches WHERE id = ?').get(emp.branch_id);
     const homeLocated = !!home?.location_set;
     const mode = homeLocated ? home.geofence_mode : 'flag';
@@ -185,10 +188,14 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
 
     const flags = [];
     // Inside a company site that isn't one of theirs: say so, so the admin sees why it was flagged.
-    const otherSite = !inside && allBranches.find((b) => !allowed.has(b.id) && haversineMeters(lat, lng, b.lat, b.lng) <= b.radius_m);
+    const otherSite = !inside && measured.find((m) => !allowed.has(m.branch.id) && m.distance <= m.branch.radius_m)?.branch;
     if (otherSite) flags.push(`at ${otherSite.name}, which is not one of their locations`);
     else if (!homeLocated && !inside) flags.push(`location of ${home?.name || 'home branch'} not set yet`);
-    else if (!inside) flags.push(nearest ? `outside geofence (${Math.round(nearest.distance)} m from ${nearest.branch.name})` : 'no branch configured');
+    else if (!inside) {
+      flags.push(nearest
+        ? `outside geofence (${Math.round(nearest.distance)} m from ${nearest.branch.name}${allowed.has(nearest.branch.id) ? '' : ', not one of their locations'})`
+        : 'no branch configured');
+    }
     if (acc === null) flags.push('GPS accuracy unknown');
     else if (acc > settings.max_accuracy_m) flags.push(`low GPS accuracy (±${Math.round(acc)} m)`);
 

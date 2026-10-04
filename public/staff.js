@@ -63,13 +63,6 @@ setUnauthorizedHandler(() => {
   else showLogin();
 });
 
-function distanceM(lat1, lng1, lat2, lng2) {
-  const R = 6371000;
-  const rad = (x) => (x * Math.PI) / 180;
-  const a = Math.sin(rad(lat2 - lat1) / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(rad(lng2 - lng1) / 2) ** 2;
-  return 2 * R * Math.asin(Math.sqrt(a));
-}
-
 // ---------------------------------------------------------------- login
 
 function showLogin() {
@@ -181,7 +174,7 @@ async function renderHome(main) {
   const d = t.day;
   const actions = h('div', { class: 'punch-actions' }, t.allowed.map((kind) =>
     h('button', { class: `btn btn-primary punch-btn ${kind.startsWith('OT') ? 'ot' : ''}`, onclick: () => punchFlow(kind, t) }, PUNCH_LABEL[kind])),
-    t.can_visit && t.on_duty ? h('button', { class: 'btn punch-btn visit', onclick: () => visitFlow(t) }, '📍 Visit selfie (bank, client, office…)') : '');
+    t.can_visit && t.on_duty ? h('button', { class: 'btn punch-btn visit', onclick: () => visitFlow(t) }, '📍 Field visit selfie (bank, client, office…)') : '');
 
   const facts = h('dl', { class: 'kv' },
     h('dt', {}, 'Shift'), h('dd', {}, `${t.shift.start} – ${t.shift.end}`),
@@ -192,7 +185,7 @@ async function renderHome(main) {
 
   const visitKind = { pending: ['Waiting for review', 'warn'], approved: ['Approved', 'ok'], rejected: ['Rejected', 'bad'] };
   const visitItems = (t.visits || []).map((v) => ({ at: v.at, el: h('li', {},
-    h('img', { src: `${EMP}/visits/${v.id}/selfie`, alt: 'Visit selfie', loading: 'lazy' }),
+    h('img', { src: `${EMP}/visits/${v.id}/selfie`, alt: 'Field visit selfie', loading: 'lazy' }),
     h('div', { style: { flex: 1 } },
       h('div', {}, h('span', { class: 't' }, fmtTime(v.at)), ' 📍 ', v.note),
       h('div', { class: 'small muted' }, mapLink(v.lat, v.lng, 'Map'), ' · ', badge(...visitKind[v.status])))) }));
@@ -201,7 +194,7 @@ async function renderHome(main) {
       h('div', { style: { flex: 1 } },
         h('div', {}, h('span', { class: 't' }, fmtTime(p.at)), ' ', PUNCH_LABEL[p.kind]),
         h('div', { class: 'small muted' },
-          p.inside_geofence ? `At branch (${p.distance_m} m)` : p.distance_m !== null ? `${p.distance_m} m from branch` : '',
+          p.inside_geofence ? `At ${p.branch_name || 'branch'}` : p.distance_m !== null ? `${fmtDistance(p.distance_m)} from ${p.branch_name || 'branch'}` : '',
           p.status === 'flagged' ? [' · ', badge('Under review', 'warn')] : p.status === 'rejected' ? [' · ', badge('Rejected', 'bad')] : ''))) }));
   const items = [...punchItems, ...visitItems].sort((a, b) => a.at - b.at);
   const timeline = items.length
@@ -218,7 +211,7 @@ async function renderHome(main) {
 
 function visitFlow(today) {
   formDialog({
-    title: '📍 Visit selfie',
+    title: '📍 Field visit selfie',
     fields: [{ name: 'note', label: 'Where are you?', required: true, placeholder: 'e.g. HDFC Bank, Banjara Hills / GST office / client name' }],
     submitLabel: 'Open camera',
     async onSubmit(v) {
@@ -260,27 +253,34 @@ function punchFlow(kind, today, note = '') {
     overlay.remove();
   }
 
+  /** Inside one of their own sites if possible, else the closest company site of any kind. */
   function nearestBranch(lat, lng) {
-    let best = null;
-    for (const b of today.branches) {
-      const dist = distanceM(lat, lng, b.lat, b.lng);
-      if (!best || dist < best.dist) best = { b, dist };
-    }
-    return best;
+    const all = today.branches.map((b) => ({ b, dist: distanceM(lat, lng, b.lat, b.lng) })).sort((x, y) => x.dist - y.dist);
+    const at = all.find((m) => m.b.mine !== false && m.dist <= m.b.radius_m);
+    return at ? { ...at, inside: true } : all[0] ? { ...all[0], inside: false } : null;
   }
+
+  const maxAcc = today.max_accuracy_m || 100;
+  const opened = Date.now();
+  // Phones often report a rough network location first and a precise GPS fix a few seconds later.
+  // Wait for a good fix (or 25 seconds) so the punch isn't measured from a wrong spot.
+  const gpsReady = () => position && (position.coords.accuracy <= maxAcc || Date.now() - opened > 25000);
 
   function updateGeo() {
     if (!position) return;
     const { latitude, longitude, accuracy } = position.coords;
     const n = nearestBranch(latitude, longitude);
-    const inside = n && n.dist <= n.b.radius_m;
-    geo.className = `camera-geo ${inside ? 'ok' : 'bad'}`;
+    const rough = accuracy > maxAcc;
+    geo.className = `camera-geo ${rough ? 'wait' : n?.inside ? 'ok' : 'bad'}`;
     geo.replaceChildren(
-      h('div', {}, h('strong', {}, inside ? `✓ At ${n.b.name}` : n ? `${Math.round(n.dist)} m from ${n.b.name}` : 'No branch set up'),
-        inside ? '' : h('span', {}, ' — outside branch area')),
+      rough
+        ? h('div', {}, h('strong', {}, '⏳ Finding your exact location…'), h('div', { class: 'small' }, 'Stay still for a few seconds, ideally near a window or outdoors.'))
+        : h('div', {}, h('strong', {}, n?.inside ? `✓ At ${n.b.name}` : n ? `${fmtDistance(n.dist)} from ${n.b.name}` : 'No branch set up'),
+          n && !n.inside ? h('span', {}, n.b.mine === false ? ' — not one of your locations' : ' — outside branch area') : ''),
       h('div', { class: 'small' }, `GPS accuracy ±${Math.round(accuracy)} m`));
-    if (captured) confirm.disabled = false;
+    if (captured) confirm.disabled = !gpsReady();
   }
+  const readyTimer = setInterval(() => { if (done) clearInterval(readyTimer); else updateGeo(); }, 1000);
 
   if (!navigator.geolocation) {
     geo.className = 'camera-geo bad';
@@ -331,7 +331,7 @@ function punchFlow(kind, today, note = '') {
     if (position) {
       const n = nearestBranch(position.coords.latitude, position.coords.longitude);
       lines.push(`${position.coords.latitude.toFixed(6)}, ${position.coords.longitude.toFixed(6)} ±${Math.round(position.coords.accuracy)}m`);
-      if (n) lines.push(`${Math.round(n.dist)} m from ${n.b.name}`);
+      if (n) lines.push(n.inside ? `At ${n.b.name}` : `${fmtDistance(n.dist)} from ${n.b.name}`);
     }
     const fs = Math.max(14, Math.round(canvas.width / 34));
     c.font = `600 ${fs}px system-ui, sans-serif`;
@@ -347,8 +347,8 @@ function punchFlow(kind, today, note = '') {
     shutter.classList.add('hidden');
     retake.classList.remove('hidden');
     confirm.classList.remove('hidden');
-    confirm.disabled = !position;
-    if (!position) toast('Waiting for your location before you can confirm…');
+    confirm.disabled = !gpsReady();
+    if (!gpsReady()) toast('Waiting for an accurate location before you can confirm…');
   });
 
   retake.addEventListener('click', () => {
@@ -361,13 +361,13 @@ function punchFlow(kind, today, note = '') {
   });
 
   confirm.addEventListener('click', async () => {
-    if (!captured || !position) return;
+    if (!captured || !gpsReady()) return;
     const body = { lat: position.coords.latitude, lng: position.coords.longitude, accuracy: position.coords.accuracy, selfie: captured };
     if (kind === 'VISIT') {
       const done = await run(() => api('POST', `${EMP}/visit`, { ...body, note }), confirm);
       if (!done) return;
       close();
-      toast(`Visit saved at ${fmtTime(done.at)}. The admin will review it.`);
+      toast(`Field visit saved at ${fmtTime(done.at)}. The admin will review it.`);
       renderShell();
       return;
     }
