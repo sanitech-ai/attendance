@@ -284,3 +284,12 @@ tr.row-flag td { background: var(--warn-bg); }
 .camera-offsite { position: absolute; left: 12px; right: 12px; bottom: 12px; background: rgba(0, 0, 0, 0.72); border-radius: 12px; padding: 10px 12px; font-size: 14px; display: grid; gap: 6px; }
 .camera-offsite input { width: 100%; font: inherit; font-size: 16px; padding: 10px 12px; border-radius: 10px; border: 2px solid #fbbf24; background: #fff; color: #111; }
 .img-gone { display: flex; align-items: center; justify-content: center; min-width: 48px; min-height: 48px; border-radius: 10px; background: var(--surface-2); color: var(--muted); font-size: 11px; text-align: center; }
+
+/* In-app document viewer */
+.viewer { position: fixed; inset: 0; z-index: 80; background: #111; display: flex; flex-direction: column; }
+.viewer-bar { display: flex; align-items: center; gap: 10px; padding: 10px 12px; padding-top: calc(10px + env(safe-area-inset-top)); background: var(--surface); border-bottom: 1px solid var(--border); }
+.viewer-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.viewer-body { flex: 1; min-height: 0; overflow: auto; display: flex; align-items: flex-start; justify-content: center; }
+.viewer-body img { max-width: 100%; height: auto; display: block; margin: auto; }
+.viewer-body iframe { width: 100%; height: 100%; border: 0; background: #fff; }
+.viewer-pdf { margin: auto; padding: 24px; text-align: center; color: #fff; max-width: 340px; display: grid; gap: 12px; justify-items: center; }

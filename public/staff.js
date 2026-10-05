@@ -535,7 +535,7 @@ async function renderMore(main) {
             h('div', {}, h('strong', {}, DOC_LABEL[d.doc_type]), d.label ? ` · ${d.label}` : ''),
             h('div', { class: 'small muted' }, d.doc_number || '', d.review_note ? ` · ${d.review_note}` : '')),
           badge(d.status, docKind[d.status]),
-          h('a', { class: 'btn btn-sm', href: `${EMP}/documents/${d.id}/file`, target: '_blank', rel: 'noopener' }, 'View'))))
+          h('button', { class: 'btn btn-sm', onclick: () => openDocument(`${EMP}/documents/${d.id}/file`, d.mime, DOC_LABEL[d.doc_type]) }, 'View'))))
         : h('div', { class: 'empty' }, 'No documents uploaded yet.')),
     installCard(),
     h('div', { class: 'card row' },

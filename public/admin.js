@@ -916,7 +916,7 @@ async function pageDocuments(el, params) {
       { label: 'Uploaded', render: (d) => h('div', {}, fmtDateTime(d.uploaded_at), h('div', { class: 'small muted' }, `by ${d.uploaded_by} · ${Math.round(d.size_bytes / 1024)} KB`)) },
       { label: 'Status', render: (d) => h('div', {}, badge(d.status, statusKind[d.status]), d.review_note ? h('div', { class: 'small muted' }, d.review_note) : '') },
       { label: '', render: (d) => h('div', { class: 'row' },
-        h('a', { class: 'btn btn-sm', href: `/api/admin/documents/${d.id}/file`, target: '_blank', rel: 'noopener' }, 'View'),
+        h('button', { class: 'btn btn-sm', onclick: () => openDocument(`/api/admin/documents/${d.id}/file`, d.mime, `${d.name} · ${DOC_LABEL[d.doc_type]}`) }, 'View'),
         d.status !== 'verified' ? h('button', { class: 'btn btn-sm btn-ok', onclick: review(d, 'verified') }, 'Verify') : '',
         d.status !== 'rejected' ? h('button', { class: 'btn btn-sm', onclick: review(d, 'rejected') }, 'Reject') : '',
         h('button', { class: 'btn btn-sm', onclick: async (e) => {

@@ -163,6 +163,39 @@ function statusBadge(status) {
 }
 
 /** Modal dialog. content: Node. Returns {close}. */
+/**
+ * Full-screen document viewer inside the app. An installed app has no browser back button, so a
+ * document opened as a page would leave no way back; this has a Back button and the phone's back
+ * gesture closes it too.
+ */
+function openDocument(url, mime, title) {
+  const isPdf = mime === 'application/pdf';
+  const body = h('div', { class: 'viewer-body' });
+  const close = () => { overlay.remove(); window.removeEventListener('popstate', onPop); };
+  const onPop = () => close();
+  const back = () => (history.state?.viewer ? history.back() : close());
+  const overlay = h('div', { class: 'viewer', role: 'dialog', 'aria-label': title },
+    h('div', { class: 'viewer-bar' },
+      h('button', { class: 'btn btn-sm', onclick: back }, '← Back'),
+      h('strong', { class: 'viewer-title' }, title),
+      h('a', { class: 'btn btn-sm', href: url, download: '' }, 'Download')),
+    body);
+  if (!isPdf) {
+    body.append(h('img', { src: url, alt: title }));
+  } else if (navigator.pdfViewerEnabled) {
+    body.append(h('iframe', { src: url, title }));
+  } else {
+    // Phone browsers can't show a PDF inside a page: hand it to the phone's PDF viewer instead.
+    body.append(h('div', { class: 'viewer-pdf' },
+      h('div', { style: { fontSize: '48px' } }, '📄'),
+      h('p', {}, 'This document is a PDF. Open it in your phone’s PDF viewer, then come back here.'),
+      h('a', { class: 'btn btn-primary', href: url, download: '' }, 'Open PDF')));
+  }
+  document.body.append(overlay);
+  history.pushState({ viewer: true }, '');
+  window.addEventListener('popstate', onPop);
+}
+
 function modal(title, content, { wide = false, onClose } = {}) {
   const close = () => {
     overlay.remove();
