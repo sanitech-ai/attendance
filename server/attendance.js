@@ -302,4 +302,33 @@ function summarize(days) {
   return s;
 }
 
-module.exports = { computeRange, computeDay, pairPunches, summarize, shiftMinutes };
+/** The day an employee started using the app: their first punch or first leave request. */
+function appStartDate(db, emp) {
+  const firstPunch = db.prepare("SELECT MIN(work_date) AS d FROM punches WHERE employee_id = ? AND status != 'rejected'").get(emp.id)?.d;
+  const firstAsk = db.prepare('SELECT MIN(created_at) AS t FROM leave_requests WHERE employee_id = ?').get(emp.id)?.t;
+  const dates = [firstPunch, firstAsk ? istDate(firstAsk) : null].filter(Boolean).sort();
+  return dates[0] || null;
+}
+
+/**
+ * Paid / unpaid leave days taken (as counted in attendance, so the same as payroll) in a calendar
+ * year and in the current month — only from the day the employee started using the app (and not
+ * before their joining date).
+ */
+function leaveTotals(db, emp, year, settings, nowMs = Date.now()) {
+  const today = istDate(nowMs);
+  const to = `${year}-12-31` < today ? `${year}-12-31` : today;
+  const since = appStartDate(db, emp);
+  const from = [`${year}-01-01`, emp.joined_on || '', since || ''].sort().pop();
+  const out = { year, since, paid: 0, unpaid: 0, month: today.slice(0, 7), month_paid: 0, month_unpaid: 0 };
+  if (!since || to < from) return out;
+  for (const d of computeRange(db, emp, from, to, settings, nowMs)) {
+    if (d.future) continue;
+    const thisMonth = d.date.startsWith(out.month);
+    if (d.status === 'paid_leave') { out.paid++; if (thisMonth) out.month_paid++; }
+    if (d.status === 'unpaid_leave') { out.unpaid++; if (thisMonth) out.month_unpaid++; }
+  }
+  return out;
+}
+
+module.exports = { computeRange, computeDay, pairPunches, summarize, shiftMinutes, leaveTotals };

@@ -392,7 +392,7 @@ async function pageAttendance(el, params) {
   const grid = data.rows.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'register' },
     h('thead', {}, h('tr', {}, h('th', {}, 'Employee'),
       dates.map((d) => h('th', { title: fmtDate(d), style: d === today ? { color: 'var(--primary)' } : null }, h('div', {}, d.slice(8)), h('div', { class: 'small' }, WEEKDAYS[new Date(`${d}T00:00:00Z`).getUTCDay()][0]))),
-      ['P', 'HD', 'A', 'Leave', 'Late', 'Hours', 'OT h'].map((x) => h('th', {}, x)))),
+      ['P', 'HD', 'A', 'PL', 'UL', 'Late', 'Hours', 'OT h'].map((x) => h('th', {}, x)))),
     h('tbody', {}, data.rows.map((r) => h('tr', {},
       h('td', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)),
       r.days.map((d) => h('td', {}, STATUS_SHORT[d.status] !== '' || d.override ? h('span', {
@@ -401,7 +401,7 @@ async function pageAttendance(el, params) {
         onclick: () => editDay(r, d, data.finalized),
       }, STATUS_SHORT[d.status] || '·') : h('span', { class: 'c', onclick: () => editDay(r, d, data.finalized) }, '·'))),
       h('td', {}, r.summary.present), h('td', {}, r.summary.half_day), h('td', {}, r.summary.absent + r.summary.not_marked),
-      h('td', {}, r.summary.paid_leave + r.summary.unpaid_leave), h('td', { title: r.summary.late_penalties ? `${r.summary.late_penalties} counted as half day` : null }, r.summary.late_penalties ? `${r.summary.late_days} (${r.summary.late_penalties} HD)` : r.summary.late_days),
+      h('td', {}, r.summary.paid_leave), h('td', {}, r.summary.unpaid_leave), h('td', { title: r.summary.late_penalties ? `${r.summary.late_penalties} counted as half day` : null }, r.summary.late_penalties ? `${r.summary.late_days} (${r.summary.late_penalties} HD)` : r.summary.late_days),
       h('td', {}, (r.summary.worked_minutes / 60).toFixed(1)), h('td', {}, (r.summary.ot_payable_minutes / 60).toFixed(1))))))) : h('div', { class: 'empty' }, 'No employees.');
 
   el.replaceChildren(
@@ -605,7 +605,10 @@ async function pageLate(el, params) {
 
 async function pageLeaves(el, params) {
   const status = params.get('status') || '';
-  const rows = await api('GET', `/api/admin/leaves${status ? `?status=${status}` : ''}`);
+  const year = params.get('year') || todayIST().slice(0, 4);
+  const [rows, sum] = await Promise.all([api('GET', `/api/admin/leaves${status ? `?status=${status}` : ''}`), api('GET', `/api/admin/leave-summary?year=${year}`)]);
+  const n = (v) => (v ? String(v) : '—');
+  const curMonth = sum.rows[0]?.month || thisMonth();
   const statusKind = { pending: 'warn', approved: 'ok', rejected: 'bad', cancelled: 'neutral' };
   const decide = (l, s) => async (e) => {
     if (await run(() => api('POST', `/api/admin/leaves/${l.id}/decision`, { status: s }), e.currentTarget)) {
@@ -627,7 +630,19 @@ async function pageLeaves(el, params) {
       { label: '', render: (l) => (l.status === 'cancelled' ? '' : h('div', { class: 'row' },
         l.status !== 'approved' ? h('button', { class: 'btn btn-sm btn-ok', onclick: decide(l, 'approved') }, 'Approve') : '',
         l.status !== 'rejected' ? h('button', { class: 'btn btn-sm', onclick: decide(l, 'rejected') }, 'Reject') : '')) },
-    ], rows, { empty: 'No leave requests.' }));
+    ], rows, { empty: 'No leave requests.' }),
+    h('div', { class: 'spread', style: { margin: '24px 0 10px' } }, h('h2', {}, 'Leaves taken'),
+      h('select', { style: { width: 'auto' }, onchange: (e) => go('leaves', { status, year: e.target.value }), 'aria-label': 'Year' },
+        [Number(todayIST().slice(0, 4)), Number(todayIST().slice(0, 4)) - 1].map((y) => h('option', { value: y, selected: String(y) === String(sum.year) }, String(y))))),
+    table([
+      { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)) },
+      { label: 'On the app since', render: (r) => (r.since ? fmtDate(r.since) : h('span', { class: 'muted' }, 'not yet')) },
+      { label: `Paid · ${fmtMonth(curMonth)}`, class: 'num', render: (r) => n(r.month_paid) },
+      { label: `Unpaid · ${fmtMonth(curMonth)}`, class: 'num', render: (r) => n(r.month_unpaid) },
+      { label: `Paid · ${sum.year}`, class: 'num', render: (r) => h('strong', {}, n(r.paid)) },
+      { label: `Unpaid · ${sum.year}`, class: 'num', render: (r) => h('strong', {}, n(r.unpaid)) },
+    ], sum.rows, { empty: 'No employees.' }),
+    h('p', { class: 'small muted' }, 'Days of approved leave (and days you marked as leave in the register) from the day each employee started using the app, counted the same way as payroll. Staff see their own numbers on their Leaves tab.'));
 }
 
 // ---------------------------------------------------------------- employees

@@ -1,7 +1,7 @@
 'use strict';
 const express = require('express');
 const { getSettings, tx } = require('../db');
-const { computeRange, summarize } = require('../attendance');
+const { computeRange, summarize, leaveTotals } = require('../attendance');
 const { computePayroll } = require('../payroll');
 const { planImport, randomPin } = require('../importer');
 const { resolveMapsLink, placeName } = require('../maps');
@@ -1104,6 +1104,14 @@ module.exports = function adminRoutes(ctx) {
   });
 
   // ---- leaves ----
+  // Paid / unpaid leave days taken per employee: this month and this year so far.
+  r.get('/leave-summary', (req, res) => {
+    const year = Number(req.query.year) || Number(istDate(ctx.now()).slice(0, 4));
+    const settings = getSettings(db);
+    const emps = db.prepare('SELECT e.*, b.name AS branch_name FROM employees e JOIN branches b ON b.id = e.branch_id WHERE e.active = 1 ORDER BY e.name').all();
+    res.json({ year, rows: emps.map((e) => ({ employee_id: e.id, code: e.code, name: e.name, branch_name: e.branch_name, ...leaveTotals(db, e, year, settings, ctx.now()) })) });
+  });
+
   r.get('/leaves', (req, res) => {
     const status = req.query.status;
     res.json(db.prepare(

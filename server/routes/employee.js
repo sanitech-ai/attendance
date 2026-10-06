@@ -1,7 +1,7 @@
 'use strict';
 const express = require('express');
 const { getSettings } = require('../db');
-const { computeRange, summarize } = require('../attendance');
+const { computeRange, summarize, leaveTotals } = require('../attendance');
 const { employeeSalary } = require('../payroll');
 const {
   bad, HttpError, istDate, haversineMeters, fmtKm, decodeDataUrl, requireDate, requireMonth, daysInMonth, hashSecret,
@@ -253,6 +253,11 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
   });
 
   // ---- leaves ----
+  r.get('/leave-summary', (req, res) => {
+    const year = Number(req.query.year) || Number(istDate(ctx.now()).slice(0, 4));
+    res.json(leaveTotals(db, req.employee, year, getSettings(db), ctx.now()));
+  });
+
   r.get('/leaves', (req, res) => {
     res.json(db.prepare('SELECT * FROM leave_requests WHERE employee_id = ? ORDER BY from_date DESC LIMIT 100').all(req.employee.id));
   });

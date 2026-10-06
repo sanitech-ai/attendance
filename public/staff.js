@@ -448,7 +448,7 @@ async function renderAttendance(main) {
       monthPicker(S.month, (m) => { S.month = m; renderAttendance(main); })),
     h('div', { class: 'stats' },
       stat(s.present, 'Present'), stat(s.half_day, 'Half days'), stat(s.absent + s.not_marked, 'Absent'),
-      stat(s.paid_leave + s.unpaid_leave, 'Leave'), stat(s.late_days, `Late (over ${S.me.grace_minutes ?? 15} min)`),
+      stat(s.paid_leave, 'Paid leave'), stat(s.unpaid_leave, 'Unpaid leave'), stat(s.late_days, `Late (over ${S.me.grace_minutes ?? 15} min)`),
       stat(s.late_hour_days, `Late over ${(S.me.late_max_minutes ?? 60) / 60} hour`),
       stat(s.late_minutes ? fmtMinutes(s.late_minutes) : '0', 'Total late time'),
       stat((s.ot_payable_minutes / 60).toFixed(1), 'OT hours (approved)'),
@@ -496,13 +496,20 @@ function dayDetails(d) {
 // ---------------------------------------------------------------- leaves
 
 async function renderLeaves(main) {
-  const list = await run(() => api('GET', `${EMP}/leaves`));
-  if (!list) return;
+  const [list, sum] = await Promise.all([run(() => api('GET', `${EMP}/leaves`)), run(() => api('GET', `${EMP}/leave-summary`))]);
+  if (!list || !sum) return;
   const kind = { pending: 'warn', approved: 'ok', rejected: 'bad', cancelled: 'neutral' };
   main.replaceChildren(
     h('div', { class: 'spread', style: { marginBottom: '12px' } }, h('h1', {}, 'Leaves'),
       h('button', { class: 'btn btn-primary', onclick: requestLeave }, '+ Request leave')),
-    list.length
+    h('div', { class: 'card' }, h('h2', {}, 'Leaves taken'),
+      h('div', { class: 'stats' },
+        stat(sum.month_paid, `Paid · ${fmtMonth(sum.month)}`), stat(sum.month_unpaid, `Unpaid · ${fmtMonth(sum.month)}`),
+        stat(sum.paid, `Paid · ${sum.year} so far`), stat(sum.unpaid, `Unpaid · ${sum.year} so far`)),
+      h('p', { class: 'small muted' }, sum.since
+        ? `Days of approved leave since you started using the app (${fmtDate(sum.since)}), as counted in your attendance and salary.`
+        : 'Counted from your first day on the app.')),
+    ...(list.length
       ? list.map((l) => h('div', { class: 'card' },
         h('div', { class: 'spread' },
           h('strong', {}, l.from_date === l.to_date ? fmtDate(l.from_date) : `${fmtDate(l.from_date)} → ${fmtDate(l.to_date)}`),
@@ -512,7 +519,7 @@ async function renderLeaves(main) {
           class: 'btn btn-sm', style: { marginTop: '8px' },
           onclick: async (e) => { if (await run(() => api('POST', `${EMP}/leaves/${l.id}/cancel`), e.target)) renderShell(); },
         }, 'Cancel request') : ''))
-      : h('div', { class: 'empty' }, 'No leave requests yet.'));
+      : [h('div', { class: 'empty' }, 'No leave requests yet.')]));
 }
 
 function requestLeave() {
