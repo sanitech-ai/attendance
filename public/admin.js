@@ -667,7 +667,8 @@ function employeeForm(e) {
     { type: 'heading', label: 'Locations' },
     { name: 'extra_locations', label: 'Also allowed to check in/out at', type: 'checks',
       value: String(e?.extra_location_ids || '').split(',').filter(Boolean),
-      options: A.branches.filter((b) => b.active && b.id !== e?.branch_id).map((b) => ({ value: b.id, label: b.name })) },
+      options: branchCheckOptions(String(e?.extra_location_ids || '').split(',')),
+      hint: 'Every branch is listed except the employee’s own branch selected above. Staff can also punch at branches linked to their own branch (Branches → Edit).' },
     { name: 'allow_offsite', label: 'Can punch in from other places (bank, GST office, client office…) even if their branch blocks outside punches — they must write where they are, and you approve it', type: 'checkbox', value: !!e?.allow_offsite },
     { type: 'heading', label: 'Manager' },
     { name: 'is_manager', label: 'Manager — can check what the app flags for their team (no power to change anything)', type: 'checkbox', value: !!e?.is_manager },
@@ -677,7 +678,7 @@ function employeeForm(e) {
       ? { name: 'pin', label: 'Login PIN (4–6 digits)', type: 'text', inputmode: 'numeric', required: true, maxlength: 6, value: String(Math.floor(1000 + Math.random() * 9000)), hint: 'Share this with the employee. They can change it later.' }
       : { name: 'active', label: 'Active (can log in and is included in payroll)', type: 'checkbox', value: !!e.active },
   ];
-  formDialog({
+  const dlg = formDialog({
     title: isNew ? 'Add employee' : `Edit ${e.name}`,
     fields,
     wide: true,
@@ -693,6 +694,29 @@ function employeeForm(e) {
       return true;
     },
   });
+  // The employee's own branch is never an "extra" location: hide it, following the Branch dropdown.
+  const home = dlg.form.querySelector('[name=branch_id]');
+  const syncExtra = () => {
+    for (const box of dlg.form.querySelectorAll('.checks input')) {
+      if (!box.closest('.field')?.textContent.startsWith('Also allowed')) continue;
+      const own = box.value === home.value;
+      if (own) box.checked = false;
+      box.closest('label').classList.toggle('hidden', own);
+    }
+  };
+  home.addEventListener('change', syncExtra);
+  syncExtra();
+}
+
+/**
+ * Tick-box options for "where else can they punch": every active branch, plus inactive ones that are
+ * already ticked (so saving never drops them silently). Branches without a GPS location are marked.
+ */
+function branchCheckOptions(ticked, excludeId) {
+  const on = new Set(ticked.map(String));
+  return A.branches
+    .filter((b) => b.id !== excludeId && (b.active || on.has(String(b.id))))
+    .map((b) => ({ value: b.id, label: `${b.name}${b.active ? '' : ' (inactive)'}${b.location_set ? '' : ' (location not set)'}` }));
 }
 
 async function payItems(e) {
@@ -1106,7 +1130,7 @@ function branchForm(b) {
         options: [{ value: 'flag', label: 'Allow the punch — they write where they are, and it is flagged for your approval' }, { value: 'block', label: 'Block the punch' }] },
       { name: 'linked_branches', label: 'All staff of this branch can also punch at (e.g. its nearby site or office)', type: 'checks',
         value: String(b?.linked_ids || '').split(',').filter(Boolean),
-        options: A.branches.filter((o) => o.active && o.id !== b?.id).map((o) => ({ value: o.id, label: o.name })) },
+        options: branchCheckOptions(String(b?.linked_ids || '').split(','), b?.id) },
       { name: 'field_visits', label: 'Field visit selfies — staff of this branch travel during the day (banks, GST office, clients) and take a selfie at each place', type: 'checkbox', value: !!b?.field_visits },
       ...(b ? [{ name: 'active', label: 'Active', type: 'checkbox', value: !!b.active }] : []),
     ],
