@@ -123,7 +123,7 @@ const MISSING_LABEL = { phone: 'Mobile number', aadhaar: 'Aadhaar card', pan: 'P
 const DOC_LABEL = { aadhaar: 'Aadhaar', pan: 'PAN', bank: 'Bank passbook / cheque', photo: 'Photo', other: 'Other' };
 const FLAG_LABEL = {
   flagged_punch: 'Location flagged', missing_out: 'No punch out', short_hours: 'Short hours', missing_ot_out: 'OT not ended',
-  late_warning: 'Late (warning)', late_penalty: 'Late → half day', late_approval: 'Very late — half day, to review',
+  first_day: 'First day — late not counted', late_warning: 'Late (warning)', late_penalty: 'Late → half day', late_approval: 'Very late — half day, to review',
 };
 
 /** "Late 20m · warning 1 of 2" / "Late 20m · 3rd late → half day" */
@@ -367,7 +367,7 @@ function openPayslip(company, month, row, opts = {}) {
   const line = (label, value) => `<tr><td>${esc(label)}</td><td class="r">${esc(value)}</td></tr>`;
   const earnings = [
     line(`Base pay (${row.paid_days} paid days)`, money(row.base_paise)),
-    line(`Overtime (${row.ot_hours} h)`, money(row.ot_paise)),
+    line(row.late_offset_minutes ? `Overtime (${fmtMinutes(row.ot_approved_minutes)} − ${fmtMinutes(row.late_offset_minutes)} late = ${fmtMinutes(row.ot_paid_minutes)})` : `Overtime (${row.ot_hours} h)`, money(row.ot_paise)),
     ...row.additions.map((x) => line(x.label, money(x.amount_paise))),
   ].join('');
   const deductions = [
@@ -395,7 +395,8 @@ button{margin-top:24px;padding:8px 16px;font-size:14px}.prov{margin-top:6px;colo
 <div class="grid"><div>Days in month: ${row.days_in_month}</div><div>Paid days: <b>${row.paid_days}</b></div>
 <div>Present: ${a.present}</div><div>Half days: ${a.half_day}</div><div>Absent: ${a.absent + a.not_marked}</div><div>Paid leave: ${a.paid_leave}</div>
 <div>Unpaid leave: ${a.unpaid_leave}</div><div>Week offs: ${a.week_off}</div><div>Holidays: ${a.holiday}</div><div>Late days: ${a.late_days}${a.late_penalties ? ` (${a.late_penalties} counted as half day)` : ''}</div>
-<div>Overtime (approved): ${row.ot_hours} h</div></div>
+<div>Total late time: ${row.late_minutes ? fmtMinutes(row.late_minutes) : '-'}</div>
+<div>Overtime approved: ${fmtMinutes(row.ot_approved_minutes ?? Math.round(row.ot_hours * 60))}${row.late_offset_minutes ? ` · paid ${fmtMinutes(row.ot_paid_minutes)} after late time` : ''}</div></div>
 <div class="cols"><div><h2>Earnings</h2><table>${earnings}${line('Gross', money(row.gross_paise))}</table></div>
 <div><h2>Deductions</h2><table>${deductions}${line('Total', money(row.total_deductions_paise))}</table></div></div>
 <div class="net"><span>Net pay</span><span>${money(row.net_paise)}</span></div>

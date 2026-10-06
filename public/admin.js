@@ -85,6 +85,7 @@ const PAGES = [
   ['attendance', 'Attendance register'],
   ['overtime', 'Overtime'],
   ['late', 'Late approvals', 'late_approvals'],
+  ['lateot', 'Late & overtime report'],
   ['leaves', 'Leave requests', 'leaves'],
   ['payroll', 'Payroll'],
   ['employees', 'Employees'],
@@ -395,7 +396,7 @@ async function pageAttendance(el, params) {
     h('tbody', {}, data.rows.map((r) => h('tr', {},
       h('td', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)),
       r.days.map((d) => h('td', {}, STATUS_SHORT[d.status] !== '' || d.override ? h('span', {
-        class: `c ${d.status}${d.override ? ' ovr' : ''}${d.flags.length ? ' flag' : ''}`,
+        class: `c ${d.status}${d.override ? ' ovr' : ''}${d.flags.some((x) => x !== 'first_day') ? ' flag' : ''}`,
         title: `${fmtDate(d.date)}: ${STATUS_LABEL[d.status] || d.status}${d.first_in ? ` · ${d.first_in}–${d.last_out || '?'}` : ''}${d.flags.length ? ` · ${d.flags.map((x) => FLAG_LABEL[x]).join(', ')}` : ''}`,
         onclick: () => editDay(r, d, data.finalized),
       }, STATUS_SHORT[d.status] || '·') : h('span', { class: 'c', onclick: () => editDay(r, d, data.finalized) }, '·'))),
@@ -511,6 +512,60 @@ async function pageOvertime(el, params) {
         r.ot_status !== 'rejected' ? h('button', { class: 'btn btn-sm', onclick: () => decide(r, 'rejected') }, 'Reject') : '',
         h('a', { class: 'btn btn-sm', href: `#/punches?date=${r.date}&employee_id=${r.employee_id}` }, 'Selfies')) : '') },
     ], data.rows, { empty: 'No overtime recorded this month.' }));
+}
+
+// ---------------------------------------------------------------- monthly late & overtime report
+
+async function pageLateOt(el, params) {
+  await loadBranches();
+  const month = params.get('month') || thisMonth();
+  const branchId = params.get('branch_id') || '';
+  const qs = `month=${month}${branchId ? `&branch_id=${branchId}` : ''}`;
+  const d = await api('GET', `/api/admin/late-ot?${qs}`);
+  const hrs = (m) => (m ? (m / 60).toFixed(1) : '—');
+  const n = (v) => (v ? String(v) : '—');
+  const totals = d.rows.reduce((t, r) => ({ late: t.late + r.late_days, hour: t.hour + r.late_hour_days, ot: t.ot + r.ot_payable_minutes }), { late: 0, hour: 0, ot: 0 });
+  el.replaceChildren(
+    pageHead('Late & overtime report', h('a', { class: 'btn', href: `/api/admin/late-ot.csv?${qs}` }, 'Download Excel (CSV)')),
+    h('div', { class: 'toolbar' },
+      monthPicker(month, (m) => go('lateot', { month: m, branch_id: branchId })),
+      branchSelect(branchId, (v) => go('lateot', { month, branch_id: v }))),
+    h('div', { class: 'stats', style: { marginBottom: '14px' } },
+      h('div', { class: 'stat' }, h('div', { class: 'v' }, String(totals.late)), h('div', { class: 'l' }, `Late arrivals (over ${d.grace_minutes} min)`)),
+      h('div', { class: 'stat' }, h('div', { class: 'v' }, String(totals.hour)), h('div', { class: 'l' }, `…of which over ${d.late_max_minutes / 60} hour`)),
+      h('div', { class: 'stat' }, h('div', { class: 'v' }, hrs(totals.ot)), h('div', { class: 'l' }, 'Overtime hours approved'))),
+    table([
+      { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name} · shift ${r.shift_start}`)) },
+      { label: `Late over ${d.grace_minutes} min`, class: 'num', render: (r) => h('strong', { style: r.late_days ? { color: 'var(--warn)' } : null }, n(r.late_days)) },
+      { label: `Over ${d.late_max_minutes / 60} hour`, class: 'num', render: (r) => h('strong', { style: r.late_hour_days ? { color: 'var(--bad)' } : null }, n(r.late_hour_days)) },
+      { label: 'Total late', class: 'num', render: (r) => (r.late_minutes ? fmtMinutes(r.late_minutes) : '—') },
+      { label: 'Half days from lates', class: 'num', render: (r) => n(r.late_penalties) },
+      { label: 'OT days', class: 'num', render: (r) => n(r.ot_days) },
+      { label: 'OT hours', class: 'num', render: (r) => (r.ot_minutes ? h('div', {}, `${hrs(r.ot_payable_minutes)} approved`, r.ot_pending_minutes ? h('div', { class: 'small muted' }, `${hrs(r.ot_pending_minutes)} pending`) : '') : '—') },
+      ...(d.late_offsets_ot ? [{ label: 'OT paid (after late)', class: 'num', render: (r) => (r.ot_payable_minutes ? h('strong', {}, fmtMinutes(r.ot_after_late_minutes)) : '—') }] : []),
+      { label: '', render: (r) => (r.late.length || r.ot.length || r.first_day ? h('button', { class: 'btn btn-sm', onclick: () => lateOtDetail(r) }, 'Dates') : '') },
+    ], d.rows, { empty: 'No employees.' }),
+    h('p', { class: 'small muted' }, d.late_offsets_ot ? 'Overtime paid = approved overtime minus the month’s total late time (never below zero; not for hourly-paid staff). Staff see the same calculation in their app. ' : '', `Late = first punch in more than ${d.grace_minutes} minutes after shift start. No late is counted on an employee’s joining day or their first day on the app. Days corrected in the attendance register are not counted.`));
+}
+
+function lateOtDetail(r) {
+  const dlg = modal(`${r.name} · late & overtime`, h('div', { class: 'stack' },
+    r.first_day ? h('p', { class: 'small muted' }, `${fmtDate(r.first_day)}: joining / first day on the app — not counted as late.`) : '',
+    h('h3', {}, `Late arrivals (${r.late.length})`),
+    r.late.length ? table([
+      { label: 'Date', render: (l) => fmtDate(l.date) },
+      { label: 'Punched in', render: (l) => l.first_in },
+      { label: 'Late by', class: 'num', render: (l) => fmtMinutes(l.minutes) },
+      { label: 'Result', render: (l) => l.outcome },
+    ], r.late) : h('p', { class: 'muted' }, 'None'),
+    h('h3', {}, `Overtime (${r.ot.length} day${r.ot.length === 1 ? '' : 's'})`),
+    r.ot.length ? table([
+      { label: 'Date', render: (o) => fmtDate(o.date) },
+      { label: 'From–to', render: (o) => `${o.start || '?'}–${o.end || '?'}` },
+      { label: 'Hours', class: 'num', render: (o) => fmtMinutes(o.minutes) },
+      { label: 'Status', render: (o) => o.status || '—' },
+    ], r.ot) : h('p', { class: 'muted' }, 'None'),
+    h('div', { class: 'form-actions' }, h('button', { class: 'btn btn-primary', onclick: () => dlg.close() }, 'Close'))), { wide: true });
 }
 
 // ---------------------------------------------------------------- very late arrivals
@@ -1180,7 +1235,7 @@ async function pagePayroll(el, params) {
       { label: 'Salary', render: (r) => h('div', {}, money(r.salary_paise), h('div', { class: 'small muted' }, r.salary_type)) },
       { label: 'Paid days', class: 'num', render: (r) => h('span', { title: `P ${r.attendance.present} · HD ${r.attendance.half_day} · PL ${r.attendance.paid_leave} · WO ${r.attendance.week_off} · H ${r.attendance.holiday} · A ${r.attendance.absent + r.attendance.not_marked}` }, String(r.paid_days)) },
       { label: 'Base', class: 'num', render: (r) => money(r.base_paise) },
-      { label: 'OT', class: 'num', render: (r) => h('div', {}, money(r.ot_paise), h('div', { class: 'small muted' }, `${r.ot_hours} h`)) },
+      { label: 'OT', class: 'num', render: (r) => h('div', {}, money(r.ot_paise), h('div', { class: 'small muted' }, r.late_offset_minutes ? `${fmtMinutes(r.ot_approved_minutes)} − ${fmtMinutes(r.late_offset_minutes)} late = ${fmtMinutes(r.ot_paid_minutes)}` : `${r.ot_hours} h`)) },
       { label: '+ Add', class: 'num', render: (r) => money(sum(r.additions)) },
       { label: '− Ded.', class: 'num', render: (r) => money(sum(r.deductions) + sum(r.advances)) },
       { label: 'Net pay', class: 'num', render: (r) => h('strong', {}, money(r.net_paise)) },
@@ -1376,7 +1431,8 @@ async function pageSettings(el, params) {
       h('dt', {}, 'Very late'), h('dd', {}, `More than ${s.late_max_minutes} min late: half day, flagged for your review`),
       h('dt', {}, 'Staff salary view'), h('dd', {}, `From ${fmtMonth(s.salary_visible_from)} onwards`),
       h('dt', {}, 'GPS accuracy'), h('dd', {}, `Flag punches worse than ±${s.max_accuracy_m} m`),
-      h('dt', {}, 'Overtime'), h('dd', {}, s.ot_requires_approval ? 'Needs admin approval before it is paid' : 'Paid automatically')),
+      h('dt', {}, 'Overtime'), h('dd', {}, s.ot_requires_approval ? 'Needs admin approval before it is paid' : 'Paid automatically'),
+      h('dt', {}, 'Late vs overtime'), h('dd', {}, s.late_offsets_ot ? 'The month’s total late time is taken off overtime before it is paid' : 'Late time does not affect overtime')),
     h('div', { class: 'form-actions' }, h('button', { class: 'btn btn-primary', onclick: () => formDialog({
       title: 'Edit settings',
       fields: [
@@ -1388,6 +1444,7 @@ async function pageSettings(el, params) {
         { name: 'salary_visible_from', label: 'Staff can see salary from (month)', type: 'month', required: true, value: s.salary_visible_from },
         { name: 'max_accuracy_m', label: 'Flag punches with GPS accuracy worse than (metres)', type: 'number', min: 10, max: 5000, required: true, value: s.max_accuracy_m },
         { name: 'ot_requires_approval', label: 'Overtime needs admin approval', type: 'checkbox', value: s.ot_requires_approval },
+        { name: 'late_offsets_ot', label: 'Take the month’s total late time off overtime before paying it (staff see the calculation)', type: 'checkbox', value: s.late_offsets_ot },
       ],
       async onSubmit(v) {
         const saved = await api('PUT', '/api/admin/settings', v);
@@ -1411,6 +1468,7 @@ const PAGE_FNS = {
   attendance: pageAttendance,
   overtime: pageOvertime,
   late: pageLate,
+  lateot: pageLateOt,
   leaves: pageLeaves,
   employees: pageEmployees,
   preview: pagePreview,

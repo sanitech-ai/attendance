@@ -135,7 +135,11 @@ test('end-to-end: punches, overtime, leaves, documents and payroll', async (t) =
   const paidDays = 2 + 0.5 + 1 + 1 + sundays;
   assert.equal(row.paid_days, paidDays);
   assert.equal(row.base_paise, Math.round((3000000 / 30) * paidDays));
-  assert.equal(row.ot_paise, Math.round((100000 / 9) * 2), 'OT at the same hourly rate: per-day / shift hours');
+  // OT at the same hourly rate (per-day / shift hours), minus the month's late time
+  assert.equal(row.ot_approved_minutes, 120);
+  assert.equal(row.ot_paid_minutes, Math.max(0, 120 - row.late_minutes));
+  assert.ok(row.late_minutes > 0);
+  assert.equal(row.ot_paise, Math.round((100000 / 9) * (row.ot_paid_minutes / 60)), 'OT at the same hourly rate, after late time');
   assert.equal(row.net_paise, row.base_paise + row.ot_paise + 25000 - 50000);
   const sita = r.data.rows.find((x) => x.employee_id === strictEmp);
   assert.equal(sita.base_paise, 0, 'daily-wage employee with no attendance earns nothing');

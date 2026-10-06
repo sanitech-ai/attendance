@@ -53,6 +53,8 @@ test('extra punch locations and per-office timings', async (t) => {
   assert.deepEqual(await mine(roamer), ['Head Office', 'Pashamylaram']);
 
   // Late is measured against the branch timing: 09:00 at Pashamylaram (opens 08:30) is 30 min late
+  // (after a first day on the app, which never counts as late)
+  s.db.prepare("INSERT INTO punches (employee_id, kind, at, work_date, lat, lng, accuracy_m, inside_geofence, selfie_file, status) VALUES (?, 'IN', ?, ?, 0, 0, 10, 1, 'x.bin', 'ok')").run(site, ist('2026-10-01', '09:00'), '2026-10-01');
   r = await siteGuy('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', ...PASHA, accuracy: 10, selfie: JPEG });
   assert.equal(r.status, 200);
   assert.equal(r.data.late.minutes, 30);

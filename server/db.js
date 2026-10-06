@@ -248,6 +248,8 @@ const DEFAULT_SETTINGS = {
   salary_visible_from: '2026-10',
   max_accuracy_m: '100',
   ot_requires_approval: '1',
+  // The month's total late time is taken off approved overtime before it is paid (never below zero).
+  late_offsets_ot: '1',
 };
 
 function openDb(file) {
@@ -347,6 +349,7 @@ function getSettings(db) {
     salary_visible_from: s.salary_visible_from,
     max_accuracy_m: Number(s.max_accuracy_m),
     ot_requires_approval: s.ot_requires_approval === '1',
+    late_offsets_ot: s.late_offsets_ot !== '0',
   };
 }
 

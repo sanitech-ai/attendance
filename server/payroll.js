@@ -10,7 +10,8 @@ const { daysInMonth, shiftMinutes } = require('./util');
  *  hourly:  pay = rate × hours worked (paid leave counts as a full shift).
  * Overtime is paid at the same hourly rate as regular work:
  *  monthly hourly rate = per-day / shift hours, daily = salary / shift hours, hourly = salary.
- * Only approved overtime is paid.
+ * Only approved overtime is paid, minus the month's total late time when late_offsets_ot is on
+ * (monthly and daily staff; hourly staff already lose pay for the time they weren't there).
  * Fixed monthly pay items (PF, PT, conveyance...) apply in full whenever there is at least one paid day.
  */
 function salaryForEmployee(emp, days, month, extras) {
@@ -49,7 +50,9 @@ function salaryForEmployee(emp, days, month, extras) {
     basePaise = (hourlyRate * minutes) / 60;
   }
 
-  const otPaise = (hourlyRate * s.ot_payable_minutes) / 60;
+  const lateOffset = extras.lateOffsetsOt && emp.salary_type !== 'hourly' ? Math.min(s.late_minutes, s.ot_payable_minutes) : 0;
+  const otPaidMinutes = s.ot_payable_minutes - lateOffset;
+  const otPaise = (hourlyRate * otPaidMinutes) / 60;
   const fixed = paidDays > 0 ? extras.payItems || [] : [];
   const items = [...fixed, ...extras.adjustments];
   const additions = items.filter((a) => a.kind === 'addition');
@@ -79,7 +82,11 @@ function salaryForEmployee(emp, days, month, extras) {
     per_day_paise: Math.round(perDay),
     hourly_rate_paise: Math.round(hourlyRate),
     base_paise: base,
-    ot_hours: Math.round((s.ot_payable_minutes / 60) * 100) / 100,
+    ot_hours: Math.round((otPaidMinutes / 60) * 100) / 100, // overtime actually paid
+    ot_approved_minutes: s.ot_payable_minutes,
+    late_minutes: s.late_minutes,
+    late_offset_minutes: lateOffset,
+    ot_paid_minutes: otPaidMinutes,
     ot_paise: ot,
     additions: additions.map(({ label, amount_paise }) => ({ label, amount_paise })),
     deductions: deductions.map(({ label, amount_paise }) => ({ label, amount_paise })),
@@ -99,6 +106,7 @@ function employeeSalary(db, emp, month, settings, nowMs = Date.now()) {
     adjustments: db.prepare('SELECT * FROM adjustments WHERE employee_id = ? AND month = ? ORDER BY id').all(emp.id, month),
     payItems: db.prepare('SELECT * FROM pay_items WHERE employee_id = ? ORDER BY kind, id').all(emp.id),
     advances: db.prepare('SELECT * FROM advances WHERE employee_id = ? AND deduct_month = ? ORDER BY given_on').all(emp.id, month),
+    lateOffsetsOt: settings.late_offsets_ot,
   });
 }
 

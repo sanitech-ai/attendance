@@ -54,7 +54,10 @@ function loadContext(db, emp, from, to) {
       .map((d) => [d.work_date, d]),
   );
 
-  return { punches, overrides, leaves, holidays, ot, late };
+  // The first day someone used the app: they often installed it partway through the day.
+  const firstAppDay = db.prepare("SELECT MIN(work_date) AS d FROM punches WHERE employee_id = ? AND status != 'rejected'").get(emp.id)?.d || null;
+
+  return { punches, overrides, leaves, holidays, ot, late, firstAppDay };
 }
 
 /** Pairs IN->OUT and OT_IN->OT_OUT punches; open sessions are reported, not counted. */
@@ -147,7 +150,11 @@ function computeDay(emp, date, ctx, settings, today) {
     .includes(weekday(date));
   const override = ctx.overrides.get(date);
 
-  if (p.firstIn !== null && emp.shift_start) {
+  // No late marks on the joining day or the first day on the app (they may have joined or installed
+  // the app after arriving); that day counts as a full day if they punched in.
+  const firstDay = date === emp.joined_on || date === ctx.firstAppDay;
+  if (firstDay && p.firstIn !== null) flags.push('first_day');
+  if (p.firstIn !== null && emp.shift_start && !firstDay) {
     const lateBy = Math.floor((p.firstIn - istMs(date, emp.shift_start)) / 60000);
     if (lateBy > settings.grace_minutes) day.late_minutes = lateBy;
   }
@@ -168,6 +175,8 @@ function computeDay(emp, date, ctx, settings, today) {
     } else if (decision) {
       // More than the allowed lateness: the admin decided full or half day.
       day.status = decision.status;
+    } else if (firstDay) {
+      day.status = 'present';
     } else {
       day.status = statusFromMinutes(p.regularMinutes, settings, emp);
       // A slightly late arrival who stays until shift end is handled by the late-mark rule
@@ -269,9 +278,12 @@ function summarize(days) {
   s.ot_minutes = 0;
   s.ot_payable_minutes = 0;
   s.ot_pending_minutes = 0;
-  s.late_days = 0;
+  s.late_days = 0; // later than the grace period (15 min)
+  s.late_hour_days = 0; // later than late_max_minutes (1 hour)
+  s.late_minutes = 0;
   s.late_penalties = 0;
   s.late_pending = 0;
+  s.ot_days = 0;
   for (const d of days) {
     if (d.future) continue;
     if (d.status in s) s[d.status]++;
@@ -279,7 +291,9 @@ function summarize(days) {
     s.ot_minutes += d.ot_minutes;
     s.ot_payable_minutes += d.ot_payable_minutes;
     if (d.ot_status === 'pending') s.ot_pending_minutes += d.ot_minutes;
-    if (d.late_minutes > 0) s.late_days++;
+    if (d.late_minutes > 0) { s.late_days++; s.late_minutes += d.late_minutes; }
+    if (d.late_review) s.late_hour_days++;
+    if (d.ot_minutes > 0) s.ot_days++;
     if (d.flags.includes('late_penalty')) s.late_penalties++;
     if (d.flags.includes('late_approval')) s.late_pending++;
   }

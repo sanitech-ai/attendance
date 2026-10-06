@@ -42,6 +42,8 @@ test('managers check flagged items for their team but cannot change anything', a
     s.clock.now = ist('2026-10-05', time);
     return (await c('POST', '/api/employee/punch', { note: 'Client office',  kind, ...where, accuracy: 10, selfie: JPEG })).data;
   };
+  // An earlier day on the app (no late marks on someone's first day)
+  s.db.prepare("INSERT INTO punches (employee_id, kind, at, work_date, lat, lng, accuracy_m, inside_geofence, selfie_file, status) VALUES (?, 'IN', ?, ?, 0, 0, 10, 1, 'x.bin', 'ok')").run(Number((await admin('GET', '/api/admin/employees')).data.find((e) => e.code === 'MEM').id), ist('2026-10-01', '09:00'), '2026-10-01');
   // Member: punch from 5 km away (flagged), 90 min late, overtime
   const flagged = await punch(mem, '10:30', 'IN', { lat: 28.45, lng: 77.0 });
   assert.equal(flagged.status, 'flagged');
