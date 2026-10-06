@@ -297,3 +297,6 @@ tr.row-flag td { background: var(--warn-bg); }
 .late-table th, .late-table td { padding: 6px 4px; border-bottom: 1px solid var(--border); text-align: left; }
 .late-table th { color: var(--muted); font-size: 12px; font-weight: 600; }
 .late-table .num { text-align: right; }
+.profile-block { border: 2px solid var(--warn); background: var(--warn-bg); border-radius: 14px; padding: 14px; }
+.profile-block .checklist { margin: 4px 0 12px; }
+.profile-warn { font-weight: 700; color: var(--warn); }

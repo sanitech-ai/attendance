@@ -14,7 +14,10 @@ const ist = (date, time) => Date.parse(`${date}T${time}:00+05:30`);
 async function startServer(startAt, opts = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'attendance-test-'));
   const clock = { now: startAt };
-  const { app, db } = createApp({ dataDir, secret: 'test-secret', now: () => clock.now, ...opts });
+  const { profileRule, ...appOpts } = opts;
+  const { app, db } = createApp({ dataDir, secret: 'test-secret', now: () => clock.now, ...appOpts });
+  // Most tests use staff without phone/Aadhaar/PAN/bank details; the punch-in lock is tested on its own.
+  if (!profileRule) db.prepare("UPDATE settings SET value = '0' WHERE key = 'profile_grace_days'").run();
   const server = await new Promise((resolve) => {
     const s = app.listen(0, () => resolve(s));
   });

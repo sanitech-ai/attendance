@@ -114,7 +114,11 @@ async function refreshMe() {
 function remindProfile() {
   const missing = S.me.profile_missing || [];
   if (!missing.length || PREVIEW_ID) return;
-  const dlg = modal('Please complete your details', h('div', {},
+  const dl = S.me.profile_deadline;
+  const dlg = modal(dl && dl.days_left === 0 ? '🔒 Complete your details to punch in' : 'Please complete your details', h('div', {},
+    dl ? h('p', { class: 'profile-warn' }, dl.days_left === 0
+      ? 'Punch In is locked until you add the details below.'
+      : `You can punch in on ${dl.days_left} more day${dl.days_left === 1 ? '' : 's'} without them. After that, Punch In is locked until they are added.`) : '',
     h('p', {}, 'The company needs these to pay your salary and keep your records:'),
     h('ul', { class: 'checklist' }, Object.keys(MISSING_LABEL).map((k) => h('li', { class: missing.includes(k) ? 'todo' : 'done' }, missing.includes(k) ? '◻ ' : '✅ ', MISSING_LABEL[k]))),
     h('div', { class: 'form-actions' },
@@ -153,7 +157,7 @@ function renderShell() {
   root.replaceChildren(
     PREVIEW_ID ? h('div', { class: 'preview-banner' }, `👁 Preview of ${S.me.employee.name}'s app · read-only`) : '',
     missing.length ? h('button', { class: 'profile-banner', onclick: () => { S.tab = 'more'; renderShell(); } },
-      `⚠ Please add your ${missing.map((m) => MISSING_LABEL[m].split(' (')[0]).join(', ')} — tap here`) : '',
+      `${S.me.profile_deadline?.days_left === 0 ? '🔒 Punch In locked: add' : '⚠ Please add'} your ${missing.map((m) => MISSING_LABEL[m].split(' (')[0]).join(', ')} — tap here`) : '',
     h('header', { class: 'app-header' },
       h('div', {}, h('div', { class: 'who' }, S.me.employee.name), h('div', { class: 'small muted' }, `${S.me.employee.code} · ${S.me.branch?.name || ''}`)),
       h('div', { class: 'small muted' }, S.me.company_name)),
@@ -172,8 +176,15 @@ async function renderHome(main) {
   const t = await run(() => api('GET', `${EMP}/today`));
   if (!t) return;
   const d = t.day;
-  const actions = h('div', { class: 'punch-actions' }, t.allowed.map((kind) =>
-    h('button', { class: 'btn btn-primary punch-btn', onclick: () => punchFlow(kind, t) }, PUNCH_LABEL[kind])),
+  const blocked = t.profile_block;
+  const actions = h('div', { class: 'punch-actions' }, blocked
+    ? h('div', { class: 'profile-block' },
+      h('strong', {}, '🔒 Punch In is locked until your details are complete'),
+      h('p', { class: 'small' }, 'Please add:'),
+      h('ul', { class: 'checklist' }, blocked.missing.map((m) => h('li', { class: 'todo' }, '◻ ', MISSING_LABEL[m]))),
+      h('button', { class: 'btn btn-primary btn-block', onclick: () => { S.tab = 'more'; renderShell(); } }, 'Add my details now'))
+    : t.allowed.map((kind) =>
+      h('button', { class: 'btn btn-primary punch-btn', onclick: () => punchFlow(kind, t) }, PUNCH_LABEL[kind])),
     t.can_visit && t.on_duty ? h('button', { class: 'btn punch-btn visit', onclick: () => visitFlow(t) }, '📍 Field visit selfie (bank, client, office…)') : '');
 
   const facts = h('dl', { class: 'kv' },

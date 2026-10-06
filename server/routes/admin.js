@@ -10,7 +10,7 @@ const {
 } = require('../util');
 const {
   profileMissing, paymentDetails, publicEmployee, validPin, createDocument, sendStoredFile, notFound, assertMonthOpen, DOC_COLUMNS,
-  measurePunch,
+  measurePunch, profileBlock,
 } = require('../common');
 
 const OVERRIDE_STATUSES = ['present', 'half_day', 'absent', 'paid_leave', 'unpaid_leave', 'week_off', 'holiday'];
@@ -86,7 +86,7 @@ module.exports = function adminRoutes(ctx) {
       if (!String(b.company_name).trim()) throw bad('Company name is required');
       updates.company_name = String(b.company_name).trim().slice(0, 100);
     }
-    for (const [k, min, max] of [['half_day_hours', 0.5, 24], ['grace_minutes', 0, 240], ['late_warnings', 0, 31], ['late_max_minutes', 0, 480], ['max_accuracy_m', 10, 5000]]) {
+    for (const [k, min, max] of [['half_day_hours', 0.5, 24], ['grace_minutes', 0, 240], ['late_warnings', 0, 31], ['late_max_minutes', 0, 480], ['max_accuracy_m', 10, 5000], ['profile_grace_days', 0, 60]]) {
       if (b[k] !== undefined) {
         const n = Number(b[k]);
         if (!Number.isFinite(n) || n < min || n > max) throw bad(`${k} must be between ${min} and ${max}`);
@@ -405,7 +405,9 @@ module.exports = function adminRoutes(ctx) {
          (SELECT group_concat(l.branch_id) FROM employee_locations l WHERE l.employee_id = e.id) AS extra_location_ids
        FROM employees e JOIN branches b ON b.id = e.branch_id ORDER BY e.active DESC, e.name`,
     ).all();
-    res.json(rows.map((e) => ({ ...publicEmployee(e), profile_missing: profileMissing(db, e) })));
+    const today = istDate(ctx.now());
+    const grace = getSettings(db).profile_grace_days;
+    res.json(rows.map((e) => ({ ...publicEmployee(e), profile_missing: profileMissing(db, e), punch_locked: !!profileBlock(db, e, today, grace) })));
   });
 
   r.get('/employees/:id', (req, res) => {

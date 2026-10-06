@@ -7,7 +7,7 @@ const {
   bad, HttpError, istDate, haversineMeters, fmtKm, decodeDataUrl, requireDate, requireMonth, daysInMonth, hashSecret,
 } = require('../util');
 const {
-  allowedBranchIds, measurePunch, profileMissing, paymentDetails, publicEmployee, validPin, punchState, createDocument, sendStoredFile, notFound, DOC_COLUMNS,
+  allowedBranchIds, measurePunch, profileMissing, profileBlock, profileDeadline, paymentDetails, publicEmployee, validPin, punchState, createDocument, sendStoredFile, notFound, DOC_COLUMNS,
 } = require('../common');
 
 const { addressAt } = require('../maps');
@@ -56,6 +56,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       branch,
       can_visit: !!branch?.field_visits,
       profile_missing: profileMissing(db, req.employee),
+      profile_deadline: profileDeadline(db, req.employee, istDate(ctx.now()), settings.profile_grace_days),
       company_name: settings.company_name,
       late_warnings: settings.late_warnings,
       late_max_minutes: settings.late_max_minutes,
@@ -115,6 +116,8 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       max_accuracy_m: settings.max_accuracy_m,
       shift: { start: emp.shift_start, end: emp.shift_end },
       can_visit: !!db.prepare('SELECT field_visits FROM branches WHERE id = ?').get(emp.branch_id)?.field_visits,
+      // Details still missing after the grace days: Punch In is blocked until they are filled in.
+      profile_block: state.allowed.includes('IN') ? profileBlock(db, emp, today, settings.profile_grace_days) : null,
       on_duty: !!state.openIn,
       visits: db.prepare('SELECT id, at, note, place, status, lat, lng FROM visits WHERE employee_id = ? AND work_date = ? ORDER BY at').all(emp.id, workDate),
     });
@@ -186,6 +189,13 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     const state = punchState(db, emp.id, now);
     if (!state.allowed.includes(kind)) {
       throw new HttpError(409, `You can't do that right now. Allowed: ${state.allowed.join(', ')}`);
+    }
+    if (kind === 'IN') {
+      const block = profileBlock(db, emp, istDate(now), getSettings(db).profile_grace_days);
+      if (block) {
+        const labels = { phone: 'mobile number', aadhaar: 'Aadhaar card', pan: 'PAN card', payment: 'bank account or UPI ID' };
+        throw new HttpError(403, `Please add your ${block.missing.map((m) => labels[m]).join(', ')} first (More → Payment & contact details / My documents). You can punch in once your details are complete.`);
+      }
     }
     if (state.last && now - state.last.at < 60000) {
       throw new HttpError(409, 'You just punched. Wait a minute before punching again.');

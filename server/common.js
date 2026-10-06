@@ -20,6 +20,24 @@ function profileMissing(db, emp) {
   return missing;
 }
 
+/**
+ * Punch-in is blocked once someone has used the app on `graceDays` earlier days and their details are
+ * still incomplete. Returns null when they may punch in.
+ */
+function profileBlock(db, emp, today, graceDays) {
+  const s = profileDeadline(db, emp, today, graceDays);
+  return s && s.days_left === 0 ? { missing: s.missing, days_used: s.days_used } : null;
+}
+
+/** Missing details and how many more days on the app before Punch In locks (null: nothing missing / no rule). */
+function profileDeadline(db, emp, today, graceDays) {
+  if (!graceDays) return null;
+  const missing = profileMissing(db, emp);
+  if (!missing.length) return null;
+  const daysUsed = db.prepare("SELECT COUNT(DISTINCT work_date) AS n FROM punches WHERE employee_id = ? AND work_date < ? AND status != 'rejected'").get(emp.id, today).n;
+  return { missing, days_used: daysUsed, days_left: Math.max(0, graceDays - daysUsed) };
+}
+
 const UPI_RE = /^[a-zA-Z0-9._-]{2,256}@[a-zA-Z][a-zA-Z0-9]{1,63}$/;
 const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
 
@@ -177,6 +195,6 @@ function assertMonthOpen(db, month) {
 }
 
 module.exports = {
-  allowedBranchIds, measurePunch, profileMissing, paymentDetails, publicEmployee, validPin, punchState, createDocument, normalizeDocNumber, sendStoredFile, notFound,
+  allowedBranchIds, measurePunch, profileMissing, profileBlock, profileDeadline, paymentDetails, publicEmployee, validPin, punchState, createDocument, normalizeDocNumber, sendStoredFile, notFound,
   assertMonthOpen, DOC_COLUMNS, DOC_TYPES,
 };

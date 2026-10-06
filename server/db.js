@@ -246,6 +246,9 @@ const DEFAULT_SETTINGS = {
   late_max_minutes: '60',
   // When on, those arrivals become a half day until an admin decides (off: they are ordinary late days).
   late_review: '0',
+  // Staff who have used the app on this many days must complete their details (phone, Aadhaar, PAN,
+  // UPI/bank) before they can punch in again. 0 = never block.
+  profile_grace_days: '2',
   // Staff can see salary statements from this month onwards.
   salary_visible_from: '2026-10',
   max_accuracy_m: '100',
@@ -358,6 +361,7 @@ function getSettings(db) {
     ot_requires_approval: s.ot_requires_approval === '1',
     late_offsets_ot: s.late_offsets_ot !== '0',
     late_review: s.late_review === '1',
+    profile_grace_days: Number(s.profile_grace_days ?? 2),
   };
 }
 

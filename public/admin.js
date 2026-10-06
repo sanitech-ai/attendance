@@ -634,7 +634,7 @@ async function pageEmployees(el, params) {
       { label: 'Docs', class: 'num', render: (e) => h('a', { href: `#/documents?employee_id=${e.id}` }, String(e.document_count)) },
       { label: 'Status', render: (e) => h('div', {}, e.active ? badge('active', 'ok') : badge('inactive', 'neutral'),
         e.profile_missing?.length ? h('div', { class: 'small', style: { color: 'var(--warn)', marginTop: '4px' } },
-          `Missing: ${e.profile_missing.map((m) => MISSING_LABEL[m].split(' (')[0]).join(', ')}`) : '') },
+          `Missing: ${e.profile_missing.map((m) => MISSING_LABEL[m].split(' (')[0]).join(', ')}`, e.punch_locked ? h('div', { style: { fontWeight: 700 } }, '🔒 Punch In locked') : '') : '') },
       { label: '', render: (e) => h('div', { class: 'row' },
         h('button', { class: 'btn btn-sm', onclick: () => employeeForm(e) }, 'Edit'),
         h('button', { class: 'btn btn-sm', onclick: () => payItems(e) }, 'PF / allowances'),
@@ -1421,6 +1421,7 @@ async function pageSettings(el, params) {
       h('dt', {}, 'Very late'), h('dd', {}, s.late_review ? `More than ${s.late_max_minutes} min late: half day, flagged for your review` : `More than ${s.late_max_minutes} min late is shown separately; no review, counted like any late day`),
       h('dt', {}, 'Staff salary view'), h('dd', {}, `From ${fmtMonth(s.salary_visible_from)} onwards`),
       h('dt', {}, 'GPS accuracy'), h('dd', {}, `Flag punches worse than ±${s.max_accuracy_m} m`),
+      h('dt', {}, 'Missing details'), h('dd', {}, s.profile_grace_days ? `Punch In is locked after ${s.profile_grace_days} day(s) on the app until phone, Aadhaar, PAN and bank/UPI are added` : 'Never blocks punching (reminders only)'),
       h('dt', {}, 'Weekly off worked'), h('dd', {}, 'Earns a comp-off (paid day off on a weekday) — no overtime pay')),
     h('div', { class: 'form-actions' }, h('button', { class: 'btn btn-primary', onclick: () => formDialog({
       title: 'Edit settings',
@@ -1432,6 +1433,7 @@ async function pageSettings(el, params) {
         { name: 'late_max_minutes', label: 'Show arrivals later than this (minutes) separately as “very late”', type: 'number', min: 0, max: 480, required: true, value: s.late_max_minutes },
         { name: 'late_review', label: 'Very late arrivals become a half day and go to “Late approvals” for review', type: 'checkbox', value: s.late_review },
         { name: 'salary_visible_from', label: 'Staff can see salary from (month)', type: 'month', required: true, value: s.salary_visible_from },
+        { name: 'profile_grace_days', label: 'Lock Punch In after this many days on the app if details are still missing (0 = never lock)', type: 'number', min: 0, max: 60, step: 1, required: true, value: s.profile_grace_days },
         { name: 'max_accuracy_m', label: 'Flag punches with GPS accuracy worse than (metres)', type: 'number', min: 10, max: 5000, required: true, value: s.max_accuracy_m },
       ],
       async onSubmit(v) {
