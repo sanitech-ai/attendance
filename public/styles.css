@@ -300,3 +300,6 @@ tr.row-flag td { background: var(--warn-bg); }
 .profile-block { border: 2px solid var(--warn); background: var(--warn-bg); border-radius: 14px; padding: 14px; }
 .profile-block .checklist { margin: 4px 0 12px; }
 .profile-warn { font-weight: 700; color: var(--warn); }
+a.stat { cursor: pointer; }
+a.stat.active { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-bg), var(--shadow); }
+a.stat.active .l { color: var(--primary); font-weight: 600; }

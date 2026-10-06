@@ -177,12 +177,25 @@ function employeeOptions() {
 
 // ---------------------------------------------------------------- dashboard
 
+// Dashboard filters for the "Staff on <date>" list (same groups as the tiles).
+const DASH_FILTERS = {
+  in: ['Present / working', (r) => ['present', 'half_day', 'working'].includes(r.day.status)],
+  absent: ['Absent / not marked', (r) => ['absent', 'not_marked'].includes(r.day.status)],
+  late: ['Late', (r) => r.day.late_minutes > 0],
+  leave: ['On leave', (r) => ['paid_leave', 'unpaid_leave'].includes(r.day.status)],
+  off: ['Week off / holiday', (r) => ['week_off', 'holiday'].includes(r.day.status)],
+};
+
 async function pageDashboard(el, params) {
   const date = params.get('date') || todayIST();
+  const show = DASH_FILTERS[params.get('show')] ? params.get('show') : '';
   const d = await api('GET', `/api/admin/dashboard?date=${date}`);
   const t = d.totals;
   if (!A.branches.length) await loadBranches();
-  const tile = (v, l, href) => h(href ? 'a' : 'div', { class: 'stat', href }, h('div', { class: 'v' }, String(v)), h('div', { class: 'l' }, l));
+  const tile = (v, l, href, active) => h('a', { class: `stat${active ? ' active' : ''}`, href }, h('div', { class: 'v' }, String(v)), h('div', { class: 'l' }, l));
+  // Status tiles filter the list below (click again to show everyone).
+  const filterTile = (key, v) => tile(v, DASH_FILTERS[key][0], `#/dashboard?date=${date}${show === key ? '' : `&show=${key}`}`, show === key);
+  const rows = show ? d.rows.filter(DASH_FILTERS[show][1]) : d.rows;
   const gettingStarted = !A.branches.length || !t.employees
     ? h('div', { class: 'card', style: { marginBottom: '16px' } }, h('h2', {}, 'Getting started'),
       h('ol', {},
@@ -197,12 +210,12 @@ async function pageDashboard(el, params) {
       h('a', { href: '#/branches' }, 'set the location'), '.')
     : '';
   el.replaceChildren(
-    pageHead('Dashboard', h('input', { type: 'date', value: date, onchange: (e) => go('dashboard', { date: e.target.value }) })),
+    pageHead('Dashboard', h('input', { type: 'date', value: date, onchange: (e) => go('dashboard', { date: e.target.value, show }) })),
     gettingStarted,
     locationWarning,
     h('div', { class: 'stats' },
-      tile(t.employees, 'Active staff'), tile(t.in, 'Present / working'), tile(t.absent, 'Absent / not marked'),
-      tile(t.late, 'Late'), tile(t.on_leave, 'On leave'), tile(t.off, 'Week off / holiday')),
+      tile(t.employees, 'Active staff', '#/employees'), filterTile('in', t.in), filterTile('absent', t.absent),
+      filterTile('late', t.late), filterTile('leave', t.on_leave), filterTile('off', t.off)),
     h('div', { class: 'stats', style: { marginTop: '10px' } },
       tile(d.pending.flagged_punches, 'Flagged punches to review', '#/punches?status=flagged'),
       tile(d.pending.leaves, 'Leave requests pending', '#/leaves?status=pending'),
@@ -210,9 +223,12 @@ async function pageDashboard(el, params) {
       A.me.settings.late_review ? tile(d.pending.late_approvals, 'Very late arrivals to review', '#/late') : '',
       tile(d.pending.visits, 'Field visit selfies to review', '#/visits?status=pending'),
       tile(d.pending.incomplete_profiles, 'Staff with missing details', '#/employees?missing=1')),
-    h('h2', { style: { margin: '20px 0 10px' } }, `Staff on ${fmtDate(date)}`),
+    h('div', { class: 'spread', id: 'staff-list', style: { margin: '20px 0 10px' } },
+      h('h2', {}, show ? `${DASH_FILTERS[show][0]} on ${fmtDate(date)} (${rows.length})` : `Staff on ${fmtDate(date)}`),
+      show ? h('a', { href: `#/dashboard?date=${date}` }, 'Show everyone') : ''),
     table([
-      { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)) },
+      { label: 'Employee', render: (r) => h('a', { href: `#/attendance?month=${date.slice(0, 7)}`, title: 'Open the attendance register', style: { color: 'inherit', textDecoration: 'none' } },
+        h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)) },
       { label: 'Status', render: (r) => [statusBadge(r.day.status), r.day.late_minutes ? [' ', badge(lateText(r.day, A.me.settings.late_warnings), lateKind(r.day))] : ''] },
       { label: 'In', render: (r) => r.day.first_in || '—' },
       { label: 'Out', render: (r) => r.day.last_out || '—' },
@@ -220,7 +236,8 @@ async function pageDashboard(el, params) {
       { label: 'Last punch', render: (r) => (r.last_punch ? h('span', {}, `${PUNCH_LABEL[r.last_punch.kind]} ${fmtTime(r.last_punch.at)}`,
         r.last_punch.status === 'flagged' ? [' ', badge('flagged', 'warn')] : '') : '—') },
       { label: '', render: (r) => h('a', { href: `#/punches?date=${date}&employee_id=${r.employee_id}` }, 'Selfies') },
-    ], d.rows, { empty: 'No active employees yet.', rowClass: (r) => (r.day.flags.includes('flagged_punch') ? 'row-flag' : null) }));
+    ], rows, { empty: show ? 'Nobody in this group.' : 'No active employees yet.', rowClass: (r) => (r.day.flags.includes('flagged_punch') ? 'row-flag' : null) }));
+  if (show) requestAnimationFrame(() => document.getElementById('staff-list')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
 }
 
 // ---------------------------------------------------------------- punches
