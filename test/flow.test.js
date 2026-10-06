@@ -7,7 +7,7 @@ const { weekday, monthDates } = require('../server/util');
 const OFFICE = { lat: 19.076, lng: 72.8777 };
 const FAR = { lat: 19.2, lng: 72.9 };
 
-test('end-to-end: punches, overtime, leaves, documents and payroll', async (t) => {
+test('end-to-end: punches, leaves, documents and payroll', async (t) => {
   const s = await startServer(ist('2026-09-01', '08:00'));
   t.after(() => s.close());
   const admin = s.client();
@@ -46,24 +46,20 @@ test('end-to-end: punches, overtime, leaves, documents and payroll', async (t) =
   assert.equal((await staff('POST', '/api/employee/login', { code: 'E001', pin: '9999' })).status, 401);
   assert.equal((await staff('POST', '/api/employee/login', { code: 'e001', pin: '1234' })).status, 200);
   r = await staff('GET', '/api/employee/today');
-  assert.deepEqual(r.data.allowed, ['IN', 'OT_IN']);
+  assert.deepEqual(r.data.allowed, ['IN']);
 
-  // Day 1: on time, full day, 2h overtime
+  // Day 1: on time, full day (overtime punches no longer exist)
   s.clock.now = ist('2026-09-01', '09:28');
   r = await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', ...OFFICE, accuracy: 12, selfie: JPEG });
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.equal(r.data.status, 'ok');
   assert.equal((await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'OUT', ...OFFICE, accuracy: 12, selfie: JPEG })).status, 409, 'double tap blocked');
-  assert.equal((await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'OT_IN', ...OFFICE, accuracy: 12, selfie: JPEG })).status, 409, 'OT needs regular OUT first');
+  assert.equal((await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'OT_IN', ...OFFICE, accuracy: 12, selfie: JPEG })).status, 400, 'overtime removed');
   assert.equal((await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'IN', ...OFFICE, accuracy: 12, selfie: 'data:image/png;base64,AAAA' })).status, 400);
   s.clock.now = ist('2026-09-01', '18:30');
   assert.equal((await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'OUT', ...OFFICE, accuracy: 12, selfie: JPEG })).status, 200);
-  s.clock.now = ist('2026-09-01', '19:00');
-  assert.equal((await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'OT_IN', ...OFFICE, accuracy: 12, selfie: JPEG })).status, 200);
   r = await staff('GET', '/api/employee/today');
-  assert.deepEqual(r.data.allowed, ['OT_OUT']);
-  s.clock.now = ist('2026-09-01', '21:00');
-  assert.equal((await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'OT_OUT', ...OFFICE, accuracy: 12, selfie: JPEG })).status, 200);
+  assert.deepEqual(r.data.allowed, ['IN']);
 
   // Day 2: late, half day, punch OUT from far away (flag mode -> flagged, not blocked)
   s.clock.now = ist('2026-09-02', '10:00');
@@ -84,7 +80,7 @@ test('end-to-end: punches, overtime, leaves, documents and payroll', async (t) =
   const punchRes = await admin('GET', '/api/admin/punches?employee_id=' + empId);
   const punches = punchRes.data;
   assert.equal(punchRes.status, 200, JSON.stringify(punches));
-  assert.equal(punches.length, 6);
+  assert.equal(punches.length, 4);
   r = await admin('GET', `/api/admin/punches/${punches[0].id}/selfie`);
   assert.equal(r.headers.get('content-type'), 'image/jpeg');
   assert.equal(r.data[0], 0xff);
@@ -110,20 +106,11 @@ test('end-to-end: punches, overtime, leaves, documents and payroll', async (t) =
   assert.equal(byDate['2026-09-01'].status, 'present');
   assert.equal(byDate['2026-09-01'].worked_minutes, 542);
   assert.equal(byDate['2026-09-01'].late_minutes, 0);
-  assert.equal(byDate['2026-09-01'].ot_minutes, 120);
-  assert.equal(byDate['2026-09-01'].ot_status, 'pending');
   assert.equal(byDate['2026-09-02'].status, 'half_day');
   assert.equal(byDate['2026-09-02'].late_minutes, 30);
   assert.equal(byDate['2026-09-03'].status, 'holiday');
   assert.equal(byDate['2026-09-04'].status, 'paid_leave');
 
-  // Finalize blocked while OT is pending; approve it, then finalize
-  r = await admin('POST', '/api/admin/payroll/2026-09/finalize', {});
-  assert.equal(r.status, 409);
-  assert.match(r.data.error, /overtime/);
-  r = await admin('GET', '/api/admin/overtime?month=2026-09');
-  assert.equal(r.data.rows.length, 1);
-  await admin('POST', '/api/admin/overtime/decision', { employee_id: empId, date: '2026-09-01', status: 'approved' });
 
   // Manual correction: mark 2026-09-05 as present (e.g. forgot phone)
   await admin('PUT', '/api/admin/attendance/override', { employee_id: empId, date: '2026-09-05', status: 'present', note: 'Forgot phone' });
@@ -135,12 +122,9 @@ test('end-to-end: punches, overtime, leaves, documents and payroll', async (t) =
   const paidDays = 2 + 0.5 + 1 + 1 + sundays;
   assert.equal(row.paid_days, paidDays);
   assert.equal(row.base_paise, Math.round((3000000 / 30) * paidDays));
-  // OT at the same hourly rate (per-day / shift hours), minus the month's late time
-  assert.equal(row.ot_approved_minutes, 120);
-  assert.equal(row.ot_paid_minutes, Math.max(0, 120 - row.late_minutes));
+  assert.equal(row.ot_paise, undefined, 'no overtime pay');
   assert.ok(row.late_minutes > 0);
-  assert.equal(row.ot_paise, Math.round((100000 / 9) * (row.ot_paid_minutes / 60)), 'OT at the same hourly rate, after late time');
-  assert.equal(row.net_paise, row.base_paise + row.ot_paise + 25000 - 50000);
+  assert.equal(row.net_paise, row.base_paise + 25000 - 50000);
   const sita = r.data.rows.find((x) => x.employee_id === strictEmp);
   assert.equal(sita.attendance.present, 0, 'no attendance: only week offs / holidays are paid');
   assert.equal(sita.paid_days, sita.attendance.week_off + sita.attendance.holiday);

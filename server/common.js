@@ -100,24 +100,17 @@ function validPin(pin) {
   return pin;
 }
 
-/** Open regular / OT sessions in the last 20 hours decide which punch is allowed next. */
+/** An open session in the last 20 hours decides whether the next punch is In or Out. */
 function punchState(db, employeeId, nowMs) {
   const rows = db
     .prepare(
       `SELECT id, kind, at, work_date FROM punches
-       WHERE employee_id = ? AND at > ? AND status != 'rejected' ORDER BY at`,
+       WHERE employee_id = ? AND at > ? AND status != 'rejected' AND kind IN ('IN', 'OUT') ORDER BY at`,
     )
     .all(employeeId, nowMs - PUNCH_WINDOW_MS);
   let openIn = null;
-  let openOt = null;
-  for (const p of rows) {
-    if (p.kind === 'IN') openIn = p;
-    else if (p.kind === 'OUT') openIn = null;
-    else if (p.kind === 'OT_IN') openOt = p;
-    else if (p.kind === 'OT_OUT') openOt = null;
-  }
-  const allowed = openOt ? ['OT_OUT'] : openIn ? ['OUT'] : ['IN', 'OT_IN'];
-  return { openIn, openOt, allowed, last: rows[rows.length - 1] || null };
+  for (const p of rows) openIn = p.kind === 'IN' ? p : null;
+  return { openIn, allowed: openIn ? ['OUT'] : ['IN'], last: rows[rows.length - 1] || null };
 }
 
 /** Normalises and validates a document number; Aadhaar is never stored in full. */

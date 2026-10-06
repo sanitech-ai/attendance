@@ -45,12 +45,10 @@ test('managers check flagged items for their team but cannot change anything', a
   };
   // An earlier day on the app (no late marks on someone's first day)
   s.db.prepare("INSERT INTO punches (employee_id, kind, at, work_date, lat, lng, accuracy_m, inside_geofence, selfie_file, status) VALUES (?, 'IN', ?, ?, 0, 0, 10, 1, 'x.bin', 'ok')").run(Number((await admin('GET', '/api/admin/employees')).data.find((e) => e.code === 'MEM').id), ist('2026-10-01', '09:00'), '2026-10-01');
-  // Member: punch from 5 km away (flagged), 90 min late, overtime
+  // Member: punch from 5 km away (flagged), 90 min late
   const flagged = await punch(mem, '10:30', 'IN', { lat: 28.45, lng: 77.0 });
   assert.equal(flagged.status, 'flagged');
   await punch(mem, '18:00', 'OUT', { lat: 28.4, lng: 77.0 });
-  await punch(mem, '18:30', 'OT_IN', { lat: 28.4, lng: 77.0 });
-  await punch(mem, '20:30', 'OT_OUT', { lat: 28.4, lng: 77.0 });
   // Someone at another branch and the manager himself also get flagged
   await punch(far, '09:00', 'IN', { lat: 16.6, lng: 81.7 });
   const own = await punch(mgr, '09:00', 'IN', { lat: 28.45, lng: 77.0 });
@@ -63,18 +61,16 @@ test('managers check flagged items for their team but cannot change anything', a
   assert.equal(r.status, 200, JSON.stringify(r.data));
   assert.deepEqual(r.data.punches.map((p) => p.id), [flagged.id]);
   assert.deepEqual(r.data.late.map((x) => [x.employee_id, x.date]), [[memberId, '2026-10-05']]);
-  assert.deepEqual(r.data.overtime.map((x) => x.ot_minutes), [120]);
   assert.equal((await mgr('GET', `/api/employee/team/punches/${flagged.id}/selfie`)).headers.get('content-type'), 'image/jpeg');
 
   // Verify: punch looks fine, late doubtful
   assert.equal((await mgr('POST', '/api/employee/team/verify', { kind: 'punch', punch_id: flagged.id, verdict: 'ok', note: 'Was at gate 2' })).status, 200);
   assert.equal((await mgr('POST', '/api/employee/team/verify', { kind: 'late', employee_id: memberId, date: '2026-10-05', verdict: 'doubt' })).status, 200);
-  assert.equal((await mgr('POST', '/api/employee/team/verify', { kind: 'overtime', employee_id: memberId, date: '2026-10-05', verdict: 'ok' })).status, 200);
   // ...but not their own punch, nor things that aren't flagged
   assert.equal((await mgr('POST', '/api/employee/team/verify', { kind: 'punch', punch_id: own.id, verdict: 'ok' })).status, 404);
   assert.equal((await mgr('POST', '/api/employee/team/verify', { kind: 'late', employee_id: memberId, date: '2026-10-04', verdict: 'ok' })).status, 404);
 
-  // Nothing actually changed: punch still flagged, late still pending, overtime still pending
+  // Nothing actually changed: punch still flagged, late still pending
   await admin('POST', '/api/admin/login', { username: 'firefueled', password: 'password123' });
   const p = (await admin('GET', '/api/admin/punches?status=flagged')).data.find((x) => x.id === flagged.id);
   assert.equal(p.status, 'flagged');
@@ -82,9 +78,6 @@ test('managers check flagged items for their team but cannot change anything', a
   const late = (await admin('GET', '/api/admin/late-approvals?month=2026-10')).data.rows[0];
   assert.equal(late.late_review, 'pending');
   assert.equal(late.verification.verdict, 'doubt');
-  const ot = (await admin('GET', '/api/admin/overtime?month=2026-10')).data.rows[0];
-  assert.equal(ot.ot_status, 'pending');
-  assert.equal(ot.verification.verdict, 'ok');
 
   // Managers have no admin powers
   assert.equal((await mgr('POST', `/api/admin/punches/${flagged.id}/review`, { status: 'approved' })).status, 401);

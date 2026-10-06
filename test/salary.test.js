@@ -25,11 +25,9 @@ test('staff see their salary live, then the final payslip', async (t) => {
     assert.equal((await staff('POST', '/api/employee/punch', { note: 'Client office',  kind, ...HQ, accuracy: 10, selfie: JPEG })).status, 200);
   };
 
-  // Day 1 worked, plus 2 h overtime awaiting approval
+  // Day 1 worked
   await punch('2026-10-01', '09:00', 'IN');
   await punch('2026-10-01', '18:00', 'OUT');
-  await punch('2026-10-01', '18:30', 'OT_IN');
-  await punch('2026-10-01', '20:30', 'OT_OUT');
   s.clock.now = ist('2026-10-02', '10:00');
   let r = await staff('GET', '/api/employee/salary');
   assert.equal(r.status, 200, JSON.stringify(r.data));
@@ -40,16 +38,9 @@ test('staff see their salary live, then the final payslip', async (t) => {
   assert.equal(row.paid_days, 1, 'one present day so far (today not punched yet)');
   assert.equal(row.per_day_paise, 100000, 'Rs 31,000 / 31 days');
   assert.equal(row.base_paise, 100000);
-  assert.equal(row.ot_paise, 0, 'pending overtime is not paid yet');
-  assert.equal(row.attendance.ot_pending_minutes, 120);
+  assert.equal(row.ot_paise, undefined, 'no overtime pay');
   assert.deepEqual(row.deductions.map((d) => [d.label, d.amount_paise]), [['PF', 180000], ['Professional Tax', 20000]]);
   assert.equal(row.net_paise, 100000 - 180000 - 20000 - 100000);
-
-  // Approving overtime shows up immediately
-  await admin('POST', '/api/admin/overtime/decision', { employee_id: e.data.id, date: '2026-10-01', status: 'approved' });
-  r = await staff('GET', '/api/employee/salary?month=2026-10');
-  assert.equal(r.data.row.ot_hours, 2);
-  assert.equal(r.data.row.ot_paise, Math.round((100000 / 9) * 2));
 
   // Limits
   assert.equal((await staff('GET', '/api/employee/salary?month=2026-11')).status, 400, 'future month');

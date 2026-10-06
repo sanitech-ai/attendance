@@ -1,28 +1,22 @@
 'use strict';
 const { computeRange, summarize } = require('./attendance');
-const { daysInMonth, shiftMinutes } = require('./util');
+const { daysInMonth } = require('./util');
 
 /**
  * Salary rules
  *  Everyone is paid monthly: per-day = salary / calendar days in month.
  *  Paid days = present + ½·half-days + paid leave + weekly offs + holidays.
- * Overtime is paid at the same hourly rate as regular work: per-day / shift hours.
- * Only approved overtime is paid, minus the month's total late time when late_offsets_ot is on.
+ * There is no overtime pay: working on a weekly off earns a comp-off (a paid day off) instead.
  * Fixed monthly pay items (PF, PT, conveyance...) apply in full whenever there is at least one paid day.
  */
 function salaryForEmployee(emp, days, month, extras) {
   const s = summarize(days);
-  const shiftMin = shiftMinutes(emp.shift_start, emp.shift_end);
   const dim = daysInMonth(month);
 
   const perDay = emp.salary_paise / dim;
-  const hourlyRate = perDay / (shiftMin / 60);
   const paidDays = s.present + 0.5 * s.half_day + s.paid_leave + s.week_off + s.holiday;
   const basePaise = perDay * paidDays;
 
-  const lateOffset = extras.lateOffsetsOt ? Math.min(s.late_minutes, s.ot_payable_minutes) : 0;
-  const otPaidMinutes = s.ot_payable_minutes - lateOffset;
-  const otPaise = (hourlyRate * otPaidMinutes) / 60;
   const fixed = paidDays > 0 ? extras.payItems || [] : [];
   const items = [...fixed, ...extras.adjustments];
   const additions = items.filter((a) => a.kind === 'addition');
@@ -30,11 +24,10 @@ function salaryForEmployee(emp, days, month, extras) {
   const sum = (xs) => xs.reduce((t, x) => t + x.amount_paise, 0);
 
   const base = Math.round(basePaise);
-  const ot = Math.round(otPaise);
   const addTotal = sum(additions);
   const dedTotal = sum(deductions);
   const advTotal = sum(extras.advances);
-  const gross = base + ot + addTotal;
+  const gross = base + addTotal;
 
   return {
     employee_id: emp.id,
@@ -50,14 +43,8 @@ function salaryForEmployee(emp, days, month, extras) {
     attendance: s,
     paid_days: paidDays,
     per_day_paise: Math.round(perDay),
-    hourly_rate_paise: Math.round(hourlyRate),
     base_paise: base,
-    ot_hours: Math.round((otPaidMinutes / 60) * 100) / 100, // overtime actually paid
-    ot_approved_minutes: s.ot_payable_minutes,
     late_minutes: s.late_minutes,
-    late_offset_minutes: lateOffset,
-    ot_paid_minutes: otPaidMinutes,
-    ot_paise: ot,
     additions: additions.map(({ label, amount_paise }) => ({ label, amount_paise })),
     deductions: deductions.map(({ label, amount_paise }) => ({ label, amount_paise })),
     advances: extras.advances.map(({ given_on, note, amount_paise }) => ({ given_on, note, amount_paise })),
@@ -76,7 +63,6 @@ function employeeSalary(db, emp, month, settings, nowMs = Date.now()) {
     adjustments: db.prepare('SELECT * FROM adjustments WHERE employee_id = ? AND month = ? ORDER BY id').all(emp.id, month),
     payItems: db.prepare('SELECT * FROM pay_items WHERE employee_id = ? ORDER BY kind, id').all(emp.id),
     advances: db.prepare('SELECT * FROM advances WHERE employee_id = ? AND deduct_month = ? ORDER BY given_on').all(emp.id, month),
-    lateOffsetsOt: settings.late_offsets_ot,
   });
 }
 
@@ -95,12 +81,11 @@ function computePayroll(db, month, settings, nowMs = Date.now()) {
   const totals = rows.reduce(
     (t, r) => ({
       base_paise: t.base_paise + r.base_paise,
-      ot_paise: t.ot_paise + r.ot_paise,
       gross_paise: t.gross_paise + r.gross_paise,
       total_deductions_paise: t.total_deductions_paise + r.total_deductions_paise,
       net_paise: t.net_paise + r.net_paise,
     }),
-    { base_paise: 0, ot_paise: 0, gross_paise: 0, total_deductions_paise: 0, net_paise: 0 },
+    { base_paise: 0, gross_paise: 0, total_deductions_paise: 0, net_paise: 0 },
   );
   return { month, company_name: settings.company_name, rows, totals };
 }

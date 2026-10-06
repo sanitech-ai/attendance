@@ -1,7 +1,7 @@
 'use strict';
 const express = require('express');
 const { getSettings, tx } = require('../db');
-const { computeRange, summarize, leaveTotals } = require('../attendance');
+const { computeRange, summarize, leaveTotals, compOffBalance, workingDays } = require('../attendance');
 const { computePayroll } = require('../payroll');
 const { planImport, randomPin } = require('../importer');
 const { resolveMapsLink, placeName } = require('../maps');
@@ -778,7 +778,6 @@ module.exports = function adminRoutes(ctx) {
         on_leave: count(['paid_leave', 'unpaid_leave']),
         off: count(['week_off', 'holiday']),
         late: rows.filter((x) => x.day.late_minutes > 0).length,
-        on_ot: rows.filter((x) => x.last_punch?.kind === 'OT_IN').length,
       },
       pending: pendingCounts(),
       rows,
@@ -891,7 +890,7 @@ module.exports = function adminRoutes(ctx) {
     const header = ['Employee ID', 'Name', 'Branch'];
     const dates = [];
     for (let d = from; d <= to; d = new Date(Date.parse(d) + 86400000).toISOString().slice(0, 10)) dates.push(d);
-    header.push(...dates.map((d) => d.slice(8)), 'Present', 'Half days', 'Absent', 'Paid leave', 'Unpaid leave', 'Week off', 'Holiday', 'Late days', 'Hours worked', 'OT hours (approved)');
+    header.push(...dates.map((d) => d.slice(8)), 'Present', 'Half days', 'Absent', 'Paid leave', 'Unpaid leave', 'Week off', 'Holiday', 'Late days', 'Hours worked', 'Comp-off earned');
     const rows = [header];
     for (const e of emps) {
       const days = computeRange(db, e, from, to, settings, ctx.now());
@@ -899,13 +898,13 @@ module.exports = function adminRoutes(ctx) {
       rows.push([
         e.code, e.name, e.branch_name, ...days.map((d) => codes[d.status] ?? d.status),
         s.present, s.half_day, s.absent + s.not_marked, s.paid_leave, s.unpaid_leave, s.week_off, s.holiday, s.late_days,
-        (s.worked_minutes / 60).toFixed(2), (s.ot_payable_minutes / 60).toFixed(2),
+        (s.worked_minutes / 60).toFixed(2), s.comp_off_earned,
       ]);
     }
     sendCsv(res, `attendance-${month}.csv`, rows);
   });
 
-  // ---- monthly late & overtime tracker ----
+  // ---- monthly late report (and weekly offs worked) ----
   function lateOtRows(month, branchId) {
     const [from, to] = monthRange(month);
     const settings = getSettings(db);
@@ -917,86 +916,35 @@ module.exports = function adminRoutes(ctx) {
         employee_id: e.id, code: e.code, name: e.name, branch_name: e.branch_name, shift_start: e.shift_start,
         late_days: s.late_days, late_hour_days: s.late_hour_days, late_minutes: s.late_minutes,
         late_penalties: s.late_penalties, late_pending: s.late_pending,
-        ot_days: s.ot_days, ot_minutes: s.ot_minutes, ot_payable_minutes: s.ot_payable_minutes, ot_pending_minutes: s.ot_pending_minutes,
-        ot_after_late_minutes: settings.late_offsets_ot ? Math.max(0, s.ot_payable_minutes - s.late_minutes) : s.ot_payable_minutes,
+        comp_off_earned: s.comp_off_earned,
+        week_off_worked: days.filter((d) => d.comp_off_earned).map((d) => ({ date: d.date, first_in: d.first_in, last_out: d.last_out, earned: d.comp_off_earned })),
         first_day: days.find((d) => d.flags.includes('first_day'))?.date || null,
         late: days.filter((d) => d.late_minutes > 0).map((d) => ({
           date: d.date, first_in: d.first_in, minutes: d.late_minutes, cumulative: (running += d.late_minutes), over_max: d.late_over_max,
           outcome: d.late_review ? (d.late_review === 'pending' ? 'over 1 hour — to review' : `over 1 hour — ${d.late_review === 'present' ? 'full day given' : 'half day'}`)
             : d.flags.includes('late_penalty') ? `late #${d.late_mark} — half day` : `late #${d.late_mark} — warning`,
         })),
-        ot: days.filter((d) => d.ot_minutes > 0).map((d) => ({ date: d.date, start: d.ot_start, end: d.ot_end, minutes: d.ot_minutes, status: d.ot_status, payable_minutes: d.ot_payable_minutes })),
       };
     });
   }
 
   r.get('/late-ot', (req, res) => {
     const month = requireMonth(req.query.month);
-    res.json({ month, grace_minutes: getSettings(db).grace_minutes, late_max_minutes: getSettings(db).late_max_minutes, late_offsets_ot: getSettings(db).late_offsets_ot, rows: lateOtRows(month, req.query.branch_id ? id(req.query.branch_id) : null) });
+    res.json({ month, grace_minutes: getSettings(db).grace_minutes, late_max_minutes: getSettings(db).late_max_minutes, rows: lateOtRows(month, req.query.branch_id ? id(req.query.branch_id) : null) });
   });
 
   r.get('/late-ot.csv', (req, res) => {
     const month = requireMonth(req.query.month);
     const st = getSettings(db);
-    const hrs = (m) => (m / 60).toFixed(2);
     const rows = [['Employee ID', 'Name', 'Branch', `Late (over ${st.grace_minutes} min) — days`, `Late over ${st.late_max_minutes / 60} hour — days`, 'Total late (minutes)',
-      'Late days counted as half day', 'Overtime days', 'Overtime hours (recorded)', 'Overtime hours (approved)', 'Overtime hours (pending)',
-      st.late_offsets_ot ? 'Overtime hours paid (approved minus late time)' : 'Overtime hours paid', 'Late dates', 'Overtime dates']];
+      'Late days counted as half day', 'Weekly offs worked (comp-off earned)', 'Late dates', 'Weekly offs worked']];
     for (const r2 of lateOtRows(month, req.query.branch_id ? id(req.query.branch_id) : null)) {
-      rows.push([r2.code, r2.name, r2.branch_name, r2.late_days, r2.late_hour_days, r2.late_minutes, r2.late_penalties, r2.ot_days,
-        hrs(r2.ot_minutes), hrs(r2.ot_payable_minutes), hrs(r2.ot_pending_minutes), hrs(r2.ot_after_late_minutes),
-        r2.late.map((l) => `${l.date.slice(8)} (${l.minutes}m)`).join(' '), r2.ot.map((o) => `${o.date.slice(8)} (${hrs(o.minutes)}h)`).join(' ')]);
+      rows.push([r2.code, r2.name, r2.branch_name, r2.late_days, r2.late_hour_days, r2.late_minutes, r2.late_penalties, r2.comp_off_earned,
+        r2.late.map((l) => `${l.date.slice(8)} (${l.minutes}m)`).join(' '), r2.week_off_worked.map((w) => w.date.slice(8)).join(' ')]);
     }
-    sendCsv(res, `late-and-overtime-${month}.csv`, rows);
+    sendCsv(res, `late-report-${month}.csv`, rows);
   });
 
-  // ---- overtime ----
-  r.get('/overtime', (req, res) => {
-    const month = requireMonth(req.query.month);
-    const [from, to] = monthRange(month);
-    const settings = getSettings(db);
-    const emps = db.prepare(
-      `SELECT DISTINCT e.*, b.name AS branch_name FROM employees e JOIN branches b ON b.id = e.branch_id
-       JOIN punches p ON p.employee_id = e.id AND p.kind IN ('OT_IN', 'OT_OUT') AND p.work_date BETWEEN ? AND ?
-       ORDER BY e.name`,
-    ).all(from, to);
-    const out = [];
-    for (const e of emps) {
-      for (const d of computeRange(db, e, from, to, settings, ctx.now())) {
-        if (d.ot_minutes > 0 || d.flags.includes('missing_ot_out')) {
-          out.push({ employee_id: e.id, code: e.code, name: e.name, branch_name: e.branch_name, ...d });
-        }
-      }
-    }
-    out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.name.localeCompare(b.name)));
-    const checks = verificationsFor('overtime');
-    for (const row of out) row.verification = checks.get(`${row.employee_id}:${row.date}`) || null;
-    res.json({ month, requires_approval: settings.ot_requires_approval, rows: out });
-  });
-
-  r.post('/overtime/decision', (req, res) => {
-    const { employee_id, date, status, approved_minutes } = req.body || {};
-    requireDate(date);
-    const empId = id(employee_id);
-    assertMonthOpen(db, date.slice(0, 7));
-    if (status === null) {
-      db.prepare('DELETE FROM ot_decisions WHERE employee_id = ? AND work_date = ?').run(empId, date);
-      return res.json({ ok: true });
-    }
-    if (!['approved', 'rejected'].includes(status)) throw bad('Status must be approved or rejected');
-    let minutes = null;
-    if (status === 'approved' && approved_minutes !== undefined && approved_minutes !== null && approved_minutes !== '') {
-      minutes = Number(approved_minutes);
-      if (!Number.isInteger(minutes) || minutes < 0 || minutes > 1440) throw bad('Approved minutes must be 0-1440');
-    }
-    db.prepare(
-      `INSERT INTO ot_decisions (employee_id, work_date, status, approved_minutes, decided_by, decided_at) VALUES (?, ?, ?, ?, ?, ?)
-       ON CONFLICT (employee_id, work_date) DO UPDATE SET status = excluded.status, approved_minutes = excluded.approved_minutes,
-         decided_by = excluded.decided_by, decided_at = excluded.decided_at`,
-    ).run(empId, date, status, minutes, req.admin.id, ctx.now());
-    ctx.audit(req, `overtime.${status}`, { employee_id: empId, date, approved_minutes: minutes });
-    res.json({ ok: true });
-  });
 
   // ---- visit selfies (field staff) ----
   r.get('/visits', (req, res) => {
@@ -1109,7 +1057,10 @@ module.exports = function adminRoutes(ctx) {
     const year = Number(req.query.year) || Number(istDate(ctx.now()).slice(0, 4));
     const settings = getSettings(db);
     const emps = db.prepare('SELECT e.*, b.name AS branch_name FROM employees e JOIN branches b ON b.id = e.branch_id WHERE e.active = 1 ORDER BY e.name').all();
-    res.json({ year, rows: emps.map((e) => ({ employee_id: e.id, code: e.code, name: e.name, branch_name: e.branch_name, ...leaveTotals(db, e, year, settings, ctx.now()) })) });
+    res.json({ year, rows: emps.map((e) => ({
+      employee_id: e.id, code: e.code, name: e.name, branch_name: e.branch_name,
+      ...leaveTotals(db, e, year, settings, ctx.now()), comp_off: compOffBalance(db, e, settings, ctx.now()),
+    })) });
   });
 
   r.get('/leaves', (req, res) => {
@@ -1127,6 +1078,12 @@ module.exports = function adminRoutes(ctx) {
     if (!l) throw notFound();
     if (!['pending', 'approved', 'rejected'].includes(l.status)) throw bad('This request was cancelled');
     for (const m of new Set([l.from_date.slice(0, 7), l.to_date.slice(0, 7)])) assertMonthOpen(db, m);
+    if (status === 'approved' && l.comp_off) {
+      const emp = db.prepare('SELECT * FROM employees WHERE id = ?').get(l.employee_id);
+      const need = workingDays(db, emp, l.from_date, l.to_date).length;
+      const bal = compOffBalance(db, emp, getSettings(db), ctx.now(), l.id);
+      if (need > bal.balance) throw bad(`${emp.name} has only ${bal.balance} comp-off day(s) left; this request needs ${need}. Approve it as normal paid leave instead, or reject it.`);
+    }
     db.prepare('UPDATE leave_requests SET status = ?, decided_by = ?, decided_at = ? WHERE id = ?').run(status, req.admin.id, ctx.now(), l.id);
     ctx.audit(req, `leave.${status}`, { id: l.id, employee_id: l.employee_id });
     res.json({ ok: true });
@@ -1292,10 +1249,6 @@ module.exports = function adminRoutes(ctx) {
     tx(db, () => {
       assertMonthOpen(db, month);
       const data = computePayroll(db, month, getSettings(db), ctx.now());
-      const pendingOt = data.rows.filter((x) => x.attendance.ot_pending_minutes > 0);
-      if (pendingOt.length && !req.body?.ignore_pending_ot) {
-        throw new HttpError(409, `${pendingOt.length} employee(s) have overtime waiting for approval. Approve or reject it first.`);
-      }
       db.prepare('INSERT INTO payroll_runs (month, finalized_at, finalized_by, data_json) VALUES (?, ?, ?, ?)')
         .run(month, ctx.now(), req.admin.id, JSON.stringify(data));
     });
@@ -1316,7 +1269,7 @@ module.exports = function adminRoutes(ctx) {
     const p = payrollFor(month);
     const rows = [[
       'Employee ID', 'Name', 'Branch', 'Monthly salary (Rs)', 'Paid days', 'Present', 'Half days', 'Absent',
-      'Paid leave', 'Week off', 'Holiday', 'OT approved (h)', 'Late time (h)', 'OT paid after late (h)', 'Base pay', 'OT pay', 'Additions', 'Deductions', 'Advances', 'Net pay',
+      'Paid leave', 'Week off', 'Holiday', 'Late time (h)', 'Comp-off earned', 'Base pay', 'Additions', 'Deductions', 'Advances', 'Net pay',
       'Phone', 'UPI ID', 'Bank account', 'IFSC',
     ]];
     // Current payment details, so the sheet can be used to pay salaries.
@@ -1327,12 +1280,12 @@ module.exports = function adminRoutes(ctx) {
       const sum = (xs) => xs.reduce((t, y) => t + y.amount_paise, 0);
       rows.push([
         x.code, x.name, x.branch_name, rupees(x.salary_paise), x.paid_days, a.present, a.half_day,
-        a.absent + a.not_marked, a.paid_leave, a.week_off, a.holiday, (x.ot_approved_minutes / 60).toFixed(2), (x.late_minutes / 60).toFixed(2), x.ot_hours, rupees(x.base_paise), rupees(x.ot_paise),
+        a.absent + a.not_marked, a.paid_leave, a.week_off, a.holiday, (x.late_minutes / 60).toFixed(2), a.comp_off_earned, rupees(x.base_paise),
         rupees(sum(x.additions)), rupees(sum(x.deductions)), rupees(sum(x.advances)), rupees(x.net_paise),
         e.phone || '', e.upi_id || '', e.bank_account || '', e.bank_ifsc || '',
       ]);
     }
-    rows.push(['TOTAL', '', '', '', '', '', '', '', '', '', '', '', '', '', rupees(p.totals.base_paise), rupees(p.totals.ot_paise), '', '', '', rupees(p.totals.net_paise)]);
+    rows.push(['TOTAL', '', '', '', '', '', '', '', '', '', '', '', '', rupees(p.totals.base_paise), '', '', '', rupees(p.totals.net_paise)]);
     sendCsv(res, `payroll-${month}.csv`, rows);
   });
 

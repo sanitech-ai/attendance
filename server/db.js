@@ -250,7 +250,7 @@ const DEFAULT_SETTINGS = {
   salary_visible_from: '2026-10',
   max_accuracy_m: '100',
   ot_requires_approval: '1',
-  // The month's total late time is taken off approved overtime before it is paid (never below zero).
+  // No longer used (overtime was removed; working on a weekly off earns a comp-off instead).
   late_offsets_ot: '1',
 };
 
@@ -312,6 +312,11 @@ function migrate(db) {
     // Off-site punches: where the employee says they are, and the address the GPS points to.
     db.exec('ALTER TABLE punches ADD COLUMN note TEXT');
     db.exec('ALTER TABLE punches ADD COLUMN place TEXT');
+  }
+  const leaveCols = db.prepare('PRAGMA table_info(leave_requests)').all().map((c) => c.name);
+  if (!leaveCols.includes('comp_off')) {
+    // A paid leave taken against comp-off earned by working on a weekly off.
+    db.exec('ALTER TABLE leave_requests ADD COLUMN comp_off INTEGER NOT NULL DEFAULT 0');
   }
   const visitCols = db.prepare('PRAGMA table_info(visits)').all().map((c) => c.name);
   if (!visitCols.includes('place')) db.exec('ALTER TABLE visits ADD COLUMN place TEXT');

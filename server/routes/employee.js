@@ -1,7 +1,7 @@
 'use strict';
 const express = require('express');
 const { getSettings } = require('../db');
-const { computeRange, summarize, leaveTotals } = require('../attendance');
+const { computeRange, summarize, leaveTotals, compOffBalance, workingDays } = require('../attendance');
 const { employeeSalary } = require('../payroll');
 const {
   bad, HttpError, istDate, haversineMeters, fmtKm, decodeDataUrl, requireDate, requireMonth, daysInMonth, hashSecret,
@@ -12,7 +12,7 @@ const {
 
 const { addressAt } = require('../maps');
 
-const PUNCH_KINDS = ['IN', 'OUT', 'OT_IN', 'OT_OUT'];
+const PUNCH_KINDS = ['IN', 'OUT'];
 const monthName = (m) => new Date(`${m}-01T00:00:00Z`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' });
 const SELFIE_MAX_BYTES = 2 * 1024 * 1024;
 
@@ -90,7 +90,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     const emp = req.employee;
     const state = punchState(db, emp.id, now);
     const today = istDate(now);
-    const workDate = state.openIn?.work_date || state.openOt?.work_date || today;
+    const workDate = state.openIn?.work_date || today;
     const settings = getSettings(db);
     const [day] = computeRange(db, emp, workDate, workDate, settings, now);
     const punches = db
@@ -175,6 +175,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     const emp = req.employee;
     const { kind, lat, lng, accuracy, selfie } = req.body || {};
     const note = String(req.body?.note || '').trim().slice(0, 200);
+    if (kind === 'OT_IN' || kind === 'OT_OUT') throw bad('Overtime punches are no longer used. Working on your weekly off earns a comp-off instead.');
     if (!PUNCH_KINDS.includes(kind)) throw bad('Unknown punch type');
     if (typeof lat !== 'number' || typeof lng !== 'number' || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
       throw bad('Location is required. Allow location access and try again.');
@@ -199,7 +200,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     // Punching from a bank, GST office, client office…: they must say where; an admin approves it.
     if (!inside && note.length < 3) throw bad('You are not at one of your sites. Write where you are punching from (e.g. HDFC Bank Ameerpet, client office).');
 
-    const workDate = kind === 'OUT' ? state.openIn.work_date : kind === 'OT_OUT' ? state.openOt.work_date : istDate(now);
+    const workDate = kind === 'OUT' ? state.openIn.work_date : istDate(now);
     const file = ctx.saveFile(buf);
     const result = db
       .prepare(
@@ -255,7 +256,8 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
   // ---- leaves ----
   r.get('/leave-summary', (req, res) => {
     const year = Number(req.query.year) || Number(istDate(ctx.now()).slice(0, 4));
-    res.json(leaveTotals(db, req.employee, year, getSettings(db), ctx.now()));
+    const settings = getSettings(db);
+    res.json({ ...leaveTotals(db, req.employee, year, settings, ctx.now()), comp_off: compOffBalance(db, req.employee, settings, ctx.now()) });
   });
 
   r.get('/leaves', (req, res) => {
@@ -268,10 +270,18 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     requireDate(to_date, 'to_date');
     if (to_date < from_date) throw bad('End date is before start date');
     if ((Date.parse(to_date) - Date.parse(from_date)) / 86400000 > 60) throw bad('Leave can be at most 60 days at a time');
-    if (!['paid', 'unpaid'].includes(leave_type)) throw bad('Leave type must be paid or unpaid');
+    if (!['paid', 'unpaid', 'comp_off'].includes(leave_type)) throw bad('Leave type must be paid, unpaid or comp-off');
+    const compOff = leave_type === 'comp_off';
+    if (compOff) {
+      // Comp-off is taken on working days only, and only as much as has been earned.
+      const need = workingDays(db, req.employee, from_date, to_date).length;
+      if (!need) throw bad('Those dates are weekly offs or holidays. Pick working days for your comp-off.');
+      const bal = compOffBalance(db, req.employee, getSettings(db), ctx.now());
+      if (need > bal.balance) throw bad(`You have ${bal.balance} comp-off day(s) left; these dates need ${need}.`);
+    }
     const id = db
-      .prepare('INSERT INTO leave_requests (employee_id, from_date, to_date, leave_type, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(req.employee.id, from_date, to_date, leave_type, String(reason || '').slice(0, 500), ctx.now()).lastInsertRowid;
+      .prepare('INSERT INTO leave_requests (employee_id, from_date, to_date, leave_type, comp_off, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(req.employee.id, from_date, to_date, compOff ? 'paid' : leave_type, compOff ? 1 : 0, String(reason || '').slice(0, 500), ctx.now()).lastInsertRowid;
     res.json({ ok: true, id: Number(id) });
   });
 
@@ -314,7 +324,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     return new Map(db.prepare('SELECT ref, verdict, note, at FROM verifications WHERE kind = ?').all(kind).map((v) => [v.ref, v]));
   }
 
-  /** Pending very-late days and pending overtime for the team, current and previous month. */
+  /** Pending very-late days for the team (when that review is on), current and previous month. */
   function teamDayFlags(team) {
     const now = ctx.now();
     const today = istDate(now);
@@ -328,7 +338,6 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       for (const d of computeRange(db, e, from, today, settings, now)) {
         const who = { employee_id: e.id, code: e.code, name: e.name, branch_name: e.branch_name, date: d.date };
         if (d.late_review === 'pending') late.push({ ...who, first_in: d.first_in, last_out: d.last_out, late_minutes: d.late_minutes, worked_minutes: d.worked_minutes, shift_start: e.shift_start });
-        if (d.ot_status === 'pending') overtime.push({ ...who, ot_start: d.ot_start, ot_end: d.ot_end, ot_minutes: d.ot_minutes });
       }
     }
     return { late, overtime };

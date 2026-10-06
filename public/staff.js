@@ -173,7 +173,7 @@ async function renderHome(main) {
   if (!t) return;
   const d = t.day;
   const actions = h('div', { class: 'punch-actions' }, t.allowed.map((kind) =>
-    h('button', { class: `btn btn-primary punch-btn ${kind.startsWith('OT') ? 'ot' : ''}`, onclick: () => punchFlow(kind, t) }, PUNCH_LABEL[kind])),
+    h('button', { class: 'btn btn-primary punch-btn', onclick: () => punchFlow(kind, t) }, PUNCH_LABEL[kind])),
     t.can_visit && t.on_duty ? h('button', { class: 'btn punch-btn visit', onclick: () => visitFlow(t) }, '📍 Field visit selfie (bank, client, office…)') : '');
 
   const facts = h('dl', { class: 'kv' },
@@ -181,7 +181,7 @@ async function renderHome(main) {
     h('dt', {}, 'Status'), h('dd', {}, statusBadge(d.status) || '—', d.late_minutes ? [' ', badge(lateText(d, S.me.late_warnings), lateKind(d))] : ''),
     h('dt', {}, 'In / Out'), h('dd', {}, `${d.first_in || '—'} / ${d.last_out || '—'}`),
     h('dt', {}, 'Worked'), h('dd', {}, fmtMinutes(d.worked_minutes)),
-    d.ot_minutes || d.ot_start ? [h('dt', {}, 'Overtime'), h('dd', {}, `${fmtMinutes(d.ot_minutes)} `, d.ot_status ? badge(d.ot_status, d.ot_status === 'approved' ? 'ok' : d.ot_status === 'rejected' ? 'bad' : 'warn') : '')] : '');
+    d.status === 'week_off' || d.flags.includes('worked_week_off') ? [h('dt', {}, 'Weekly off'), h('dd', {}, 'Working today earns you a comp-off (a paid day off on a weekday).')] : '');
 
   const visitKind = { pending: ['Waiting for review', 'warn'], approved: ['Approved', 'ok'], rejected: ['Rejected', 'bad'] };
   const visitItems = (t.visits || []).map((v) => ({ at: v.at, el: h('li', {},
@@ -451,10 +451,7 @@ async function renderAttendance(main) {
       stat(s.paid_leave, 'Paid leave'), stat(s.unpaid_leave, 'Unpaid leave'), stat(s.late_days, `Late (over ${S.me.grace_minutes ?? 15} min)`),
       stat(s.late_hour_days, `Late over ${(S.me.late_max_minutes ?? 60) / 60} hour`),
       stat(s.late_minutes ? fmtMinutes(s.late_minutes) : '0', 'Total late time'),
-      stat((s.ot_payable_minutes / 60).toFixed(1), 'OT hours (approved)'),
-      S.me.late_offsets_ot ? stat(fmtMinutes(Math.max(0, s.ot_payable_minutes - s.late_minutes)), 'OT paid (after late)') : ''),
-    S.me.late_offsets_ot && (s.late_minutes || s.ot_payable_minutes)
-      ? h('p', { class: 'small muted' }, `Your total late time this month (${fmtMinutes(s.late_minutes)}) is taken off your approved overtime (${fmtMinutes(s.ot_payable_minutes)}) before it is paid.`) : '',
+      stat(s.comp_off_earned, 'Comp-off earned (weekly offs worked)')),
     h('div', { class: 'card', style: { marginTop: '12px' } }, cal,
       h('p', { class: 'small muted' }, 'P present · HD half day · A absent · PL/UL leave · WO week off · H holiday. Tap a day for details.')),
     lateList(data.days));
@@ -488,7 +485,7 @@ function dayDetails(d) {
     h('dt', {}, 'In / Out'), h('dd', {}, `${d.first_in || '—'} / ${d.last_out || '—'}`),
     h('dt', {}, 'Worked'), h('dd', {}, fmtMinutes(d.worked_minutes)),
     h('dt', {}, 'Late'), h('dd', {}, d.late_minutes ? lateText(d, S.me.late_warnings) : 'No'),
-    h('dt', {}, 'Overtime'), h('dd', {}, d.ot_minutes ? `${fmtMinutes(d.ot_minutes)} (${d.ot_status})` : '—'),
+    d.comp_off_earned ? [h('dt', {}, 'Comp-off'), h('dd', {}, `Worked on a weekly off: ${d.comp_off_earned} day earned`)] : '',
     d.override ? [h('dt', {}, 'Corrected by admin'), h('dd', {}, d.override.note || 'Yes')] : '',
     d.flags.length ? [h('dt', {}, 'Notes'), h('dd', {}, d.flags.map((f) => FLAG_LABEL[f] || f).join(', '))] : ''));
 }
@@ -501,7 +498,11 @@ async function renderLeaves(main) {
   const kind = { pending: 'warn', approved: 'ok', rejected: 'bad', cancelled: 'neutral' };
   main.replaceChildren(
     h('div', { class: 'spread', style: { marginBottom: '12px' } }, h('h1', {}, 'Leaves'),
-      h('button', { class: 'btn btn-primary', onclick: requestLeave }, '+ Request leave')),
+      h('button', { class: 'btn btn-primary', onclick: () => requestLeave(sum.comp_off.balance) }, '+ Request leave')),
+    h('div', { class: 'card' }, h('h2', {}, 'Comp-off'),
+      h('div', { class: 'stats' }, stat(sum.comp_off.earned, 'Earned'), stat(sum.comp_off.used, 'Used / requested'), stat(sum.comp_off.balance, 'Left to take')),
+      h('p', { class: 'small muted' }, 'Each full day you work on your weekly off earns 1 paid day off (½ for a half day). Take it on a working day: Request leave → Comp-off.'),
+      sum.comp_off.earned_days.length ? h('p', { class: 'small' }, 'Earned on: ', sum.comp_off.earned_days.map((x) => `${fmtDate(x.date)}${x.earned < 1 ? ' (½)' : ''}`).join(', ')) : ''),
     h('div', { class: 'card' }, h('h2', {}, 'Leaves taken'),
       h('div', { class: 'stats' },
         stat(sum.month_paid, `Paid · ${fmtMonth(sum.month)}`), stat(sum.month_unpaid, `Unpaid · ${fmtMonth(sum.month)}`),
@@ -514,7 +515,7 @@ async function renderLeaves(main) {
         h('div', { class: 'spread' },
           h('strong', {}, l.from_date === l.to_date ? fmtDate(l.from_date) : `${fmtDate(l.from_date)} → ${fmtDate(l.to_date)}`),
           badge(l.status, kind[l.status])),
-        h('div', { class: 'small muted' }, `${l.leave_type === 'paid' ? 'Paid' : 'Unpaid'} leave${l.reason ? ` · ${l.reason}` : ''}`),
+        h('div', { class: 'small muted' }, `${l.comp_off ? 'Comp-off' : l.leave_type === 'paid' ? 'Paid leave' : 'Unpaid leave'}${l.reason ? ` · ${l.reason}` : ''}`),
         l.status === 'pending' ? h('button', {
           class: 'btn btn-sm', style: { marginTop: '8px' },
           onclick: async (e) => { if (await run(() => api('POST', `${EMP}/leaves/${l.id}/cancel`), e.target)) renderShell(); },
@@ -522,13 +523,16 @@ async function renderLeaves(main) {
       : [h('div', { class: 'empty' }, 'No leave requests yet.')]));
 }
 
-function requestLeave() {
+function requestLeave(compOffLeft = 0) {
   formDialog({
     title: 'Request leave',
     fields: [
       { name: 'from_date', label: 'From', type: 'date', required: true, value: todayIST() },
       { name: 'to_date', label: 'To', type: 'date', required: true, value: todayIST() },
-      { name: 'leave_type', label: 'Type', type: 'select', options: [{ value: 'paid', label: 'Paid leave' }, { value: 'unpaid', label: 'Unpaid leave' }] },
+      { name: 'leave_type', label: 'Type', type: 'select', options: [
+        { value: 'paid', label: 'Paid leave' }, { value: 'unpaid', label: 'Unpaid leave' },
+        ...(compOffLeft > 0 ? [{ value: 'comp_off', label: `Comp-off (${compOffLeft} day${compOffLeft === 1 ? '' : 's'} left)` }] : []),
+      ], hint: compOffLeft > 0 ? 'Comp-off is for working days only (not your weekly off).' : 'Working on your weekly off earns a comp-off you can take here.' },
       { name: 'reason', label: 'Reason', type: 'textarea' },
     ],
     submitLabel: 'Send request',
@@ -612,12 +616,7 @@ async function renderTeam(main) {
       h('div', { style: { flex: 1 } },
         h('div', {}, h('strong', {}, x.name), ` · ${fmtDate(x.date)}`),
         h('div', { class: 'small muted' }, `Shift ${x.shift_start} · came ${x.first_in} (${fmtMinutes(x.late_minutes)} late) · left ${x.last_out || '—'}`),
-        actions({ kind: 'late', employee_id: x.employee_id, date: x.date }, x.verification))), 'No very late arrivals waiting.'),
-    section('Overtime waiting for approval', t.overtime, (x) => h('li', { style: { alignItems: 'flex-start' } },
-      h('div', { style: { flex: 1 } },
-        h('div', {}, h('strong', {}, x.name), ` · ${fmtDate(x.date)}`),
-        h('div', { class: 'small muted' }, `${x.ot_start || '—'} – ${x.ot_end || '—'} · ${fmtMinutes(x.ot_minutes)}`),
-        actions({ kind: 'overtime', employee_id: x.employee_id, date: x.date }, x.verification))), 'No overtime waiting.'));
+        actions({ kind: 'late', employee_id: x.employee_id, date: x.date }, x.verification))), 'No very late arrivals waiting.'));
 }
 
 // ---------------------------------------------------------------- salary (live + finalized)
@@ -657,7 +656,7 @@ async function renderSalary(main) {
       h('div', { class: 'spread' }, h('div', { class: 'muted' }, d.status === 'final' ? 'Net pay' : 'Net pay so far'), status),
       h('div', { class: 'clock' }, money(r.net_paise)),
       d.status === 'live'
-        ? h('p', { class: 'small muted' }, `Calculated from your attendance up to today (${fmtDate(d.counted_until)}). Today counts once you punch out, and overtime counts once approved. It updates every time you open this page.`,
+        ? h('p', { class: 'small muted' }, `Calculated from your attendance up to today (${fmtDate(d.counted_until)}). Today counts once you punch out. It updates every time you open this page.`,
           r.total_deductions_paise ? ' Monthly deductions (PF, ESIC, PT, advances) are taken in full, so early in the month this figure is low or even negative — it grows with every day you work.' : '')
         : d.status === 'pending' ? h('p', { class: 'small muted' }, 'Your employer has not finalized this month yet, so these figures can still change.') : '',
       h('button', { class: 'btn btn-block', style: { marginTop: '8px' }, onclick: () => openPayslip(d.company_name, d.month, r, { provisional: d.status !== 'final', asOf: d.as_of }) },
@@ -674,12 +673,10 @@ async function renderSalary(main) {
         h('dt', {}, 'Late marks'), h('dd', {}, `${a.late_days}`, h('span', { class: 'muted' }, ` (every ${S.me.late_warnings + 1}rd late is a half day)`)),
         a.late_pending ? [h('dt', {}, 'Very late, awaiting decision'), h('dd', {}, `${a.late_pending} day(s) — counted provisionally`)] : '',
         h('dt', {}, 'Total late time'), h('dd', {}, r.late_minutes ? fmtMinutes(r.late_minutes) : '—'),
-        h('dt', {}, 'Overtime approved'), h('dd', {}, fmtMinutes(r.ot_approved_minutes ?? Math.round(r.ot_hours * 60))),
-        r.late_offset_minutes ? [h('dt', {}, 'Overtime paid'), h('dd', {}, `${fmtMinutes(r.ot_approved_minutes)} − ${fmtMinutes(r.late_offset_minutes)} late = ${fmtMinutes(r.ot_paid_minutes)}`)] : '',
-        a.ot_pending_minutes ? [h('dt', {}, 'Overtime awaiting approval'), h('dd', {}, `${fmtMinutes(a.ot_pending_minutes)} (not included yet)`)] : '')),
+        a.comp_off_earned ? [h('dt', {}, 'Comp-off earned'), h('dd', {}, `${a.comp_off_earned} day(s) — worked on weekly offs`)] : '')),
     h('div', { class: 'card' }, h('h2', {}, 'Earnings'),
       line('Basic pay', money(r.base_paise), { note: rateNote }),
-      line('Overtime', money(r.ot_paise), { note: r.late_offset_minutes ? `${fmtMinutes(r.ot_approved_minutes)} − ${fmtMinutes(r.late_offset_minutes)} late = ${fmtMinutes(r.ot_paid_minutes)} × ${money(r.hourly_rate_paise)}/hour` : `${r.ot_hours} h × ${money(r.hourly_rate_paise)}/hour` }),
+      r.ot_paise ? line('Overtime', money(r.ot_paise)) : '', // only on payslips finalized before overtime was removed
       r.additions.map((x) => line(x.label, money(x.amount_paise))),
       line('Gross earnings', money(r.gross_paise), { total: true })),
     h('div', { class: 'card' }, h('h2', {}, 'Deductions'),

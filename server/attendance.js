@@ -10,7 +10,7 @@ function loadContext(db, emp, from, to) {
   const rows = db
     .prepare(
       `SELECT id, kind, at, work_date, status, flag_reason FROM punches
-       WHERE employee_id = ? AND work_date BETWEEN ? AND ? AND status != 'rejected'
+       WHERE employee_id = ? AND work_date BETWEEN ? AND ? AND status != 'rejected' AND kind IN ('IN', 'OUT')
        ORDER BY at`,
     )
     .all(emp.id, from, to);
@@ -28,7 +28,7 @@ function loadContext(db, emp, from, to) {
 
   const leaves = db
     .prepare(
-      `SELECT from_date, to_date, leave_type FROM leave_requests
+      `SELECT from_date, to_date, leave_type, comp_off FROM leave_requests
        WHERE employee_id = ? AND status = 'approved' AND to_date >= ? AND from_date <= ?`,
     )
     .all(emp.id, from, to);
@@ -38,13 +38,6 @@ function loadContext(db, emp, from, to) {
       .prepare('SELECT date, name FROM holidays WHERE date BETWEEN ? AND ? AND (branch_id IS NULL OR branch_id = ?)')
       .all(from, to, emp.branch_id)
       .map((h) => [h.date, h.name]),
-  );
-
-  const ot = new Map(
-    db
-      .prepare('SELECT * FROM ot_decisions WHERE employee_id = ? AND work_date BETWEEN ? AND ?')
-      .all(emp.id, from, to)
-      .map((d) => [d.work_date, d]),
   );
 
   const late = new Map(
@@ -57,19 +50,15 @@ function loadContext(db, emp, from, to) {
   // The first day someone used the app: they often installed it partway through the day.
   const firstAppDay = db.prepare("SELECT MIN(work_date) AS d FROM punches WHERE employee_id = ? AND status != 'rejected'").get(emp.id)?.d || null;
 
-  return { punches, overrides, leaves, holidays, ot, late, firstAppDay };
+  return { punches, overrides, leaves, holidays, late, firstAppDay };
 }
 
-/** Pairs IN->OUT and OT_IN->OT_OUT punches; open sessions are reported, not counted. */
+/** Pairs IN->OUT punches; an open session is reported, not counted. */
 function pairPunches(list) {
   let regularMs = 0;
-  let otMs = 0;
   let openIn = null;
-  let openOt = null;
   let firstIn = null;
   let lastOut = null;
-  let otStart = null;
-  let otEnd = null;
   for (const p of list) {
     if (p.kind === 'IN' && openIn === null) {
       openIn = p.at;
@@ -78,25 +67,9 @@ function pairPunches(list) {
       regularMs += p.at - openIn;
       lastOut = p.at;
       openIn = null;
-    } else if (p.kind === 'OT_IN' && openOt === null) {
-      openOt = p.at;
-      if (otStart === null) otStart = p.at;
-    } else if (p.kind === 'OT_OUT' && openOt !== null) {
-      otMs += p.at - openOt;
-      otEnd = p.at;
-      openOt = null;
     }
   }
-  return {
-    regularMinutes: Math.floor(regularMs / 60000),
-    otMinutes: Math.floor(otMs / 60000),
-    openIn,
-    openOt,
-    firstIn,
-    lastOut,
-    otStart,
-    otEnd,
-  };
+  return { regularMinutes: Math.floor(regularMs / 60000), openIn, firstIn, lastOut };
 }
 
 /** Full day = the employee's shift length minus the late grace (9:00-18:00 with 15 min grace -> 8h45m). */
@@ -133,11 +106,7 @@ function computeDay(emp, date, ctx, settings, today) {
     late_review: null, // very late arrivals (only with the late_review setting): 'pending' until an admin decides
     late_over_max: false, // later than late_max_minutes (shown as "over 1 hour")
     future: date > today, // shown on the calendar, but not counted until the day has passed
-    ot_minutes: p.otMinutes,
-    ot_start: p.otStart ? istTime(p.otStart) : null,
-    ot_end: p.otEnd ? istTime(p.otEnd) : null,
-    ot_status: null,
-    ot_payable_minutes: 0,
+    comp_off_earned: 0, // worked on a weekly off: earns a paid day off (comp-off) to take on a weekday
     holiday: ctx.holidays.get(date) || null,
     override: null,
     flags,
@@ -155,7 +124,8 @@ function computeDay(emp, date, ctx, settings, today) {
   // the app after arriving); that day counts as a full day if they punched in.
   const firstDay = date === emp.joined_on || date === ctx.firstAppDay;
   if (firstDay && p.firstIn !== null) flags.push('first_day');
-  if (p.firstIn !== null && emp.shift_start && !firstDay) {
+  // Nobody is "late" on their weekly off: working that day earns a comp-off instead.
+  if (p.firstIn !== null && emp.shift_start && !firstDay && !isWeekOff) {
     const lateBy = Math.floor((p.firstIn - istMs(date, emp.shift_start)) / 60000);
     if (lateBy > settings.grace_minutes) day.late_minutes = lateBy;
     day.late_over_max = day.late_minutes > settings.late_max_minutes;
@@ -201,12 +171,14 @@ function computeDay(emp, date, ctx, settings, today) {
         flags.push('late_approval');
       }
     }
-  } else if (leave) {
-    day.status = leave.leave_type === 'paid' ? 'paid_leave' : 'unpaid_leave';
   } else if (day.holiday) {
     day.status = 'holiday';
   } else if (isWeekOff) {
+    // Leave never uses up a weekly off or holiday: those days are off anyway.
     day.status = 'week_off';
+  } else if (leave) {
+    day.status = leave.leave_type === 'paid' ? 'paid_leave' : 'unpaid_leave';
+    if (leave.comp_off) flags.push('comp_off');
   } else if (date > today) {
     day.status = 'upcoming';
   } else if (date === today) {
@@ -215,19 +187,9 @@ function computeDay(emp, date, ctx, settings, today) {
     day.status = 'absent';
   }
 
-  if (p.openOt !== null && date < today) flags.push('missing_ot_out');
-  if (p.otMinutes > 0) {
-    const decision = ctx.ot.get(date);
-    if (!settings.ot_requires_approval) {
-      day.ot_status = 'approved';
-      day.ot_payable_minutes = p.otMinutes;
-    } else if (decision) {
-      day.ot_status = decision.status;
-      day.ot_payable_minutes =
-        decision.status === 'approved' ? (decision.approved_minutes ?? p.otMinutes) : 0;
-    } else {
-      day.ot_status = 'pending';
-    }
+  if (isWeekOff && !day.holiday && !day.future && ['present', 'half_day'].includes(day.status)) {
+    day.comp_off_earned = day.status === 'present' ? 1 : 0.5;
+    flags.push('worked_week_off');
   }
   return day;
 }
@@ -277,25 +239,19 @@ const COUNTED = ['present', 'half_day', 'absent', 'paid_leave', 'unpaid_leave', 
 function summarize(days) {
   const s = Object.fromEntries(COUNTED.map((k) => [k, 0]));
   s.worked_minutes = 0;
-  s.ot_minutes = 0;
-  s.ot_payable_minutes = 0;
-  s.ot_pending_minutes = 0;
+  s.comp_off_earned = 0;
   s.late_days = 0; // later than the grace period (15 min)
   s.late_hour_days = 0; // later than late_max_minutes (1 hour)
   s.late_minutes = 0;
   s.late_penalties = 0;
   s.late_pending = 0;
-  s.ot_days = 0;
   for (const d of days) {
     if (d.future) continue;
     if (d.status in s) s[d.status]++;
     s.worked_minutes += d.worked_minutes;
-    s.ot_minutes += d.ot_minutes;
-    s.ot_payable_minutes += d.ot_payable_minutes;
-    if (d.ot_status === 'pending') s.ot_pending_minutes += d.ot_minutes;
+    s.comp_off_earned += d.comp_off_earned;
     if (d.late_minutes > 0) { s.late_days++; s.late_minutes += d.late_minutes; }
     if (d.late_over_max) s.late_hour_days++;
-    if (d.ot_minutes > 0) s.ot_days++;
     if (d.flags.includes('late_penalty')) s.late_penalties++;
     if (d.flags.includes('late_approval')) s.late_pending++;
   }
@@ -331,4 +287,37 @@ function leaveTotals(db, emp, year, settings, nowMs = Date.now()) {
   return out;
 }
 
-module.exports = { computeRange, computeDay, pairPunches, summarize, shiftMinutes, leaveTotals };
+/** Working days (not a weekly off or holiday) between two dates, inclusive. */
+function workingDays(db, emp, from, to) {
+  const offs = emp.weekly_offs.split(',').filter(Boolean).map(Number);
+  const hol = new Set(db.prepare('SELECT date FROM holidays WHERE date BETWEEN ? AND ? AND (branch_id IS NULL OR branch_id = ?)').all(from, to, emp.branch_id).map((x) => x.date));
+  const out = [];
+  for (let d = from; d <= to; d = new Date(Date.parse(`${d}T00:00:00Z`) + 86400000).toISOString().slice(0, 10)) {
+    if (!offs.includes(weekday(d)) && !hol.has(d)) out.push(d);
+  }
+  return out;
+}
+
+/**
+ * Comp-off: a full day worked on a weekly off earns 1 paid day off (a half day earns ½), to be taken
+ * on a working day. Counted from the day the employee started using the app. Pending and approved
+ * comp-off requests use up the balance.
+ */
+function compOffBalance(db, emp, settings, nowMs = Date.now(), exceptRequestId = null) {
+  const today = istDate(nowMs);
+  const since = appStartDate(db, emp);
+  const from = [emp.joined_on || '', since || ''].sort().pop();
+  let earned = 0;
+  const days = [];
+  if (since && from <= today) {
+    for (const d of computeRange(db, emp, from, today, settings, nowMs)) {
+      if (d.comp_off_earned) { earned += d.comp_off_earned; days.push({ date: d.date, earned: d.comp_off_earned }); }
+    }
+  }
+  const reqs = db.prepare("SELECT id, from_date, to_date, status FROM leave_requests WHERE employee_id = ? AND comp_off = 1 AND status IN ('pending', 'approved')").all(emp.id);
+  let used = 0;
+  for (const r of reqs) if (r.id !== exceptRequestId) used += workingDays(db, emp, r.from_date, r.to_date).length;
+  return { earned, used, balance: earned - used, earned_days: days };
+}
+
+module.exports = { computeRange, computeDay, pairPunches, summarize, shiftMinutes, leaveTotals, compOffBalance, workingDays };
