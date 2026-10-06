@@ -419,6 +419,7 @@ function punchFlow(kind, today, note = '') {
         : res.late.half_day
           ? `You are late by ${fmtMinutes(res.late.minutes)}. This is late #${res.late.mark} this month — every ${res.late.every}rd late counts as a half day, so today is a half day.`
           : `You are late by ${fmtMinutes(res.late.minutes)}. This is late #${res.late.mark} this month — every ${res.late.every}rd late counts as a half day.`, 'error');
+      if (res.late.month_minutes) toast(`This month: late on ${res.late.month_days} day(s), ${fmtMinutes(res.late.month_minutes)} in total.`, 'error');
     }
     renderShell();
   });
@@ -455,7 +456,25 @@ async function renderAttendance(main) {
     S.me.late_offsets_ot && (s.late_minutes || s.ot_payable_minutes)
       ? h('p', { class: 'small muted' }, `Your total late time this month (${fmtMinutes(s.late_minutes)}) is taken off your approved overtime (${fmtMinutes(s.ot_payable_minutes)}) before it is paid.`) : '',
     h('div', { class: 'card', style: { marginTop: '12px' } }, cal,
-      h('p', { class: 'small muted' }, 'P present · HD half day · A absent · PL/UL leave · WO week off · H holiday. Tap a day for details.')));
+      h('p', { class: 'small muted' }, 'P present · HD half day · A absent · PL/UL leave · WO week off · H holiday. Tap a day for details.')),
+    lateList(data.days));
+}
+
+/** Every late day this month with how late, and the running total. */
+function lateList(days) {
+  const late = days.filter((d) => !d.future && d.late_minutes > 0);
+  let running = 0;
+  return h('div', { class: 'card', style: { marginTop: '12px' } },
+    h('h2', {}, 'Late arrivals'),
+    late.length
+      ? [h('table', { class: 'late-table' },
+        h('thead', {}, h('tr', {}, h('th', {}, 'Date'), h('th', {}, 'In at'), h('th', { class: 'num' }, 'Late by'), h('th', { class: 'num' }, 'Total so far'))),
+        h('tbody', {}, late.map((d) => h('tr', {},
+          h('td', {}, fmtDate(d.date)), h('td', {}, d.first_in),
+          h('td', { class: 'num', style: d.late_over_max ? { color: 'var(--bad)', fontWeight: 600 } : null }, fmtMinutes(d.late_minutes)),
+          h('td', { class: 'num' }, fmtMinutes((running += d.late_minutes))))))),
+      h('p', { class: 'small' }, h('strong', {}, `${late.length} late day(s) · ${fmtMinutes(running)} in total this month.`))]
+      : h('p', { class: 'muted' }, `No late arrivals this month (late = more than ${S.me.grace_minutes ?? 15} minutes after your shift starts).`));
 }
 
 function stat(v, label) {

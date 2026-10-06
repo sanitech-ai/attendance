@@ -94,6 +94,7 @@ module.exports = function adminRoutes(ctx) {
       }
     }
     if (b.ot_requires_approval !== undefined) updates.ot_requires_approval = b.ot_requires_approval ? '1' : '0';
+    if (b.late_review !== undefined) updates.late_review = b.late_review ? '1' : '0';
     if (b.late_offsets_ot !== undefined) updates.late_offsets_ot = b.late_offsets_ot ? '1' : '0';
     if (b.salary_visible_from !== undefined) updates.salary_visible_from = requireMonth(String(b.salary_visible_from));
     if (updates.late_warnings !== undefined && !Number.isInteger(Number(updates.late_warnings))) throw bad('late_warnings must be a whole number');
@@ -621,6 +622,7 @@ module.exports = function adminRoutes(ctx) {
   /** Days with an arrival later than late_max_minutes that nobody has decided yet (active staff). */
   function pendingLateCount() {
     const s = getSettings(db);
+    if (!s.late_review) return 0;
     return db.prepare(
       `SELECT COUNT(*) AS n FROM (
          SELECT p.employee_id, p.work_date, MIN(p.at) AS first_in, e.shift_start, e.joined_on
@@ -910,6 +912,7 @@ module.exports = function adminRoutes(ctx) {
     return registerEmployees(branchId).map((e) => {
       const days = computeRange(db, e, from, to, settings, ctx.now()).filter((d) => !d.future);
       const s = summarize(days);
+      let running = 0;
       return {
         employee_id: e.id, code: e.code, name: e.name, branch_name: e.branch_name, shift_start: e.shift_start,
         late_days: s.late_days, late_hour_days: s.late_hour_days, late_minutes: s.late_minutes,
@@ -918,7 +921,7 @@ module.exports = function adminRoutes(ctx) {
         ot_after_late_minutes: settings.late_offsets_ot ? Math.max(0, s.ot_payable_minutes - s.late_minutes) : s.ot_payable_minutes,
         first_day: days.find((d) => d.flags.includes('first_day'))?.date || null,
         late: days.filter((d) => d.late_minutes > 0).map((d) => ({
-          date: d.date, first_in: d.first_in, minutes: d.late_minutes,
+          date: d.date, first_in: d.first_in, minutes: d.late_minutes, cumulative: (running += d.late_minutes), over_max: d.late_over_max,
           outcome: d.late_review ? (d.late_review === 'pending' ? 'over 1 hour — to review' : `over 1 hour — ${d.late_review === 'present' ? 'full day given' : 'half day'}`)
             : d.flags.includes('late_penalty') ? `late #${d.late_mark} — half day` : `late #${d.late_mark} — warning`,
         })),

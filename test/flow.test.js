@@ -237,6 +237,8 @@ test('late rules: every 3rd late is a half day; over 1 hour late is a half day f
   assert.equal(settings.grace_minutes, 15);
   assert.equal(settings.late_warnings, 2);
   assert.equal(settings.late_max_minutes, 60);
+  assert.equal(settings.late_review, false, 'very-late review is off by default');
+  await admin('PUT', '/api/admin/settings', { late_review: true });
   const b = await admin('POST', '/api/admin/branches', { name: 'HQ', ...OFFICE, radius_m: 150, geofence_mode: 'flag' });
   const emp = await admin('POST', '/api/admin/employees', {
     code: 'D1', name: 'Default', branch_id: b.data.id, salary_type: 'monthly', salary: 31000, shift_start: '09:00', shift_end: '18:00', weekly_offs: ['0'], joined_on: '2026-09-01', pin: '1234',
@@ -257,15 +259,15 @@ test('late rules: every 3rd late is a half day; over 1 hour late is a half day f
 
   assert.equal((await day('2026-10-01', '09:14', '18:00')).late, null, 'within grace');
   let r = await day('2026-10-02', '09:20', '18:00');
-  assert.deepEqual(r.late, { minutes: 20, mark: 1, every: 3, half_day: false });
+  assert.deepEqual(r.late, { minutes: 20, mark: 1, every: 3, half_day: false, month_days: 1, month_minutes: 20 });
   await day('2026-10-03', '09:40', '18:00');                    // late #2
   r = await day('2026-10-05', '09:16', '18:05');                // late #3 -> half day
-  assert.deepEqual(r.late, { minutes: 16, mark: 3, every: 3, half_day: true });
+  assert.deepEqual(r.late, { minutes: 16, mark: 3, every: 3, half_day: true, month_days: 3, month_minutes: 20 + 40 + 16 });
   await day('2026-10-06', '09:30', '18:00');                    // late #4 -> warning again
   await day('2026-10-07', '09:30', '18:00');                    // late #5
   await day('2026-10-08', '09:30', '18:00');                    // late #6 -> half day
   r = await day('2026-10-09', '10:30', '18:00');                // 90 min late -> admin decides
-  assert.deepEqual(r.late, { minutes: 90, review: true });
+  assert.deepEqual(r.late, { minutes: 90, review: true, month_days: 7, month_minutes: 256 });
   await day('2026-10-10', '10:05', '18:00');                    // 65 min late -> admin decides
   await day('2026-10-12', '09:20', '18:00');                    // late #7 (very-late days are not counted)
 

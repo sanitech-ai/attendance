@@ -242,8 +242,10 @@ const DEFAULT_SETTINGS = {
   grace_minutes: '15',
   // Warnings between half days: 2 means every 3rd late in a month (3rd, 6th, 9th...) is a half day.
   late_warnings: '2',
-  // Arriving later than this needs an admin to decide full or half day.
+  // Arrivals later than this are shown separately ("over 1 hour").
   late_max_minutes: '60',
+  // When on, those arrivals become a half day until an admin decides (off: they are ordinary late days).
+  late_review: '0',
   // Staff can see salary statements from this month onwards.
   salary_visible_from: '2026-10',
   max_accuracy_m: '100',
@@ -350,6 +352,7 @@ function getSettings(db) {
     max_accuracy_m: Number(s.max_accuracy_m),
     ot_requires_approval: s.ot_requires_approval === '1',
     late_offsets_ot: s.late_offsets_ot !== '0',
+    late_review: s.late_review === '1',
   };
 }
 

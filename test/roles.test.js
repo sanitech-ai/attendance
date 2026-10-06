@@ -25,6 +25,7 @@ test('managers check flagged items for their team but cannot change anything', a
   t.after(() => s.close());
   const admin = s.client();
   await admin('POST', '/api/admin/setup', { username: 'firefueled', password: 'password123', name: 'Owner' });
+  await admin('PUT', '/api/admin/settings', { late_review: true });
   const site = await admin('POST', '/api/admin/branches', { name: 'M3M Golf Hills', lat: 28.4, lng: 77.0, radius_m: 300, geofence_mode: 'flag' });
   const other = await admin('POST', '/api/admin/branches', { name: 'Palakollu', lat: 16.5, lng: 81.7, radius_m: 300, geofence_mode: 'flag' });
   const mk = async (code, branch, extra = {}) => (await admin('POST', '/api/admin/employees', {

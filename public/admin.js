@@ -114,7 +114,7 @@ async function route() {
   const sidebar = h('aside', { class: 'sidebar' },
     h('img', { src: '/logo.svg', alt: '', class: 'brand-logo' }),
     h('div', { class: 'brand' }, A.me.settings.company_name),
-    h('nav', {}, PAGES.map(([key, label, countKey]) =>
+    h('nav', {}, PAGES.filter(([key]) => key !== 'late' || A.me.settings.late_review).map(([key, label, countKey]) =>
       h('a', { href: `#/${key}`, class: key === page ? 'active' : '', onclick: () => sidebar.classList.remove('open') },
         label, countKey ? h('span', { class: 'count hidden', 'data-count': countKey }) : ''))),
     h('div', { class: 'foot' },
@@ -208,7 +208,7 @@ async function pageDashboard(el, params) {
       tile(d.pending.flagged_punches, 'Flagged punches to review', '#/punches?status=flagged'),
       tile(d.pending.leaves, 'Leave requests pending', '#/leaves?status=pending'),
       tile(d.pending.documents, 'Documents to verify', '#/documents?status=pending'),
-      tile(d.pending.late_approvals, 'Very late arrivals to review', '#/late'),
+      A.me.settings.late_review ? tile(d.pending.late_approvals, 'Very late arrivals to review', '#/late') : '',
       tile(d.pending.visits, 'Field visit selfies to review', '#/visits?status=pending'),
       tile(d.pending.incomplete_profiles, 'Staff with missing details', '#/employees?missing=1')),
     h('h2', { style: { margin: '20px 0 10px' } }, `Staff on ${fmtDate(date)}`),
@@ -555,7 +555,8 @@ function lateOtDetail(r) {
     r.late.length ? table([
       { label: 'Date', render: (l) => fmtDate(l.date) },
       { label: 'Punched in', render: (l) => l.first_in },
-      { label: 'Late by', class: 'num', render: (l) => fmtMinutes(l.minutes) },
+      { label: 'Late by', class: 'num', render: (l) => h('span', { style: l.over_max ? { color: 'var(--bad)', fontWeight: 600 } : null }, fmtMinutes(l.minutes)) },
+      { label: 'Total so far', class: 'num', render: (l) => fmtMinutes(l.cumulative) },
       { label: 'Result', render: (l) => l.outcome },
     ], r.late) : h('p', { class: 'muted' }, 'None'),
     h('h3', {}, `Overtime (${r.ot.length} day${r.ot.length === 1 ? '' : 's'})`),
@@ -1246,7 +1247,7 @@ async function pagePayroll(el, params) {
           ? 'Overtime: (approved OT − the month’s total late time) × the same hourly rate (per-day ÷ shift hours). Only a balance left over is paid.'
           : 'Overtime: approved OT hours × the same hourly rate (per-day ÷ shift hours).'),
         h('li', {}, `Full day = the employee’s shift length minus the ${A.me.settings.grace_minutes}-minute grace (9:00–18:00 → ${fmtMinutes(540 - A.me.settings.grace_minutes)} worked). Half day needs ${A.me.settings.half_day_hours} h. A missing punch-out counts as a half day until you correct it.`),
-        h('li', {}, `Late arrivals: every ${A.me.settings.late_warnings + 1}${A.me.settings.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month counts as a half day; the others are warnings. Someone up to ${A.me.settings.late_max_minutes} min late who stays until shift end is otherwise a full day. Later than ${A.me.settings.late_max_minutes} min: half day, flagged on Late approvals where you can grant a full day.`),
+        h('li', {}, `Late arrivals: every ${A.me.settings.late_warnings + 1}${A.me.settings.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month counts as a half day; the others are warnings. A late arrival who stays until shift end is otherwise a full day.${A.me.settings.late_review ? ` Later than ${A.me.settings.late_max_minutes} min: half day, flagged on Late approvals where you can grant a full day.` : ''} Every late day and the month’s total late time are shown to you and the employee.`),
         h('li', {}, 'Net = base + OT + additions − deductions − advances.'))));
 }
 
@@ -1426,7 +1427,7 @@ async function pageSettings(el, params) {
       h('dt', {}, 'Half day'), h('dd', {}, `${s.half_day_hours} hours worked`),
       h('dt', {}, 'Late after'), h('dd', {}, `${s.grace_minutes} minutes past shift start`),
       h('dt', {}, 'Late rule'), h('dd', {}, `Every ${s.late_warnings + 1}${s.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month is a half day (others are warnings)`),
-      h('dt', {}, 'Very late'), h('dd', {}, `More than ${s.late_max_minutes} min late: half day, flagged for your review`),
+      h('dt', {}, 'Very late'), h('dd', {}, s.late_review ? `More than ${s.late_max_minutes} min late: half day, flagged for your review` : `More than ${s.late_max_minutes} min late is shown separately; no review, counted like any late day`),
       h('dt', {}, 'Staff salary view'), h('dd', {}, `From ${fmtMonth(s.salary_visible_from)} onwards`),
       h('dt', {}, 'GPS accuracy'), h('dd', {}, `Flag punches worse than ±${s.max_accuracy_m} m`),
       h('dt', {}, 'Overtime'), h('dd', {}, s.ot_requires_approval ? 'Needs admin approval before it is paid' : 'Paid automatically'),
@@ -1438,7 +1439,8 @@ async function pageSettings(el, params) {
         { name: 'half_day_hours', label: 'Hours for a half day', type: 'number', step: '0.25', min: 0.5, max: 24, required: true, value: s.half_day_hours, hint: 'Less than this counts as absent.' },
         { name: 'grace_minutes', label: 'Late grace period (minutes)', type: 'number', min: 0, max: 240, required: true, value: s.grace_minutes, hint: 'Also sets the full day: shift length minus this grace.' },
         { name: 'late_warnings', label: 'Warnings between half days', type: 'number', min: 0, max: 31, step: 1, required: true, value: s.late_warnings, hint: 'With 2: the 3rd, 6th, 9th… late in a month is a half day; the others are warnings.' },
-        { name: 'late_max_minutes', label: 'Arrivals later than this (minutes) count as a half day and are flagged for review', type: 'number', min: 0, max: 480, required: true, value: s.late_max_minutes },
+        { name: 'late_max_minutes', label: 'Show arrivals later than this (minutes) separately as “very late”', type: 'number', min: 0, max: 480, required: true, value: s.late_max_minutes },
+        { name: 'late_review', label: 'Very late arrivals become a half day and go to “Late approvals” for review', type: 'checkbox', value: s.late_review },
         { name: 'salary_visible_from', label: 'Staff can see salary from (month)', type: 'month', required: true, value: s.salary_visible_from },
         { name: 'max_accuracy_m', label: 'Flag punches with GPS accuracy worse than (metres)', type: 'number', min: 10, max: 5000, required: true, value: s.max_accuracy_m },
         { name: 'ot_requires_approval', label: 'Overtime needs admin approval', type: 'checkbox', value: s.ot_requires_approval },

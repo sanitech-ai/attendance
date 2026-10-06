@@ -75,3 +75,38 @@ test('monthly late & overtime report; no late on the joining day or first app da
   assert.equal(csv.status, 200);
   assert.match(String(csv.data), /Asha/);
 });
+
+test('by default a very late arrival is an ordinary late day: shown, totalled, not reviewed', async (t) => {
+  const s = await startServer(ist('2026-10-01', '08:00'));
+  t.after(() => s.close());
+  const admin = s.client();
+  await admin('POST', '/api/admin/setup', { username: 'firefueled', password: 'password123', name: 'Owner' });
+  const b = (await admin('POST', '/api/admin/branches', { name: 'HO', ...HQ, radius_m: 150, geofence_mode: 'flag' })).data.id;
+  const id = (await admin('POST', '/api/admin/employees', { branch_id: b, salary: 30000, weekly_offs: [], pin: '1234', code: 'A1', name: 'Asha', joined_on: '' })).data.id;
+  const a = s.client();
+  await a('POST', '/api/employee/login', { code: 'A1', pin: '1234' });
+  const day = async (date, inAt) => {
+    s.clock.now = ist(date, inAt); const r = await a('POST', '/api/employee/punch', { kind: 'IN', ...HQ, accuracy: 10, selfie: JPEG });
+    s.clock.now = ist(date, '18:00'); await a('POST', '/api/employee/punch', { kind: 'OUT', ...HQ, accuracy: 10, selfie: JPEG });
+    return r.data;
+  };
+  await day('2026-10-01', '09:00'); // first day on the app
+  let r = await day('2026-10-02', '10:30'); // 90 min late
+  assert.equal(r.late.review, undefined);
+  assert.equal(r.late.mark, 1);
+  assert.deepEqual([r.late.month_days, r.late.month_minutes], [1, 90]);
+  r = await day('2026-10-03', '09:30');
+  assert.deepEqual([r.late.month_days, r.late.month_minutes], [2, 120]);
+  s.clock.now = ist('2026-10-04', '08:00');
+
+  const days = (await admin('GET', `/api/admin/attendance/${id}?month=2026-10`)).data.days;
+  const d2 = days.find((d) => d.date === '2026-10-02');
+  assert.equal(d2.status, 'present', 'stayed till shift end: full day, no review');
+  assert.equal(d2.late_review, null);
+  assert.ok(d2.late_over_max);
+  assert.equal((await admin('GET', '/api/admin/pending')).data.late_approvals, 0);
+  const row = (await admin('GET', '/api/admin/late-ot?month=2026-10')).data.rows[0];
+  assert.deepEqual([row.late_days, row.late_hour_days, row.late_minutes], [2, 1, 120]);
+  assert.deepEqual(row.late.map((l) => l.cumulative), [90, 120]);
+});
+

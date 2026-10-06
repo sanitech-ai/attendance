@@ -130,7 +130,8 @@ function computeDay(emp, date, ctx, settings, today) {
     last_out: p.lastOut ? istTime(p.lastOut) : null,
     late_minutes: 0,
     late_mark: null,
-    late_review: null, // very late arrivals: 'pending' until an admin decides 'present' or 'half_day'
+    late_review: null, // very late arrivals (only with the late_review setting): 'pending' until an admin decides
+    late_over_max: false, // later than late_max_minutes (shown as "over 1 hour")
     future: date > today, // shown on the calendar, but not counted until the day has passed
     ot_minutes: p.otMinutes,
     ot_start: p.otStart ? istTime(p.otStart) : null,
@@ -157,6 +158,7 @@ function computeDay(emp, date, ctx, settings, today) {
   if (p.firstIn !== null && emp.shift_start && !firstDay) {
     const lateBy = Math.floor((p.firstIn - istMs(date, emp.shift_start)) / 60000);
     if (lateBy > settings.grace_minutes) day.late_minutes = lateBy;
+    day.late_over_max = day.late_minutes > settings.late_max_minutes;
   }
 
   if (emp.joined_on && date < emp.joined_on) {
@@ -166,7 +168,7 @@ function computeDay(emp, date, ctx, settings, today) {
     day.override = { note: override.note, worked_minutes: override.worked_minutes };
     if (override.worked_minutes !== null) day.worked_minutes = override.worked_minutes;
   } else if (p.firstIn !== null) {
-    const veryLate = day.late_minutes > settings.late_max_minutes;
+    const veryLate = settings.late_review && day.late_minutes > settings.late_max_minutes;
     const decision = veryLate ? ctx.late.get(date) : null;
     if (veryLate) day.late_review = decision ? decision.status : 'pending';
     if (p.openIn !== null && date >= today) {
@@ -181,7 +183,7 @@ function computeDay(emp, date, ctx, settings, today) {
       day.status = statusFromMinutes(p.regularMinutes, settings, emp);
       // A slightly late arrival who stays until shift end is handled by the late-mark rule
       // (warnings, then half day) rather than being cut for short hours.
-      if (day.status !== 'present' && day.late_minutes > 0 && day.late_minutes <= settings.late_max_minutes
+      if (day.status !== 'present' && day.late_minutes > 0 && (!settings.late_review || day.late_minutes <= settings.late_max_minutes)
         && p.openIn === null && p.lastOut >= shiftEndMs(emp, date)) {
         day.status = 'present';
       }
@@ -292,7 +294,7 @@ function summarize(days) {
     s.ot_payable_minutes += d.ot_payable_minutes;
     if (d.ot_status === 'pending') s.ot_pending_minutes += d.ot_minutes;
     if (d.late_minutes > 0) { s.late_days++; s.late_minutes += d.late_minutes; }
-    if (d.late_review) s.late_hour_days++;
+    if (d.late_over_max) s.late_hour_days++;
     if (d.ot_minutes > 0) s.ot_days++;
     if (d.flags.includes('late_penalty')) s.late_penalties++;
     if (d.flags.includes('late_approval')) s.late_pending++;

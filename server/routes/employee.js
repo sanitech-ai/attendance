@@ -216,11 +216,14 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     if (!inside) fillPlace('punches', result.lastInsertRowid, lat, lng);
     let late = null;
     if (kind === 'IN') {
-      const [day] = computeRange(db, emp, workDate, workDate, settings, now);
+      const monthDays = computeRange(db, emp, `${workDate.slice(0, 7)}-01`, workDate, settings, now);
+      const day = monthDays[monthDays.length - 1];
+      const monthLate = monthDays.filter((d) => d.late_minutes > 0);
+      const totals = { month_days: monthLate.length, month_minutes: monthLate.reduce((t, d) => t + d.late_minutes, 0) };
       if (day.late_review) {
-        late = { minutes: day.late_minutes, review: true };
+        late = { minutes: day.late_minutes, review: true, ...totals };
       } else if (day.late_mark) {
-        late = { minutes: day.late_minutes, mark: day.late_mark, every: settings.late_warnings + 1, half_day: day.flags.includes('late_penalty') };
+        late = { minutes: day.late_minutes, mark: day.late_mark, every: settings.late_warnings + 1, half_day: day.flags.includes('late_penalty'), ...totals };
       }
     }
     res.json({
