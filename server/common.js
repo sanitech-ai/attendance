@@ -85,7 +85,8 @@ function measurePunch(db, emp, lat, lng, acc, settings, note = '') {
 /** Branches an employee may punch at: their own plus any extra locations an admin allowed. */
 function allowedBranchIds(db, emp) {
   const extra = db.prepare('SELECT branch_id FROM employee_locations WHERE employee_id = ?').all(emp.id).map((r) => r.branch_id);
-  return new Set([emp.branch_id, ...extra]);
+  const linked = db.prepare('SELECT other_id FROM branch_links WHERE branch_id = ?').all(emp.branch_id).map((r) => r.other_id);
+  return new Set([emp.branch_id, ...extra, ...linked]);
 }
 
 function publicEmployee(e) {

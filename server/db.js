@@ -115,6 +115,13 @@ CREATE TABLE IF NOT EXISTS visits (
 );
 CREATE INDEX IF NOT EXISTS visits_date ON visits(work_date);
 
+-- Other branches where ALL staff of a branch may also punch (e.g. an office and its nearby site).
+CREATE TABLE IF NOT EXISTS branch_links (
+  branch_id INTEGER NOT NULL REFERENCES branches(id),
+  other_id  INTEGER NOT NULL REFERENCES branches(id),
+  PRIMARY KEY (branch_id, other_id)
+);
+
 -- Extra branches (besides their own) where an employee may punch in/out.
 CREATE TABLE IF NOT EXISTS employee_locations (
   employee_id INTEGER NOT NULL REFERENCES employees(id),

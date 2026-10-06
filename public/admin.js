@@ -955,9 +955,10 @@ async function pageBranches(el) {
     pageHead('Branches',
       h('button', { class: 'btn', onclick: checkLocations }, '🔎 Check all locations'),
       h('button', { class: 'btn btn-primary', onclick: () => branchForm() }, '+ Add branch')),
-    h('p', { class: 'muted small' }, 'Staff punch at their own branch, plus any extra locations you allow on their employee page. Anywhere else, the punch is flagged for your review or blocked, depending on their branch’s setting.'),
+    h('p', { class: 'muted small' }, 'Staff punch at their own branch, plus the branches linked to it (Edit → “All staff of this branch can also punch at”) and any extra locations on their employee page. Anywhere else, the punch is flagged for your review or blocked, depending on their branch’s setting.'),
     table([
-      { label: 'Branch', render: (b) => h('div', {}, h('strong', {}, b.name), b.address ? h('div', { class: 'small muted' }, b.address) : '') },
+      { label: 'Branch', render: (b) => h('div', {}, h('strong', {}, b.name), b.address ? h('div', { class: 'small muted' }, b.address) : '',
+        b.linked_ids ? h('div', { class: 'small' }, `Staff can also punch at: ${b.linked_ids.split(',').map((i) => A.branches.find((o) => o.id === Number(i))?.name).filter(Boolean).join(', ')}`) : '') },
       { label: 'Location', render: (b) => (b.location_set
         ? h('div', {}, `${b.lat.toFixed(5)}, ${b.lng.toFixed(5)} `, mapLink(b.lat, b.lng))
         : h('button', { class: 'btn btn-sm btn-primary', onclick: () => branchForm(b) }, '⚠ Set location')) },
@@ -1072,6 +1073,9 @@ function branchForm(b) {
       { name: 'radius_m', label: 'Allowed radius (metres)', type: 'number', min: 20, max: 5000, required: true, value: b?.radius_m ?? 150, hint: 'Phone GPS is usually accurate to 10–50 m. 100–200 m works well for most offices.' },
       { name: 'geofence_mode', label: 'When an employee of this branch is outside every branch radius', type: 'select', value: b?.geofence_mode || 'flag',
         options: [{ value: 'flag', label: 'Allow the punch — they write where they are, and it is flagged for your approval' }, { value: 'block', label: 'Block the punch' }] },
+      { name: 'linked_branches', label: 'All staff of this branch can also punch at (e.g. its nearby site or office)', type: 'checks',
+        value: String(b?.linked_ids || '').split(',').filter(Boolean),
+        options: A.branches.filter((o) => o.active && o.id !== b?.id).map((o) => ({ value: o.id, label: o.name })) },
       { name: 'field_visits', label: 'Field visit selfies — staff of this branch travel during the day (banks, GST office, clients) and take a selfie at each place', type: 'checkbox', value: !!b?.field_visits },
       ...(b ? [{ name: 'active', label: 'Active', type: 'checkbox', value: !!b.active }] : []),
     ],

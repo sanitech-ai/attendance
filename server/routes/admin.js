@@ -202,7 +202,8 @@ module.exports = function adminRoutes(ctx) {
   r.get('/branches', (req, res) => {
     res.json(db.prepare(
       `SELECT b.*, (SELECT COUNT(*) FROM employees e WHERE e.branch_id = b.id AND e.active = 1) AS employee_count,
-         (SELECT COUNT(*) FROM employees e WHERE e.branch_id = b.id) AS all_employee_count
+         (SELECT COUNT(*) FROM employees e WHERE e.branch_id = b.id) AS all_employee_count,
+         (SELECT group_concat(l.other_id) FROM branch_links l WHERE l.branch_id = b.id) AS linked_ids
        FROM branches b ORDER BY b.active DESC, b.name`,
     ).all());
   });
@@ -297,6 +298,7 @@ module.exports = function adminRoutes(ctx) {
     const newId = db
       .prepare('INSERT INTO branches (name, address, lat, lng, radius_m, geofence_mode, active, maps_link, shift_start, shift_end, field_visits, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(...v, ctx.now()).lastInsertRowid;
+    setBranchLinks(Number(newId), req.body?.linked_branches);
     ctx.audit(req, 'branch.created', { id: Number(newId), name: v[0] });
     // A new site can be the closest one for recent punches.
     res.json({ ok: true, id: Number(newId), remeasured: remeasurePunches() });
@@ -308,7 +310,8 @@ module.exports = function adminRoutes(ctx) {
     const v = await branchInput(req.body || {}, before);
     db.prepare('UPDATE branches SET name = ?, address = ?, lat = ?, lng = ?, radius_m = ?, geofence_mode = ?, active = ?, maps_link = ?, shift_start = ?, shift_end = ?, field_visits = ?, location_set = 1 WHERE id = ?')
       .run(...v, before.id);
-    const moved = !before.location_set || before.lat !== v[2] || before.lng !== v[3] || before.radius_m !== v[4] || before.active !== v[6];
+    const linksChanged = setBranchLinks(before.id, req.body?.linked_branches);
+    const moved = linksChanged || !before.location_set || before.lat !== v[2] || before.lng !== v[3] || before.radius_m !== v[4] || before.active !== v[6];
     const remeasured = moved ? remeasurePunches() : 0;
     // Staff who follow their branch's timing get the new office hours.
     db.prepare('UPDATE employees SET shift_start = ?, shift_end = ? WHERE branch_id = ? AND follow_branch_shift = 1').run(v[8], v[9], id(req.params.id));
@@ -317,6 +320,20 @@ module.exports = function adminRoutes(ctx) {
   });
 
   // Move a pin to an exact spot (e.g. where the branch's staff actually punch).
+  /** Branches whose staff may punch at this branch's linked branches too. Returns whether anything changed. */
+  function setBranchLinks(branchId, list) {
+    if (!Array.isArray(list)) return false;
+    const want = [...new Set(list.map(Number))].filter((o) => o !== branchId && db.prepare('SELECT 1 FROM branches WHERE id = ?').get(o)).sort();
+    const have = db.prepare('SELECT other_id FROM branch_links WHERE branch_id = ? ORDER BY other_id').all(branchId).map((r2) => r2.other_id);
+    if (String(want) === String(have)) return false;
+    tx(db, () => {
+      db.prepare('DELETE FROM branch_links WHERE branch_id = ?').run(branchId);
+      const ins = db.prepare('INSERT INTO branch_links (branch_id, other_id) VALUES (?, ?)');
+      for (const o of want) ins.run(branchId, o);
+    });
+    return true;
+  }
+
   r.post('/branches/:id/pin', (req, res) => {
     const lat = Number(req.body?.lat);
     const lng = Number(req.body?.lng);
@@ -364,6 +381,7 @@ module.exports = function adminRoutes(ctx) {
       db.prepare('UPDATE punches SET branch_id = NULL WHERE branch_id = ?').run(b.id);
       db.prepare('DELETE FROM holidays WHERE branch_id = ?').run(b.id);
       db.prepare('DELETE FROM employee_locations WHERE branch_id = ?').run(b.id);
+      db.prepare('DELETE FROM branch_links WHERE branch_id = ? OR other_id = ?').run(b.id, b.id);
       db.prepare('DELETE FROM branches WHERE id = ?').run(b.id);
     });
     ctx.audit(req, 'branch.deleted', { name: b.name });
@@ -557,6 +575,7 @@ module.exports = function adminRoutes(ctx) {
     const branches = tx(db, () => {
       db.prepare('DELETE FROM holidays WHERE branch_id IS NOT NULL').run();
       db.prepare('DELETE FROM employee_locations').run();
+      db.prepare('DELETE FROM branch_links').run();
       return db.prepare('DELETE FROM branches').run().changes;
     });
     ctx.audit(req, 'staff.reset', { employees: ids.length, branches });
