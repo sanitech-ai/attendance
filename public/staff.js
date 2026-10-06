@@ -619,11 +619,7 @@ async function renderSalary(main) {
   const line = (label, value, opts = {}) => h('div', { class: `pay-line${opts.total ? ' total' : ''}` },
     h('div', {}, label, opts.note ? h('div', { class: 'small muted' }, opts.note) : ''), h('div', { class: 'num' }, value));
   const sum = (xs) => xs.reduce((t, x) => t + x.amount_paise, 0);
-  const rateNote = r.salary_type === 'monthly'
-    ? `${money(r.salary_paise)}/month ÷ ${r.days_in_month} days = ${money(r.per_day_paise)}/day × ${r.paid_days} paid days`
-    : r.salary_type === 'daily'
-      ? `${money(r.per_day_paise)}/day × ${r.paid_days} paid days`
-      : `${money(r.hourly_rate_paise)}/hour × ${(r.base_paise / Math.max(1, r.hourly_rate_paise)).toFixed(2)} hours`;
+  const rateNote = `${money(r.salary_paise)}/month ÷ ${r.days_in_month} days = ${money(r.per_day_paise)}/day × ${r.paid_days} paid days`;
   const status = d.status === 'final'
     ? badge('Final payslip', 'ok')
     : d.status === 'live' ? badge(`Live · updated ${fmtTime(d.as_of)}`, 'info') : badge('Not finalized yet', 'warn');

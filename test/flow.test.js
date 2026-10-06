@@ -34,7 +34,7 @@ test('end-to-end: punches, overtime, leaves, documents and payroll', async (t) =
   assert.equal(r.status, 200, JSON.stringify(r.data));
   const empId = r.data.id;
   r = await admin('POST', '/api/admin/employees', {
-    code: 'E002', name: 'Sita', branch_id: strictBranch, salary_type: 'daily', salary: 800,
+    code: 'E002', name: 'Sita', branch_id: strictBranch, salary_type: 'monthly', salary: 24000,
     shift_start: '09:00', shift_end: '17:00', weekly_offs: '0', joined_on: '2026-09-01', pin: '5678',
   });
   const strictEmp = r.data.id;
@@ -142,7 +142,8 @@ test('end-to-end: punches, overtime, leaves, documents and payroll', async (t) =
   assert.equal(row.ot_paise, Math.round((100000 / 9) * (row.ot_paid_minutes / 60)), 'OT at the same hourly rate, after late time');
   assert.equal(row.net_paise, row.base_paise + row.ot_paise + 25000 - 50000);
   const sita = r.data.rows.find((x) => x.employee_id === strictEmp);
-  assert.equal(sita.base_paise, 0, 'daily-wage employee with no attendance earns nothing');
+  assert.equal(sita.attendance.present, 0, 'no attendance: only week offs / holidays are paid');
+  assert.equal(sita.paid_days, sita.attendance.week_off + sita.attendance.holiday);
 
   r = await admin('POST', '/api/admin/payroll/2026-09/finalize', {});
   assert.equal(r.status, 200, JSON.stringify(r.data));
@@ -162,7 +163,7 @@ test('end-to-end: punches, overtime, leaves, documents and payroll', async (t) =
 
   // CSV exports
   r = await admin('GET', '/api/admin/payroll.csv?month=2026-09');
-  assert.match(r.data.toString(), /E001,Ravi,Andheri,monthly/);
+  assert.match(r.data.toString(), /E001,Ravi,Andheri,30000.00,/);
   r = await admin('GET', '/api/admin/attendance.csv?month=2026-09');
   assert.match(r.data.toString(), /E001,Ravi,Andheri,P,HD,H,PL,P/);
 
@@ -192,7 +193,7 @@ test('lockout after repeated wrong PINs', async (t) => {
   await admin('POST', '/api/admin/setup', { username: 'owner', password: 'password123', name: 'Owner' });
   const b = await admin('POST', '/api/admin/branches', { name: 'HQ', ...OFFICE, radius_m: 150, geofence_mode: 'flag' });
   await admin('POST', '/api/admin/employees', {
-    code: 'E9', name: 'A', branch_id: b.data.id, salary_type: 'hourly', salary: 100, shift_start: '09:00', shift_end: '17:00', joined_on: '2026-09-01', pin: '1234',
+    code: 'E9', name: 'A', branch_id: b.data.id, salary_type: 'monthly', salary: 30000, shift_start: '09:00', shift_end: '17:00', joined_on: '2026-09-01', pin: '1234',
   });
   const staff = s.client();
   for (let i = 0; i < 5; i++) await staff('POST', '/api/employee/login', { code: 'E9', pin: '0000' });
@@ -209,7 +210,7 @@ test('overnight shift: OUT after midnight counts for the day the shift started',
   await admin('POST', '/api/admin/setup', { username: 'owner', password: 'password123', name: 'Owner' });
   const b = await admin('POST', '/api/admin/branches', { name: 'HQ', ...OFFICE, radius_m: 150, geofence_mode: 'flag' });
   await admin('POST', '/api/admin/employees', {
-    code: 'N1', name: 'Night', branch_id: b.data.id, salary_type: 'hourly', salary: 100, shift_start: '22:00', shift_end: '06:00', weekly_offs: [], joined_on: '2026-09-01', pin: '1234',
+    code: 'N1', name: 'Night', branch_id: b.data.id, salary_type: 'monthly', salary: 30000, shift_start: '22:00', shift_end: '06:00', weekly_offs: [], joined_on: '2026-09-01', pin: '1234',
   });
   const staff = s.client();
   await staff('POST', '/api/employee/login', { code: 'N1', pin: '1234' });
@@ -223,7 +224,7 @@ test('overnight shift: OUT after midnight counts for the day the shift started',
   assert.equal(d1.worked_minutes, 480);
   assert.equal(r.data.days.find((d) => d.date === '2026-09-02').status, 'not_marked');
   const pay = (await admin('GET', '/api/admin/payroll?month=2026-09')).data.rows[0];
-  assert.equal(pay.base_paise, 80000, '8 hours x Rs 100');
+  assert.equal(pay.attendance.present, 1);
 });
 
 test('late rules: every 3rd late is a half day; over 1 hour late is a half day for review', async (t) => {
@@ -328,4 +329,18 @@ test('bulk mark: 1-3 October present for everyone', async (t) => {
   assert.deepEqual(a1.slice(0, 4).map((x) => x.status), ['present', 'present', 'present', 'week_off']);
   assert.equal(a1[0].override.note, 'Before app went live');
   assert.equal((await admin('POST', '/api/admin/attendance/bulk-override', { from: '2026-10-01', to: '2026-12-01', status: 'present' })).status, 400);
+});
+
+test('everyone is paid monthly: other salary types are refused', async (t) => {
+  const s = await startServer(ist('2026-09-01', '08:00'));
+  t.after(() => s.close());
+  const admin = s.client();
+  await admin('POST', '/api/admin/setup', { username: 'owner', password: 'password123', name: 'Owner' });
+  const b = await admin('POST', '/api/admin/branches', { name: 'HQ', ...OFFICE, radius_m: 150, geofence_mode: 'flag' });
+  const base = { branch_id: b.data.id, salary: 100, weekly_offs: [], joined_on: '', pin: '1234' };
+  let r = await admin('POST', '/api/admin/employees', { ...base, code: 'H1', name: 'H', salary_type: 'hourly' });
+  assert.equal(r.status, 400);
+  r = await admin('POST', '/api/admin/employees', { ...base, code: 'M1', name: 'M', salary: 30000 });
+  assert.equal(r.status, 200);
+  assert.equal((await admin('GET', '/api/admin/employees')).data[0].salary_type, 'monthly');
 });

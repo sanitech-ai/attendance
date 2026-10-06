@@ -636,7 +636,7 @@ async function pageEmployees(el, params) {
   const onlyMissing = params?.get('missing') === '1';
   const incomplete = A.employees.filter((e) => e.active && e.profile_missing?.length);
   const list = onlyMissing ? incomplete : A.employees;
-  const rate = (e) => `${money(e.salary_paise)} / ${{ monthly: 'month', daily: 'day', hourly: 'hour' }[e.salary_type]}`;
+  const rate = (e) => `${money(e.salary_paise)} / month`;
   el.replaceChildren(
     pageHead('Employees',
       h('button', { class: 'btn', onclick: sendLogins }, '🔑 Send login details'),
@@ -681,9 +681,7 @@ function employeeForm(e) {
     { name: 'bank_account', label: 'Bank account number', inputmode: 'numeric', value: e?.bank_account },
     { name: 'bank_ifsc', label: 'IFSC code', value: e?.bank_ifsc, placeholder: 'e.g. SBIN0001234' },
     { type: 'heading', label: 'Salary & shift' },
-    { name: 'salary_type', label: 'Salary type', type: 'select', value: e?.salary_type || 'monthly',
-      options: [{ value: 'monthly', label: 'Monthly' }, { value: 'daily', label: 'Daily wage' }, { value: 'hourly', label: 'Hourly' }] },
-    { name: 'salary', label: 'Salary amount (₹)', type: 'number', step: '0.01', min: 0, required: true, value: e ? e.salary_paise / 100 : '', hint: 'Per month, per day or per hour depending on salary type. Overtime is paid at the same hourly rate.' },
+    { name: 'salary', label: 'Monthly salary (₹)', type: 'number', step: '0.01', min: 0, required: true, value: e ? e.salary_paise / 100 : '', hint: 'Overtime is paid at the same hourly rate (salary ÷ days in month ÷ shift hours).' },
     { name: 'follow_branch_shift', label: 'Use the branch’s office timings', type: 'checkbox', value: e ? !!e.follow_branch_shift : true },
     { name: 'shift_start', label: 'Personal shift start', type: 'time', value: e?.shift_start || '09:00', hint: 'Only used when “Use the branch’s office timings” is unticked.' },
     { name: 'shift_end', label: 'Personal shift end', type: 'time', value: e?.shift_end || '18:00' },
@@ -765,7 +763,7 @@ function importEmployees() {
     h('p', {}, 'Save your Excel sheet as CSV with a header row. Columns (any order):'),
     h('ul', {},
       h('li', {}, h('b', {}, 'employee_id, name, branch, salary'), ' – required. Branches that don’t exist yet are created; you then set their location.'),
-      h('li', {}, 'designation, phone, joined_on (DD-MM-YYYY, may be blank), salary_type (monthly/daily/hourly, default monthly)'),
+      h('li', {}, 'designation, phone, joined_on (DD-MM-YYYY, may be blank), salary is the monthly salary'),
       h('li', {}, 'shift_start, shift_end (default 09:00 and 18:00), weekly_off (default Sun), branch_radius_m (default 150)'),
       h('li', {}, 'branch_maps_link – Google Maps link of the branch (needed on one row per branch); its location is read automatically'),
       h('li', {}, 'pf, esic, pt, tds – fixed monthly deductions; conveyance, room_rent – fixed monthly earnings'),
@@ -1232,7 +1230,7 @@ async function pagePayroll(el, params) {
       h('div', { class: 'stat' }, h('div', { class: 'v' }, String(p.rows.length)), h('div', { class: 'l' }, 'Employees'))),
     table([
       { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)) },
-      { label: 'Salary', render: (r) => h('div', {}, money(r.salary_paise), h('div', { class: 'small muted' }, r.salary_type)) },
+      { label: 'Salary', render: (r) => h('div', {}, money(r.salary_paise), h('div', { class: 'small muted' }, 'per month')) },
       { label: 'Paid days', class: 'num', render: (r) => h('span', { title: `P ${r.attendance.present} · HD ${r.attendance.half_day} · PL ${r.attendance.paid_leave} · WO ${r.attendance.week_off} · H ${r.attendance.holiday} · A ${r.attendance.absent + r.attendance.not_marked}` }, String(r.paid_days)) },
       { label: 'Base', class: 'num', render: (r) => money(r.base_paise) },
       { label: 'OT', class: 'num', render: (r) => h('div', {}, money(r.ot_paise), h('div', { class: 'small muted' }, r.late_offset_minutes ? `${fmtMinutes(r.ot_approved_minutes)} − ${fmtMinutes(r.late_offset_minutes)} late = ${fmtMinutes(r.ot_paid_minutes)}` : `${r.ot_hours} h`)) },
@@ -1243,10 +1241,10 @@ async function pagePayroll(el, params) {
     ], p.rows, { empty: 'No employees for this month.' }),
     h('details', { class: 'card', style: { marginTop: '12px' } }, h('summary', {}, 'How salary is calculated'),
       h('ul', { class: 'small' },
-        h('li', {}, 'Monthly: per-day pay = monthly salary ÷ days in the month. Paid days = present + ½ × half days + paid leave + week offs + holidays.'),
-        h('li', {}, 'Daily wage: daily rate × (present + ½ × half days + paid leave). Week offs and holidays are unpaid.'),
-        h('li', {}, 'Hourly: rate × hours worked (paid leave counts as one full shift).'),
-        h('li', {}, 'Overtime: approved OT hours × the same hourly rate (monthly: per-day ÷ shift hours; daily: daily rate ÷ shift hours).'),
+        h('li', {}, 'Per-day pay = monthly salary ÷ days in the month. Paid days = present + ½ × half days + paid leave + week offs + holidays.'),
+        h('li', {}, A.me.settings.late_offsets_ot
+          ? 'Overtime: (approved OT − the month’s total late time) × the same hourly rate (per-day ÷ shift hours). Only a balance left over is paid.'
+          : 'Overtime: approved OT hours × the same hourly rate (per-day ÷ shift hours).'),
         h('li', {}, `Full day = the employee’s shift length minus the ${A.me.settings.grace_minutes}-minute grace (9:00–18:00 → ${fmtMinutes(540 - A.me.settings.grace_minutes)} worked). Half day needs ${A.me.settings.half_day_hours} h. A missing punch-out counts as a half day until you correct it.`),
         h('li', {}, `Late arrivals: every ${A.me.settings.late_warnings + 1}${A.me.settings.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month counts as a half day; the others are warnings. Someone up to ${A.me.settings.late_max_minutes} min late who stays until shift end is otherwise a full day. Later than ${A.me.settings.late_max_minutes} min: half day, flagged on Late approvals where you can grant a full day.`),
         h('li', {}, 'Net = base + OT + additions − deductions − advances.'))));

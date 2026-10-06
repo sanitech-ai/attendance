@@ -433,7 +433,9 @@ module.exports = function adminRoutes(ctx) {
     for (const x of extra) {
       if (!Number.isInteger(x) || !db.prepare('SELECT 1 FROM branches WHERE id = ?').get(x)) throw bad('Unknown extra location');
     }
-    if (!['monthly', 'daily', 'hourly'].includes(b.salary_type)) throw bad('Salary type must be monthly, daily or hourly');
+    // Everyone is paid monthly.
+    if (b.salary_type && b.salary_type !== 'monthly') throw bad('All staff are paid a monthly salary');
+    b.salary_type = 'monthly';
     const salary = toPaise(b.salary, 'Salary');
     if (!isTime(b.shift_start) || !isTime(b.shift_end)) throw bad('Shift times must be HH:MM');
     const offs = Array.isArray(b.weekly_offs) ? b.weekly_offs : String(b.weekly_offs ?? '').split(',').filter((x) => x !== '');
@@ -913,7 +915,7 @@ module.exports = function adminRoutes(ctx) {
         late_days: s.late_days, late_hour_days: s.late_hour_days, late_minutes: s.late_minutes,
         late_penalties: s.late_penalties, late_pending: s.late_pending,
         ot_days: s.ot_days, ot_minutes: s.ot_minutes, ot_payable_minutes: s.ot_payable_minutes, ot_pending_minutes: s.ot_pending_minutes,
-        ot_after_late_minutes: settings.late_offsets_ot && e.salary_type !== 'hourly' ? Math.max(0, s.ot_payable_minutes - s.late_minutes) : s.ot_payable_minutes,
+        ot_after_late_minutes: settings.late_offsets_ot ? Math.max(0, s.ot_payable_minutes - s.late_minutes) : s.ot_payable_minutes,
         first_day: days.find((d) => d.flags.includes('first_day'))?.date || null,
         late: days.filter((d) => d.late_minutes > 0).map((d) => ({
           date: d.date, first_in: d.first_in, minutes: d.late_minutes,
@@ -1302,7 +1304,7 @@ module.exports = function adminRoutes(ctx) {
     const month = requireMonth(req.query.month);
     const p = payrollFor(month);
     const rows = [[
-      'Employee ID', 'Name', 'Branch', 'Salary type', 'Salary (Rs)', 'Paid days', 'Present', 'Half days', 'Absent',
+      'Employee ID', 'Name', 'Branch', 'Monthly salary (Rs)', 'Paid days', 'Present', 'Half days', 'Absent',
       'Paid leave', 'Week off', 'Holiday', 'OT approved (h)', 'Late time (h)', 'OT paid after late (h)', 'Base pay', 'OT pay', 'Additions', 'Deductions', 'Advances', 'Net pay',
       'Phone', 'UPI ID', 'Bank account', 'IFSC',
     ]];
@@ -1313,13 +1315,13 @@ module.exports = function adminRoutes(ctx) {
       const a = x.attendance;
       const sum = (xs) => xs.reduce((t, y) => t + y.amount_paise, 0);
       rows.push([
-        x.code, x.name, x.branch_name, x.salary_type, rupees(x.salary_paise), x.paid_days, a.present, a.half_day,
+        x.code, x.name, x.branch_name, rupees(x.salary_paise), x.paid_days, a.present, a.half_day,
         a.absent + a.not_marked, a.paid_leave, a.week_off, a.holiday, (x.ot_approved_minutes / 60).toFixed(2), (x.late_minutes / 60).toFixed(2), x.ot_hours, rupees(x.base_paise), rupees(x.ot_paise),
         rupees(sum(x.additions)), rupees(sum(x.deductions)), rupees(sum(x.advances)), rupees(x.net_paise),
         e.phone || '', e.upi_id || '', e.bank_account || '', e.bank_ifsc || '',
       ]);
     }
-    rows.push(['TOTAL', '', '', '', '', '', '', '', '', '', '', '', '', '', '', rupees(p.totals.base_paise), rupees(p.totals.ot_paise), '', '', '', rupees(p.totals.net_paise)]);
+    rows.push(['TOTAL', '', '', '', '', '', '', '', '', '', '', '', '', '', rupees(p.totals.base_paise), rupees(p.totals.ot_paise), '', '', '', rupees(p.totals.net_paise)]);
     sendCsv(res, `payroll-${month}.csv`, rows);
   });
 

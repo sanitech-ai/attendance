@@ -4,14 +4,10 @@ const { daysInMonth, shiftMinutes } = require('./util');
 
 /**
  * Salary rules
- *  monthly: per-day = salary / calendar days in month.
- *           Paid days = present + ½·half-days + paid leave + weekly offs + holidays.
- *  daily:   per-day = salary. Paid days = present + ½·half-days + paid leave.
- *  hourly:  pay = rate × hours worked (paid leave counts as a full shift).
- * Overtime is paid at the same hourly rate as regular work:
- *  monthly hourly rate = per-day / shift hours, daily = salary / shift hours, hourly = salary.
- * Only approved overtime is paid, minus the month's total late time when late_offsets_ot is on
- * (monthly and daily staff; hourly staff already lose pay for the time they weren't there).
+ *  Everyone is paid monthly: per-day = salary / calendar days in month.
+ *  Paid days = present + ½·half-days + paid leave + weekly offs + holidays.
+ * Overtime is paid at the same hourly rate as regular work: per-day / shift hours.
+ * Only approved overtime is paid, minus the month's total late time when late_offsets_ot is on.
  * Fixed monthly pay items (PF, PT, conveyance...) apply in full whenever there is at least one paid day.
  */
 function salaryForEmployee(emp, days, month, extras) {
@@ -19,38 +15,12 @@ function salaryForEmployee(emp, days, month, extras) {
   const shiftMin = shiftMinutes(emp.shift_start, emp.shift_end);
   const dim = daysInMonth(month);
 
-  let perDay = 0;
-  let hourlyRate = 0;
-  let paidDays = 0;
-  let basePaise = 0;
+  const perDay = emp.salary_paise / dim;
+  const hourlyRate = perDay / (shiftMin / 60);
+  const paidDays = s.present + 0.5 * s.half_day + s.paid_leave + s.week_off + s.holiday;
+  const basePaise = perDay * paidDays;
 
-  if (emp.salary_type === 'monthly') {
-    perDay = emp.salary_paise / dim;
-    hourlyRate = perDay / (shiftMin / 60);
-    paidDays = s.present + 0.5 * s.half_day + s.paid_leave + s.week_off + s.holiday;
-    basePaise = perDay * paidDays;
-  } else if (emp.salary_type === 'daily') {
-    perDay = emp.salary_paise;
-    hourlyRate = perDay / (shiftMin / 60);
-    paidDays = s.present + 0.5 * s.half_day + s.paid_leave;
-    basePaise = perDay * paidDays;
-  } else {
-    hourlyRate = emp.salary_paise;
-    let minutes = 0;
-    for (const d of days) {
-      if (d.future) continue;
-      if (d.status === 'present' || d.status === 'half_day') {
-        if (d.worked_minutes > 0) minutes += d.worked_minutes;
-        else if (d.override) minutes += d.status === 'present' ? shiftMin : shiftMin / 2;
-      } else if (d.status === 'paid_leave') {
-        minutes += shiftMin;
-      }
-    }
-    paidDays = s.present + 0.5 * s.half_day + s.paid_leave;
-    basePaise = (hourlyRate * minutes) / 60;
-  }
-
-  const lateOffset = extras.lateOffsetsOt && emp.salary_type !== 'hourly' ? Math.min(s.late_minutes, s.ot_payable_minutes) : 0;
+  const lateOffset = extras.lateOffsetsOt ? Math.min(s.late_minutes, s.ot_payable_minutes) : 0;
   const otPaidMinutes = s.ot_payable_minutes - lateOffset;
   const otPaise = (hourlyRate * otPaidMinutes) / 60;
   const fixed = paidDays > 0 ? extras.payItems || [] : [];

@@ -122,7 +122,7 @@ function planImport(db, csvText) {
     const branch = get('branch');
     if (!branch) errors.push('Branch missing');
     const salaryType = (get('salary_type') || 'monthly').toLowerCase();
-    if (!['monthly', 'daily', 'hourly'].includes(salaryType)) errors.push('Salary type must be monthly, daily or hourly');
+    if (salaryType !== 'monthly') errors.push('All staff are paid monthly (salary_type must be monthly or blank)');
     const salary = money(get('salary'));
     if (!salary) errors.push('Salary missing or invalid');
     const joined = normDate(get('joined_on'));

@@ -61,8 +61,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       late_max_minutes: settings.late_max_minutes,
       salary_visible_from: settings.salary_visible_from,
       grace_minutes: settings.grace_minutes,
-      // Late time is taken off overtime (not for hourly staff, who are only paid for hours worked).
-      late_offsets_ot: settings.late_offsets_ot && req.employee.salary_type !== 'hourly',
+      late_offsets_ot: settings.late_offsets_ot,
     });
   });
 
