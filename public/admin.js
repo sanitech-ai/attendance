@@ -502,21 +502,21 @@ async function pageLateOt(el, params) {
   const d = await api('GET', `/api/admin/late-ot?${qs}`);
   const hrs = (m) => (m ? (m / 60).toFixed(1) : '—');
   const n = (v) => (v ? String(v) : '—');
-  const totals = d.rows.reduce((t, r) => ({ late: t.late + r.late_days, hour: t.hour + r.late_hour_days, minutes: t.minutes + r.late_minutes, comp: t.comp + r.comp_off_earned }), { late: 0, hour: 0, minutes: 0, comp: 0 });
+  const totals = d.rows.reduce((t, r) => ({ late: t.late + r.late_short_days, hour: t.hour + r.late_hour_days, minutes: t.minutes + r.late_minutes, comp: t.comp + r.comp_off_earned }), { late: 0, hour: 0, minutes: 0, comp: 0 });
   el.replaceChildren(
     pageHead('Late report', h('a', { class: 'btn', href: `/api/admin/late-ot.csv?${qs}` }, 'Download Excel (CSV)')),
     h('div', { class: 'toolbar' },
       monthPicker(month, (m) => go('lateot', { month: m, branch_id: branchId })),
       branchSelect(branchId, (v) => go('lateot', { month, branch_id: v }))),
     h('div', { class: 'stats', style: { marginBottom: '14px' } },
-      h('div', { class: 'stat' }, h('div', { class: 'v' }, String(totals.late)), h('div', { class: 'l' }, `Late arrivals (over ${d.grace_minutes} min)`)),
-      h('div', { class: 'stat' }, h('div', { class: 'v' }, String(totals.hour)), h('div', { class: 'l' }, `…of which over ${d.late_max_minutes / 60} hour`)),
+      h('div', { class: 'stat' }, h('div', { class: 'v' }, String(totals.late)), h('div', { class: 'l' }, `Late ${d.grace_minutes} min – ${d.late_max_minutes / 60} hour`)),
+      h('div', { class: 'stat' }, h('div', { class: 'v' }, String(totals.hour)), h('div', { class: 'l' }, `Late over ${d.late_max_minutes / 60} hour`)),
       h('div', { class: 'stat' }, h('div', { class: 'v' }, totals.minutes ? fmtMinutes(totals.minutes) : '—'), h('div', { class: 'l' }, 'Total late time')),
       h('div', { class: 'stat' }, h('div', { class: 'v' }, String(totals.comp)), h('div', { class: 'l' }, 'Comp-off days earned (weekly offs worked)'))),
     table([
       { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name} · shift ${r.shift_start}`)) },
-      { label: `Late over ${d.grace_minutes} min`, class: 'num', render: (r) => h('strong', { style: r.late_days ? { color: 'var(--warn)' } : null }, n(r.late_days)) },
-      { label: `Over ${d.late_max_minutes / 60} hour`, class: 'num', render: (r) => h('strong', { style: r.late_hour_days ? { color: 'var(--bad)' } : null }, n(r.late_hour_days)) },
+      { label: `Late ${d.grace_minutes} min – ${d.late_max_minutes / 60} hr`, class: 'num', render: (r) => h('strong', { style: r.late_short_days ? { color: 'var(--warn)' } : null }, n(r.late_short_days)) },
+      { label: `Late over ${d.late_max_minutes / 60} hr`, class: 'num', render: (r) => h('strong', { style: r.late_hour_days ? { color: 'var(--bad)' } : null }, n(r.late_hour_days)) },
       { label: 'Total late', class: 'num', render: (r) => (r.late_minutes ? fmtMinutes(r.late_minutes) : '—') },
       { label: 'Half days from lates', class: 'num', render: (r) => n(r.late_penalties) },
       { label: 'Weekly offs worked', class: 'num', render: (r) => n(r.comp_off_earned) },

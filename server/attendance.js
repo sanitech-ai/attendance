@@ -242,6 +242,7 @@ function summarize(days) {
   s.comp_off_earned = 0;
   s.late_days = 0; // later than the grace period (15 min)
   s.late_hour_days = 0; // later than late_max_minutes (1 hour)
+  s.late_short_days = 0; // late, but not over 1 hour (15 min – 1 hour); with late_hour_days adds up to late_days
   s.late_minutes = 0;
   s.late_penalties = 0;
   s.late_pending = 0;
@@ -252,6 +253,7 @@ function summarize(days) {
     s.comp_off_earned += d.comp_off_earned;
     if (d.late_minutes > 0) { s.late_days++; s.late_minutes += d.late_minutes; }
     if (d.late_over_max) s.late_hour_days++;
+    else if (d.late_minutes > 0) s.late_short_days++;
     if (d.flags.includes('late_penalty')) s.late_penalties++;
     if (d.flags.includes('late_approval')) s.late_pending++;
   }

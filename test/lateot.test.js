@@ -37,6 +37,7 @@ test('monthly late report; no late on the joining day or first app day', async (
   assert.equal(asha.first_day, '2026-10-01');
   assert.equal(asha.late_days, 2);
   assert.equal(asha.late_hour_days, 1);
+  assert.equal(asha.late_short_days, 1, 'a day over 1 hour is not also counted as 15 min – 1 hour');
   assert.equal(asha.late_minutes, 20 + 90);
   assert.deepEqual(asha.late.map((l) => l.date), ['2026-10-03', '2026-10-05']);
   const reg = (await admin('GET', '/api/admin/attendance/' + asha.employee_id + '?month=2026-10')).data.days;
@@ -87,7 +88,7 @@ test('by default a very late arrival is an ordinary late day: shown, totalled, n
   assert.ok(d2.late_over_max);
   assert.equal((await admin('GET', '/api/admin/pending')).data.late_approvals, 0);
   const row = (await admin('GET', '/api/admin/late-ot?month=2026-10')).data.rows[0];
-  assert.deepEqual([row.late_days, row.late_hour_days, row.late_minutes], [2, 1, 120]);
+  assert.deepEqual([row.late_days, row.late_short_days, row.late_hour_days, row.late_minutes], [2, 1, 1, 120]);
   assert.deepEqual(row.late.map((l) => l.cumulative), [90, 120]);
 });
 

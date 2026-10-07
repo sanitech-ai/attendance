@@ -459,7 +459,7 @@ async function renderAttendance(main) {
       monthPicker(S.month, (m) => { S.month = m; renderAttendance(main); })),
     h('div', { class: 'stats' },
       stat(s.present, 'Present'), stat(s.half_day, 'Half days'), stat(s.absent + s.not_marked, 'Absent'),
-      stat(s.paid_leave, 'Paid leave'), stat(s.unpaid_leave, 'Unpaid leave'), stat(s.late_days, `Late (over ${S.me.grace_minutes ?? 15} min)`),
+      stat(s.paid_leave, 'Paid leave'), stat(s.unpaid_leave, 'Unpaid leave'), stat(s.late_short_days, `Late ${S.me.grace_minutes ?? 15} min – ${(S.me.late_max_minutes ?? 60) / 60} hour`),
       stat(s.late_hour_days, `Late over ${(S.me.late_max_minutes ?? 60) / 60} hour`),
       stat(s.late_minutes ? fmtMinutes(s.late_minutes) : '0', 'Total late time'),
       stat(s.comp_off_earned, 'Comp-off earned (weekly offs worked)')),

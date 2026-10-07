@@ -916,7 +916,7 @@ module.exports = function adminRoutes(ctx) {
       let running = 0;
       return {
         employee_id: e.id, code: e.code, name: e.name, branch_name: e.branch_name, shift_start: e.shift_start,
-        late_days: s.late_days, late_hour_days: s.late_hour_days, late_minutes: s.late_minutes,
+        late_days: s.late_days, late_short_days: s.late_short_days, late_hour_days: s.late_hour_days, late_minutes: s.late_minutes,
         late_penalties: s.late_penalties, late_pending: s.late_pending,
         comp_off_earned: s.comp_off_earned,
         week_off_worked: days.filter((d) => d.comp_off_earned).map((d) => ({ date: d.date, first_in: d.first_in, last_out: d.last_out, earned: d.comp_off_earned })),
@@ -938,10 +938,10 @@ module.exports = function adminRoutes(ctx) {
   r.get('/late-ot.csv', (req, res) => {
     const month = requireMonth(req.query.month);
     const st = getSettings(db);
-    const rows = [['Employee ID', 'Name', 'Branch', `Late (over ${st.grace_minutes} min) — days`, `Late over ${st.late_max_minutes / 60} hour — days`, 'Total late (minutes)',
+    const rows = [['Employee ID', 'Name', 'Branch', `Late ${st.grace_minutes} min – ${st.late_max_minutes / 60} hour — days`, `Late over ${st.late_max_minutes / 60} hour — days`, 'Late days in total', 'Total late (minutes)',
       'Late days counted as half day', 'Weekly offs worked (comp-off earned)', 'Late dates', 'Weekly offs worked']];
     for (const r2 of lateOtRows(month, req.query.branch_id ? id(req.query.branch_id) : null)) {
-      rows.push([r2.code, r2.name, r2.branch_name, r2.late_days, r2.late_hour_days, r2.late_minutes, r2.late_penalties, r2.comp_off_earned,
+      rows.push([r2.code, r2.name, r2.branch_name, r2.late_short_days, r2.late_hour_days, r2.late_days, r2.late_minutes, r2.late_penalties, r2.comp_off_earned,
         r2.late.map((l) => `${l.date.slice(8)} (${l.minutes}m)`).join(' '), r2.week_off_worked.map((w) => w.date.slice(8)).join(' ')]);
     }
     sendCsv(res, `late-report-${month}.csv`, rows);
