@@ -624,7 +624,6 @@ module.exports = function adminRoutes(ctx) {
   /** Days with an arrival later than late_max_minutes that nobody has decided yet (active staff). */
   function pendingLateCount() {
     const s = getSettings(db);
-    if (!s.late_review) return 0;
     return db.prepare(
       `SELECT COUNT(*) AS n FROM (
          SELECT p.employee_id, p.work_date, MIN(p.at) AS first_in, e.shift_start, e.joined_on

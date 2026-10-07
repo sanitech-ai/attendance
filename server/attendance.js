@@ -103,7 +103,7 @@ function computeDay(emp, date, ctx, settings, today) {
     last_out: p.lastOut ? istTime(p.lastOut) : null,
     late_minutes: 0,
     late_mark: null,
-    late_review: null, // very late arrivals (only with the late_review setting): 'pending' until an admin decides
+    late_review: null, // more than 1 hour late: 'pending' until an admin decides 'present' or 'half_day'
     late_over_max: false, // later than late_max_minutes (shown as "over 1 hour")
     future: date > today, // shown on the calendar, but not counted until the day has passed
     comp_off_earned: 0, // worked on a weekly off: earns a paid day off (comp-off) to take on a weekday
@@ -138,7 +138,9 @@ function computeDay(emp, date, ctx, settings, today) {
     day.override = { note: override.note, worked_minutes: override.worked_minutes };
     if (override.worked_minutes !== null) day.worked_minutes = override.worked_minutes;
   } else if (p.firstIn !== null) {
-    const veryLate = settings.late_review && day.late_minutes > settings.late_max_minutes;
+    // More than late_max_minutes (1 hour) late: not part of the "every 3rd late" rule — it goes to an
+    // admin, who decides full or half day. Until then the day counts from the hours worked.
+    const veryLate = day.late_minutes > settings.late_max_minutes;
     const decision = veryLate ? ctx.late.get(date) : null;
     if (veryLate) day.late_review = decision ? decision.status : 'pending';
     if (p.openIn !== null && date >= today) {
@@ -153,7 +155,7 @@ function computeDay(emp, date, ctx, settings, today) {
       day.status = statusFromMinutes(p.regularMinutes, settings, emp);
       // A slightly late arrival who stays until shift end is handled by the late-mark rule
       // (warnings, then half day) rather than being cut for short hours.
-      if (day.status !== 'present' && day.late_minutes > 0 && (!settings.late_review || day.late_minutes <= settings.late_max_minutes)
+      if (day.status !== 'present' && day.late_minutes > 0
         && p.openIn === null && p.lastOut >= shiftEndMs(emp, date)) {
         day.status = 'present';
       }
@@ -164,12 +166,7 @@ function computeDay(emp, date, ctx, settings, today) {
       } else if (day.status === 'absent') {
         flags.push('short_hours');
       }
-      if (veryLate) {
-        // More than late_max_minutes late: at most a half day, flagged so an admin can review it
-        // later (and grant a full day if justified).
-        if (day.status === 'present') day.status = 'half_day';
-        flags.push('late_approval');
-      }
+      if (veryLate) flags.push('late_approval');
     }
   } else if (day.holiday) {
     day.status = 'holiday';

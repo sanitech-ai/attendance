@@ -426,7 +426,7 @@ function punchFlow(kind, today, note = '') {
     else toast(`${PUNCH_LABEL[kind]} done at ${fmtTime(res.at)}`);
     if (res.late) {
       toast(res.late.review
-        ? `You are ${fmtMinutes(res.late.minutes)} late. More than ${S.me.late_max_minutes} minutes late counts as a half day; the admin may review it later.`
+        ? `You are ${fmtMinutes(res.late.minutes)} late. More than ${S.me.late_max_minutes / 60} hour late is sent to the admin, who decides full or half day.`
         : res.late.half_day
           ? `You are late by ${fmtMinutes(res.late.minutes)}. This is late #${res.late.mark} this month — every ${res.late.every}rd late counts as a half day, so today is a half day.`
           : `You are late by ${fmtMinutes(res.late.minutes)}. This is late #${res.late.mark} this month — every ${res.late.every}rd late counts as a half day.`, 'error');
@@ -682,7 +682,7 @@ async function renderSalary(main) {
         h('dt', {}, 'Paid / unpaid leave'), h('dd', {}, `${a.paid_leave} / ${a.unpaid_leave}`),
         h('dt', {}, 'Week offs / holidays'), h('dd', {}, `${a.week_off} / ${a.holiday}`),
         h('dt', {}, 'Late marks'), h('dd', {}, `${a.late_days}`, h('span', { class: 'muted' }, ` (every ${S.me.late_warnings + 1}rd late is a half day)`)),
-        a.late_pending ? [h('dt', {}, 'Very late, awaiting decision'), h('dd', {}, `${a.late_pending} day(s) — counted provisionally`)] : '',
+        a.late_pending ? [h('dt', {}, 'Over 1 hour late, waiting for admin'), h('dd', {}, `${a.late_pending} day(s) — counted from hours worked until decided`)] : '',
         h('dt', {}, 'Total late time'), h('dd', {}, r.late_minutes ? fmtMinutes(r.late_minutes) : '—'),
         a.comp_off_earned ? [h('dt', {}, 'Comp-off earned'), h('dd', {}, `${a.comp_off_earned} day(s) — worked on weekly offs`)] : '')),
     h('div', { class: 'card' }, h('h2', {}, 'Earnings'),

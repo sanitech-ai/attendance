@@ -113,7 +113,7 @@ async function route() {
   const sidebar = h('aside', { class: 'sidebar' },
     h('img', { src: '/logo.svg', alt: '', class: 'brand-logo' }),
     h('div', { class: 'brand' }, A.me.settings.company_name),
-    h('nav', {}, PAGES.filter(([key]) => key !== 'late' || A.me.settings.late_review).map(([key, label, countKey]) =>
+    h('nav', {}, PAGES.map(([key, label, countKey]) =>
       h('a', { href: `#/${key}`, class: key === page ? 'active' : '', onclick: () => sidebar.classList.remove('open') },
         label, countKey ? h('span', { class: 'count hidden', 'data-count': countKey }) : ''))),
     h('div', { class: 'foot' },
@@ -220,7 +220,7 @@ async function pageDashboard(el, params) {
       tile(d.pending.flagged_punches, 'Flagged punches to review', '#/punches?status=flagged'),
       tile(d.pending.leaves, 'Leave requests pending', '#/leaves?status=pending'),
       tile(d.pending.documents, 'Documents to verify', '#/documents?status=pending'),
-      A.me.settings.late_review ? tile(d.pending.late_approvals, 'Very late arrivals to review', '#/late') : '',
+      tile(d.pending.late_approvals, 'Over 1 hour late — to review', '#/late'),
       tile(d.pending.visits, 'Field visit selfies to review', '#/visits?status=pending'),
       tile(d.pending.incomplete_profiles, 'Staff with missing details', '#/employees?missing=1')),
     h('div', { class: 'spread', id: 'staff-list', style: { margin: '20px 0 10px' } },
@@ -551,7 +551,7 @@ async function pageLate(el, params) {
   const month = params.get('month') || thisMonth();
   const data = await api('GET', `/api/admin/late-approvals?month=${month}`);
   const kind = { pending: 'warn', present: 'ok', half_day: 'bad' };
-  const label = { pending: 'Half day · not reviewed', present: 'Full day (granted)', half_day: 'Half day (confirmed)' };
+  const label = { present: 'Full day (granted)', half_day: 'Half day (confirmed)' };
   const decide = (r, status) => run(async () => {
     await api('POST', '/api/admin/late-approvals/decision', { employee_id: r.employee_id, date: r.date, status });
     toast(status ? `${r.name}: ${label[status]} on ${fmtDate(r.date)}` : 'Decision cleared');
@@ -560,7 +560,7 @@ async function pageLate(el, params) {
   el.replaceChildren(
     pageHead('Late approvals'),
     h('div', { class: 'toolbar' }, monthPicker(month, (m) => go('late', { month: m }))),
-    h('p', { class: 'muted small' }, `Arriving more than ${data.late_max_minutes} minutes late counts as a half day and is flagged here for review. Review whenever convenient: grant a full day if it was justified, or confirm the half day. These days are not part of the "every 3rd late is a half day" count.`),
+    h('p', { class: 'muted small' }, `Arrivals more than ${data.late_max_minutes} minutes late come here instead of counting toward "every 3rd late is a half day". Decide full day or half day. Until you decide, the day counts from the hours worked (a full day if they stayed until shift end).`),
     table([
       { label: 'Date', render: (r) => fmtDate(r.date) },
       { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)) },
@@ -568,7 +568,7 @@ async function pageLate(el, params) {
       { label: 'In / Out', render: (r) => `${r.first_in || '—'} / ${r.last_out || (r.status === 'working' ? 'working' : '—')}` },
       { label: 'Late by', class: 'num', render: (r) => fmtMinutes(r.late_minutes) },
       { label: 'Worked', class: 'num', render: (r) => fmtMinutes(r.worked_minutes) },
-      { label: 'Decision', render: (r) => h('div', {}, badge(label[r.late_review], kind[r.late_review]), verifBadge(r.verification)) },
+      { label: 'Decision', render: (r) => h('div', {}, badge(r.late_review === 'pending' ? `To review · counts as ${(STATUS_LABEL[r.status] || r.status).toLowerCase()} for now` : label[r.late_review], kind[r.late_review]), verifBadge(r.verification)) },
       { label: '', render: (r) => h('div', { class: 'row' },
         r.late_review !== 'present' ? h('button', { class: 'btn btn-sm btn-ok', onclick: () => decide(r, 'present') }, 'Full day') : '',
         r.late_review !== 'half_day' ? h('button', { class: 'btn btn-sm', onclick: () => decide(r, 'half_day') }, 'Half day') : '',
@@ -1234,7 +1234,7 @@ async function pagePayroll(el, params) {
       h('div', { class: 'row' }, h('a', { class: 'btn', href: `/api/admin/payroll.csv?month=${month}` }, 'Download Excel (CSV)'), finalizeBtn)),
     p.rows.some((r) => r.attendance.late_pending) && !p.finalized
       ? h('div', { class: 'card', style: { marginBottom: '12px', borderColor: 'var(--warn)' } },
-        `ℹ Very late arrivals counted as half days, not yet reviewed: ${p.rows.filter((r) => r.attendance.late_pending).map((r) => r.name).join(', ')}. `,
+        `ℹ Arrivals over 1 hour late not reviewed yet (counted from hours worked until you decide): ${p.rows.filter((r) => r.attendance.late_pending).map((r) => r.name).join(', ')}. `,
         h('a', { href: `#/late?month=${month}` }, 'Review →'))
       : '',
     h('div', { class: 'stats', style: { marginBottom: '12px' } },
@@ -1255,7 +1255,7 @@ async function pagePayroll(el, params) {
         h('li', {}, 'Per-day pay = monthly salary ÷ days in the month. Paid days = present + ½ × half days + paid leave + week offs + holidays.'),
         h('li', {}, 'No overtime pay. Working on a weekly off is paid like any present day and also earns a comp-off: a paid day off to take on a weekday (shown on the Leave requests page).'),
         h('li', {}, `Full day = the employee’s shift length minus the ${A.me.settings.grace_minutes}-minute grace (9:00–18:00 → ${fmtMinutes(540 - A.me.settings.grace_minutes)} worked). Half day needs ${A.me.settings.half_day_hours} h. A missing punch-out counts as a half day until you correct it.`),
-        h('li', {}, `Late arrivals: every ${A.me.settings.late_warnings + 1}${A.me.settings.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month counts as a half day; the others are warnings. A late arrival who stays until shift end is otherwise a full day.${A.me.settings.late_review ? ` Later than ${A.me.settings.late_max_minutes} min: half day, flagged on Late approvals where you can grant a full day.` : ''} Every late day and the month’s total late time are shown to you and the employee.`),
+        h('li', {}, `Late arrivals: every ${A.me.settings.late_warnings + 1}${A.me.settings.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month counts as a half day; the others are warnings. A late arrival who stays until shift end is otherwise a full day. More than ${A.me.settings.late_max_minutes} min late is not part of that count: it goes to Late approvals, where you decide full or half day. Every late day and the month’s total late time are shown to you and the employee.`),
         h('li', {}, 'Net = base + additions − deductions − advances.'))));
 }
 
@@ -1435,7 +1435,7 @@ async function pageSettings(el, params) {
       h('dt', {}, 'Half day'), h('dd', {}, `${s.half_day_hours} hours worked`),
       h('dt', {}, 'Late after'), h('dd', {}, `${s.grace_minutes} minutes past shift start`),
       h('dt', {}, 'Late rule'), h('dd', {}, `Every ${s.late_warnings + 1}${s.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month is a half day (others are warnings)`),
-      h('dt', {}, 'Very late'), h('dd', {}, s.late_review ? `More than ${s.late_max_minutes} min late: half day, flagged for your review` : `More than ${s.late_max_minutes} min late is shown separately; no review, counted like any late day`),
+      h('dt', {}, 'Very late'), h('dd', {}, `More than ${s.late_max_minutes} min late: sent to Late approvals — you decide full or half day (not part of the 3rd-late rule)`),
       h('dt', {}, 'Staff salary view'), h('dd', {}, `From ${fmtMonth(s.salary_visible_from)} onwards`),
       h('dt', {}, 'GPS accuracy'), h('dd', {}, `Flag punches worse than ±${s.max_accuracy_m} m`),
       h('dt', {}, 'Missing details'), h('dd', {}, s.profile_grace_days ? `Punch In is locked after ${s.profile_grace_days} day(s) on the app until phone, Aadhaar, PAN and bank/UPI are added` : 'Never blocks punching (reminders only)'),
@@ -1447,8 +1447,7 @@ async function pageSettings(el, params) {
         { name: 'half_day_hours', label: 'Hours for a half day', type: 'number', step: '0.25', min: 0.5, max: 24, required: true, value: s.half_day_hours, hint: 'Less than this counts as absent.' },
         { name: 'grace_minutes', label: 'Late grace period (minutes)', type: 'number', min: 0, max: 240, required: true, value: s.grace_minutes, hint: 'Also sets the full day: shift length minus this grace.' },
         { name: 'late_warnings', label: 'Warnings between half days', type: 'number', min: 0, max: 31, step: 1, required: true, value: s.late_warnings, hint: 'With 2: the 3rd, 6th, 9th… late in a month is a half day; the others are warnings.' },
-        { name: 'late_max_minutes', label: 'Show arrivals later than this (minutes) separately as “very late”', type: 'number', min: 0, max: 480, required: true, value: s.late_max_minutes },
-        { name: 'late_review', label: 'Very late arrivals become a half day and go to “Late approvals” for review', type: 'checkbox', value: s.late_review },
+        { name: 'late_max_minutes', label: 'Arrivals later than this (minutes) go to you for review instead of the 3rd-late rule', type: 'number', min: 0, max: 480, required: true, value: s.late_max_minutes },
         { name: 'salary_visible_from', label: 'Staff can see salary from (month)', type: 'month', required: true, value: s.salary_visible_from },
         { name: 'profile_grace_days', label: 'Lock Punch In after this many days on the app if details are still missing (0 = never lock)', type: 'number', min: 0, max: 60, step: 1, required: true, value: s.profile_grace_days },
         { name: 'max_accuracy_m', label: 'Flag punches with GPS accuracy worse than (metres)', type: 'number', min: 10, max: 5000, required: true, value: s.max_accuracy_m },

@@ -211,7 +211,7 @@ test('overnight shift: OUT after midnight counts for the day the shift started',
   assert.equal(pay.attendance.present, 1);
 });
 
-test('late rules: every 3rd late is a half day; over 1 hour late is a half day for review', async (t) => {
+test('late rules: every 3rd late is a half day; over 1 hour late goes to the admin instead', async (t) => {
   const s = await startServer(ist('2026-10-01', '08:00'));
   t.after(() => s.close());
   const admin = s.client();
@@ -221,8 +221,6 @@ test('late rules: every 3rd late is a half day; over 1 hour late is a half day f
   assert.equal(settings.grace_minutes, 15);
   assert.equal(settings.late_warnings, 2);
   assert.equal(settings.late_max_minutes, 60);
-  assert.equal(settings.late_review, false, 'very-late review is off by default');
-  await admin('PUT', '/api/admin/settings', { late_review: true });
   const b = await admin('POST', '/api/admin/branches', { name: 'HQ', ...OFFICE, radius_m: 150, geofence_mode: 'flag' });
   const emp = await admin('POST', '/api/admin/employees', {
     code: 'D1', name: 'Default', branch_id: b.data.id, salary_type: 'monthly', salary: 31000, shift_start: '09:00', shift_end: '18:00', weekly_offs: ['0'], joined_on: '2026-09-01', pin: '1234',
@@ -287,10 +285,10 @@ test('late rules: every 3rd late is a half day; over 1 hour late is a half day f
   assert.equal(d['10'].status, 'half_day', 'admin gave a half day');
   assert.ok(!d['09'].flags.includes('late_approval'));
 
-  // Undecided very-late days count as half days and don't hold up payroll
+  // Undecided very-late days count from the hours worked (stayed till 18:00 = full day) and don't hold up payroll
   await admin('POST', '/api/admin/late-approvals/decision', { employee_id: emp.data.id, date: '2026-10-10', status: null });
   d = await get();
-  assert.equal(d['10'].status, 'half_day', 'over 1 hour late = half day until reviewed');
+  assert.equal(d['10'].status, 'present', 'over 1 hour late but stayed until shift end: full day until reviewed');
   assert.equal(d['10'].late_review, 'pending');
   s.clock.now = ist('2026-11-02', '10:00');
   await admin('POST', '/api/admin/login', { username: 'owner', password: 'password123' });

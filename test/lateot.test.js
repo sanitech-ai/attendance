@@ -58,7 +58,7 @@ test('monthly late report; no late on the joining day or first app day', async (
   assert.match(String(csv.data), /Asha/);
 });
 
-test('by default a very late arrival is an ordinary late day: shown, totalled, not reviewed', async (t) => {
+test('over 1 hour late goes to the admin: shown and totalled, not a late mark, not a half day by itself', async (t) => {
   const s = await startServer(ist('2026-10-01', '08:00'));
   t.after(() => s.close());
   const admin = s.client();
@@ -74,8 +74,8 @@ test('by default a very late arrival is an ordinary late day: shown, totalled, n
   };
   await day('2026-10-01', '09:00'); // first day on the app
   let r = await day('2026-10-02', '10:30'); // 90 min late
-  assert.equal(r.late.review, undefined);
-  assert.equal(r.late.mark, 1);
+  assert.equal(r.late.review, true);
+  assert.equal(r.late.mark, undefined);
   assert.deepEqual([r.late.month_days, r.late.month_minutes], [1, 90]);
   r = await day('2026-10-03', '09:30');
   assert.deepEqual([r.late.month_days, r.late.month_minutes], [2, 120]);
@@ -83,10 +83,12 @@ test('by default a very late arrival is an ordinary late day: shown, totalled, n
 
   const days = (await admin('GET', `/api/admin/attendance/${id}?month=2026-10`)).data.days;
   const d2 = days.find((d) => d.date === '2026-10-02');
-  assert.equal(d2.status, 'present', 'stayed till shift end: full day, no review');
-  assert.equal(d2.late_review, null);
+  assert.equal(d2.status, 'present', 'stayed till shift end: full day until the admin decides');
+  assert.equal(d2.late_review, 'pending');
+  assert.equal(d2.late_mark, null);
   assert.ok(d2.late_over_max);
-  assert.equal((await admin('GET', '/api/admin/pending')).data.late_approvals, 0);
+  assert.equal((await admin('GET', '/api/admin/pending')).data.late_approvals, 1);
+  assert.equal(days.find((d) => d.date === '2026-10-03').late_mark, 1, 'the next ordinary late is late #1');
   const row = (await admin('GET', '/api/admin/late-ot?month=2026-10')).data.rows[0];
   assert.deepEqual([row.late_days, row.late_short_days, row.late_hour_days, row.late_minutes], [2, 1, 1, 120]);
   assert.deepEqual(row.late.map((l) => l.cumulative), [90, 120]);
