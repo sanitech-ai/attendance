@@ -59,3 +59,23 @@ test('labour: imported by the office, daily wage, Aadhaar kept masked, short log
   assert.equal((await admin('GET', '/api/admin/employees')).data.find((x) => x.code === 'SECPL/LAB/016').aadhaar_no, 'XXXX XXXX 6864');
   assert.equal((await admin('PUT', `/api/admin/employees/${e.id}`, { ...e, weekly_offs: ['0'], salary: 760, aadhaar_no: '1234' })).status, 400);
 });
+
+test('weekly offs can be specific weeks: 2nd & 4th Sunday', async (t) => {
+  const s = await startServer(ist('2026-10-01', '08:00'));
+  t.after(() => s.close());
+  const admin = s.client();
+  await admin('POST', '/api/admin/setup', { username: 'firefueled', password: 'password123', name: 'Owner' });
+  await admin('POST', '/api/admin/branches', { name: 'M3M Golf Hills', ...SITE, radius_m: 300, geofence_mode: 'flag' });
+  const csv = ['employee_id,name,branch,category,salary,weekly_off', 'SECPL/LAB/050,Aditya Kumar,M3M Golf Hills,Labour,600,2nd & 4th Sun'].join('\n');
+  assert.equal((await admin('POST', '/api/admin/employees/import', { csv })).status, 200);
+  const e = (await admin('GET', '/api/admin/employees')).data[0];
+  assert.equal(e.weekly_offs, '0#2,0#4');
+  s.clock.now = ist('2026-10-31', '20:00');
+  await admin('POST', '/api/admin/login', { username: 'firefueled', password: 'password123' });
+  const days = (await admin('GET', `/api/admin/attendance/${e.id}?month=2026-10`)).data.days;
+  const st = (d) => days.find((x) => x.date === d).status;
+  assert.deepEqual(['2026-10-04', '2026-10-11', '2026-10-18', '2026-10-25'].map(st), ['absent', 'week_off', 'absent', 'week_off']);
+  // Admin form sends days + weeks
+  assert.equal((await admin('PUT', `/api/admin/employees/${e.id}`, { ...e, salary: 600, weekly_offs: ['0#1', '0#3'] })).status, 200);
+  assert.equal((await admin('GET', '/api/admin/employees')).data[0].weekly_offs, '0#1,0#3');
+});

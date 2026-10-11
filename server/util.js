@@ -27,6 +27,20 @@ function weekday(date) {
   return new Date(`${date}T00:00:00Z`).getUTCDay();
 }
 
+/**
+ * Weekly offs are stored as a list like "0" (every Sunday), "0,6" (Sat + Sun) or "0#2,0#4"
+ * (2nd and 4th Sunday of the month).
+ */
+const WEEKLY_OFF_RE = /^[0-6](#[1-5])?$/;
+function isWeeklyOff(weeklyOffs, date) {
+  const wd = weekday(date);
+  const nth = Math.ceil(Number(date.slice(8, 10)) / 7);
+  return String(weeklyOffs || '').split(',').filter(Boolean).some((t) => {
+    const [d, n] = t.split('#');
+    return Number(d) === wd && (!n || Number(n) === nth);
+  });
+}
+
 function daysInMonth(month) {
   const [y, m] = month.split('-').map(Number);
   return new Date(Date.UTC(y, m, 0)).getUTCDate();
@@ -156,7 +170,7 @@ function decodeDataUrl(dataUrl, allowed, maxBytes) {
 }
 
 module.exports = {
-  istDate, istTime, istMs, addDays, weekday, daysInMonth, monthDates, shiftMinutes, haversineMeters, fmtKm,
+  istDate, istTime, istMs, addDays, weekday, isWeeklyOff, WEEKLY_OFF_RE, daysInMonth, monthDates, shiftMinutes, haversineMeters, fmtKm,
   hashSecret, verifySecret, randomToken, sha256, encrypt, decrypt,
   HttpError, bad, isDate, isMonth, isTime, requireDate, requireMonth, toPaise, decodeDataUrl,
 };

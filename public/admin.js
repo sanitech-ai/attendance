@@ -647,7 +647,7 @@ async function pageEmployees(el, params) {
       { label: 'Branch', render: (e) => h('div', {}, e.branch_name, e.extra_location_ids ? h('div', { class: 'small muted' }, `+ ${e.extra_location_ids.split(',').length} more location(s)`) : '') },
       { label: 'Salary', render: (e) => rate(e) },
       { label: 'Shift', render: (e) => h('div', {}, `${e.shift_start}–${e.shift_end}`, h('div', { class: 'small muted' }, e.follow_branch_shift ? 'branch timing' : 'personal')) },
-      { label: 'Week off', render: (e) => e.weekly_offs.split(',').filter(Boolean).map((d) => WEEKDAYS[d]).join(', ') || 'None' },
+      { label: 'Week off', render: (e) => weeklyOffText(e.weekly_offs) },
       { label: 'Docs', class: 'num', render: (e) => h('a', { href: `#/documents?employee_id=${e.id}` }, String(e.document_count)) },
       { label: 'Status', render: (e) => h('div', {}, e.active ? badge('active', 'ok') : badge('inactive', 'neutral'),
         e.profile_missing?.length ? h('div', { class: 'small', style: { color: 'var(--warn)', marginTop: '4px' } },
@@ -686,7 +686,10 @@ function employeeForm(e) {
     { name: 'follow_branch_shift', label: 'Use the branch’s office timings', type: 'checkbox', value: e ? !!e.follow_branch_shift : true },
     { name: 'shift_start', label: 'Personal shift start', type: 'time', value: e?.shift_start || '09:00', hint: 'Only used when “Use the branch’s office timings” is unticked.' },
     { name: 'shift_end', label: 'Personal shift end', type: 'time', value: e?.shift_end || '18:00' },
-    { name: 'weekly_offs', label: 'Weekly off days', type: 'checks', value: e ? e.weekly_offs.split(',').filter(Boolean) : ['0'], options: WEEKDAYS.map((d, i) => ({ value: String(i), label: d })) },
+    { name: 'weekly_offs', label: 'Weekly off days', type: 'checks', value: e ? [...new Set(e.weekly_offs.split(',').filter(Boolean).map((t) => t.split('#')[0]))] : ['0'], options: WEEKDAYS.map((d, i) => ({ value: String(i), label: d })) },
+    { name: 'off_weeks', label: 'Which weeks', type: 'select', value: offWeeksOf(e?.weekly_offs), options: [
+      { value: '', label: 'Every week' }, { value: '2,4', label: '2nd & 4th of the month' }, { value: '1,3', label: '1st & 3rd of the month' },
+      { value: '1,3,5', label: '1st, 3rd & 5th of the month' }] },
     { type: 'heading', label: 'Locations' },
     { name: 'extra_locations', label: 'Also allowed to check in/out at', type: 'checks',
       value: String(e?.extra_location_ids || '').split(',').filter(Boolean),
@@ -706,6 +709,9 @@ function employeeForm(e) {
     fields,
     wide: true,
     async onSubmit(v) {
+      // "2nd & 4th" turns each ticked day into that day of those weeks (0#2,0#4).
+      if (v.off_weeks) v.weekly_offs = v.weekly_offs.flatMap((d) => v.off_weeks.split(',').map((w) => `${d}#${w}`));
+      delete v.off_weeks;
       if (isNew) {
         await api('POST', '/api/admin/employees', v);
         toast(`Employee added. Login: ${v.code} / PIN ${v.pin}`);
@@ -735,6 +741,22 @@ function employeeForm(e) {
   const syncPay = () => { payLabel.firstChild.textContent = cat.value === 'labour' ? 'Daily wage (₹ per day)' : 'Monthly salary (₹)'; };
   cat.addEventListener('change', syncPay);
   syncPay();
+}
+
+const ORD = ['', '1st', '2nd', '3rd', '4th', '5th'];
+/** "Sun", "Sat, Sun" or "Sun (2nd & 4th)" from the stored weekly offs. */
+function weeklyOffText(offs) {
+  const days = new Map();
+  for (const t of String(offs || '').split(',').filter(Boolean)) {
+    const [d, w] = t.split('#');
+    if (!days.has(d)) days.set(d, []);
+    if (w) days.get(d).push(ORD[w]);
+  }
+  return [...days].map(([d, ws]) => `${WEEKDAYS[d]}${ws.length ? ` (${ws.join(' & ')})` : ''}`).join(', ') || 'None';
+}
+function offWeeksOf(offs) {
+  const ws = [...new Set(String(offs || '').split(',').filter((t) => t.includes('#')).map((t) => t.split('#')[1]))].sort();
+  return ws.join(',');
 }
 
 /**

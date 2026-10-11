@@ -6,7 +6,7 @@ const { computePayroll } = require('../payroll');
 const { planImport, randomPin } = require('../importer');
 const { resolveMapsLink, placeName } = require('../maps');
 const {
-  bad, HttpError, istDate, requireDate, requireMonth, daysInMonth, hashSecret, toPaise, isTime, isDate, haversineMeters, fmtKm,
+  bad, HttpError, istDate, requireDate, requireMonth, daysInMonth, hashSecret, toPaise, isTime, isDate, haversineMeters, fmtKm, isWeeklyOff, WEEKLY_OFF_RE,
 } = require('../util');
 const {
   profileMissing, paymentDetails, publicEmployee, validPin, createDocument, sendStoredFile, notFound, assertMonthOpen, DOC_COLUMNS,
@@ -445,7 +445,7 @@ module.exports = function adminRoutes(ctx) {
     const aadhaar = b.aadhaar_no !== undefined ? maskAadhaar(b.aadhaar_no) : before?.aadhaar_no || '';
     if (!isTime(b.shift_start) || !isTime(b.shift_end)) throw bad('Shift times must be HH:MM');
     const offs = Array.isArray(b.weekly_offs) ? b.weekly_offs : String(b.weekly_offs ?? '').split(',').filter((x) => x !== '');
-    if (offs.some((d) => !/^[0-6]$/.test(String(d)))) throw bad('Weekly offs must be days 0 (Sun) to 6 (Sat)');
+    if (offs.some((d) => !WEEKLY_OFF_RE.test(String(d)))) throw bad('Weekly offs must be days 0 (Sun) to 6 (Sat), optionally with the week (0#2 = 2nd Sunday)');
     const joinedOn = String(b.joined_on ?? '').trim();
     if (joinedOn && !isDate(joinedOn)) throw bad('Joining date must be a valid date');
     return {
@@ -1046,10 +1046,9 @@ module.exports = function adminRoutes(ctx) {
     let count = 0;
     tx(db, () => {
       for (const e of emps) {
-        const offs = e.weekly_offs.split(',').filter(Boolean).map(Number);
         for (let d = from; d <= to; d = new Date(Date.parse(d) + 86400000).toISOString().slice(0, 10)) {
           if (e.joined_on && d < e.joined_on) continue;
-          if (!includeOffs && offs.includes(new Date(`${d}T00:00:00Z`).getUTCDay())) continue;
+          if (!includeOffs && isWeeklyOff(e.weekly_offs, d)) continue;
           upsert.run(e.id, d, status, String(note || '').slice(0, 300), req.admin.id, ctx.now());
           count++;
         }

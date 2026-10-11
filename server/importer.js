@@ -1,6 +1,7 @@
 'use strict';
 const crypto = require('node:crypto');
 const { isDate, isTime } = require('./util');
+const ORDINALS = { '1st': 1, '2nd': 2, '3rd': 3, '4th': 4, '5th': 5, first: 1, second: 2, third: 3, fourth: 4, fifth: 5 };
 const { EMPLOYEE_CODE_RE, maskAadhaar, paymentDetails } = require('./common');
 
 /** Minimal RFC 4180 CSV parser (quotes, escaped quotes, CRLF, Excel BOM). */
@@ -78,11 +79,16 @@ function normWeeklyOff(v) {
   const s = String(v ?? '').trim().toLowerCase();
   if (s === '') return '0';
   if (s === 'none') return '';
+  // "2nd & 4th Sun" / "Sun2,Sun4" / "1st,3rd sunday": only those weeks of the month.
+  const weeks = [...s.matchAll(/(1st|2nd|3rd|4th|5th|first|second|third|fourth|fifth)/g)].map((m) => ORDINALS[m[1]]);
   const out = [];
-  for (const part of s.split(/[\s,;/]+/).filter(Boolean)) {
-    const i = /^[0-6]$/.test(part) ? Number(part) : DAY_NAMES.indexOf(part.slice(0, 3));
+  for (const part of s.replace(/(1st|2nd|3rd|4th|5th|first|second|third|fourth|fifth|and|&)/g, ' ').split(/[\s,;/]+/).filter(Boolean)) {
+    const m = part.match(/^([a-z]+|[0-6])([1-5])?$/);
+    const i = !m ? -1 : /^[0-6]$/.test(m[1]) ? Number(m[1]) : DAY_NAMES.indexOf(m[1].slice(0, 3));
     if (i < 0) return null;
-    out.push(String(i));
+    const ws = m[2] ? [Number(m[2])] : weeks;
+    if (ws.length) for (const w of ws) out.push(`${i}#${w}`);
+    else out.push(String(i));
   }
   return [...new Set(out)].sort().join(',');
 }

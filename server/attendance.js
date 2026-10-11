@@ -1,5 +1,5 @@
 'use strict';
-const { istDate, istTime, istMs, weekday, shiftMinutes } = require('./util');
+const { istDate, istTime, istMs, isWeeklyOff, shiftMinutes } = require('./util');
 
 /**
  * Loads everything needed to compute day-by-day attendance for one employee
@@ -113,11 +113,7 @@ function computeDay(emp, date, ctx, settings, today) {
   };
 
   const leave = ctx.leaves.find((l) => l.from_date <= date && l.to_date >= date);
-  const isWeekOff = emp.weekly_offs
-    .split(',')
-    .filter(Boolean)
-    .map(Number)
-    .includes(weekday(date));
+  const isWeekOff = isWeeklyOff(emp.weekly_offs, date);
   const override = ctx.overrides.get(date);
 
   // No late marks on the joining day or the first day on the app (they may have joined or installed
@@ -289,11 +285,11 @@ function leaveTotals(db, emp, year, settings, nowMs = Date.now()) {
 
 /** Working days (not a weekly off or holiday) between two dates, inclusive. */
 function workingDays(db, emp, from, to) {
-  const offs = emp.weekly_offs.split(',').filter(Boolean).map(Number);
+
   const hol = new Set(db.prepare('SELECT date FROM holidays WHERE date BETWEEN ? AND ? AND (branch_id IS NULL OR branch_id = ?)').all(from, to, emp.branch_id).map((x) => x.date));
   const out = [];
   for (let d = from; d <= to; d = new Date(Date.parse(`${d}T00:00:00Z`) + 86400000).toISOString().slice(0, 10)) {
-    if (!offs.includes(weekday(d)) && !hol.has(d)) out.push(d);
+    if (!isWeeklyOff(emp.weekly_offs, d) && !hol.has(d)) out.push(d);
   }
   return out;
 }
