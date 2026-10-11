@@ -4,8 +4,10 @@ const { daysInMonth } = require('./util');
 
 /**
  * Salary rules
- *  Everyone is paid monthly: per-day = salary / calendar days in month.
- *  Paid days = present + ½·half-days + paid leave + weekly offs + holidays.
+ *  Staff (monthly): per-day = salary / calendar days in month.
+ *    Paid days = present + ½·half-days + paid leave + weekly offs + holidays.
+ *  Labour (daily wage): per-day = the wage. Paid days = present + ½·half-days + paid leave
+ *    (weekly offs and holidays are not paid; a weekly off worked is paid as a present day).
  * There is no overtime pay: working on a weekly off earns a comp-off (a paid day off) instead.
  * Fixed monthly pay items (PF, PT, conveyance...) apply in full whenever there is at least one paid day.
  */
@@ -13,8 +15,9 @@ function salaryForEmployee(emp, days, month, extras) {
   const s = summarize(days);
   const dim = daysInMonth(month);
 
-  const perDay = emp.salary_paise / dim;
-  const paidDays = s.present + 0.5 * s.half_day + s.paid_leave + s.week_off + s.holiday;
+  const daily = emp.salary_type === 'daily';
+  const perDay = daily ? emp.salary_paise : emp.salary_paise / dim;
+  const paidDays = s.present + 0.5 * s.half_day + s.paid_leave + (daily ? 0 : s.week_off + s.holiday);
   const basePaise = perDay * paidDays;
 
   const fixed = paidDays > 0 ? extras.payItems || [] : [];
@@ -37,6 +40,7 @@ function salaryForEmployee(emp, days, month, extras) {
     branch_id: emp.branch_id,
     branch_name: emp.branch_name,
     salary_type: emp.salary_type,
+    category: emp.category,
     salary_paise: emp.salary_paise,
     shift: `${emp.shift_start}-${emp.shift_end}`,
     days_in_month: dim,

@@ -631,7 +631,7 @@ async function pageEmployees(el, params) {
   const onlyMissing = params?.get('missing') === '1';
   const incomplete = A.employees.filter((e) => e.active && e.profile_missing?.length);
   const list = onlyMissing ? incomplete : A.employees;
-  const rate = (e) => `${money(e.salary_paise)} / month`;
+  const rate = (e) => `${money(e.salary_paise)} / ${e.category === 'labour' ? 'day' : 'month'}`;
   el.replaceChildren(
     pageHead('Employees',
       h('button', { class: 'btn', onclick: sendLogins }, '🔑 Send login details'),
@@ -643,7 +643,7 @@ async function pageEmployees(el, params) {
         `Only staff with missing details (${incomplete.length})`),
       incomplete.length ? h('span', { class: 'small muted' }, 'They see a reminder every time they open the app until they add them.') : ''),
     table([
-      { label: 'Employee', render: (e) => h('div', {}, h('strong', {}, e.name), e.is_manager ? [' ', badge(e.manager_scope === 'all' ? 'Manager · all branches' : 'Manager', 'info')] : '', h('div', { class: 'small muted' }, `${e.code}${e.designation ? ` · ${e.designation}` : ''}${e.phone ? ` · ${e.phone}` : ''}`)) },
+      { label: 'Employee', render: (e) => h('div', {}, h('strong', {}, e.name), e.category === 'labour' ? [' ', badge('Labour', 'neutral')] : '', e.is_manager ? [' ', badge(e.manager_scope === 'all' ? 'Manager · all branches' : 'Manager', 'info')] : '', h('div', { class: 'small muted' }, `${e.code}${e.designation ? ` · ${e.designation}` : ''}${e.phone ? ` · ${e.phone}` : ''}`)) },
       { label: 'Branch', render: (e) => h('div', {}, e.branch_name, e.extra_location_ids ? h('div', { class: 'small muted' }, `+ ${e.extra_location_ids.split(',').length} more location(s)`) : '') },
       { label: 'Salary', render: (e) => rate(e) },
       { label: 'Shift', render: (e) => h('div', {}, `${e.shift_start}–${e.shift_end}`, h('div', { class: 'small muted' }, e.follow_branch_shift ? 'branch timing' : 'personal')) },
@@ -665,18 +665,24 @@ function employeeForm(e) {
   const isNew = !e;
   const fields = [
     { type: 'heading', label: 'Basic details' },
-    { name: 'code', label: 'Employee ID', required: true, value: e?.code, hint: 'Staff log in with this. Letters, digits, - or _.', autocomplete: 'off' },
+    { name: 'category', label: 'Type', type: 'select', value: e?.category || 'staff', options: [
+      { value: 'staff', label: 'Staff — monthly salary, fills in own details' },
+      { value: 'labour', label: 'Labour — daily wage, office enters their details' }] },
+    { name: 'code', label: 'Employee ID', required: true, value: e?.code, hint: 'They log in with this. Letters, digits, / - or _. Login also works without the / and without “SECPL” (SECPL/LAB/001 → LAB001).', autocomplete: 'off' },
     { name: 'name', label: 'Full name', required: true, value: e?.name },
     { name: 'phone', label: 'Phone', type: 'tel', value: e?.phone },
     { name: 'designation', label: 'Designation', value: e?.designation },
     { name: 'branch_id', label: 'Branch', type: 'select', required: true, value: e?.branch_id, options: A.branches.filter((b) => b.active || b.id === e?.branch_id).map((b) => ({ value: b.id, label: b.name })) },
     { name: 'joined_on', label: 'Joining date', type: 'date', value: e ? e.joined_on : todayIST(), hint: 'Leave blank if not known.' },
+    { name: 'aadhaar_no', label: 'Aadhaar number (entered by office)', inputmode: 'numeric', value: e?.aadhaar_no || '', placeholder: '12 digits', maxlength: 14,
+      hint: 'For staff who can’t upload their Aadhaar card. Only the last 4 digits are kept (XXXX XXXX 1234).' },
     { type: 'heading', label: 'Salary payment (staff can also fill this in themselves)' },
     { name: 'upi_id', label: 'UPI ID', value: e?.upi_id, placeholder: 'e.g. 98xxxxxxxx@ybl' },
     { name: 'bank_account', label: 'Bank account number', inputmode: 'numeric', value: e?.bank_account },
     { name: 'bank_ifsc', label: 'IFSC code', value: e?.bank_ifsc, placeholder: 'e.g. SBIN0001234' },
     { type: 'heading', label: 'Salary & shift' },
-    { name: 'salary', label: 'Monthly salary (₹)', type: 'number', step: '0.01', min: 0, required: true, value: e ? e.salary_paise / 100 : '', hint: 'Per-day pay = salary ÷ days in the month.' },
+    { name: 'salary', label: e?.category === 'labour' ? 'Daily wage (₹ per day)' : 'Monthly salary (₹)', type: 'number', step: '0.01', min: 0, required: true, value: e ? e.salary_paise / 100 : '',
+      hint: 'Staff: per-day pay = salary ÷ days in the month. Labour: paid this amount for each day worked (weekly offs and holidays are not paid).' },
     { name: 'follow_branch_shift', label: 'Use the branch’s office timings', type: 'checkbox', value: e ? !!e.follow_branch_shift : true },
     { name: 'shift_start', label: 'Personal shift start', type: 'time', value: e?.shift_start || '09:00', hint: 'Only used when “Use the branch’s office timings” is unticked.' },
     { name: 'shift_end', label: 'Personal shift end', type: 'time', value: e?.shift_end || '18:00' },
@@ -723,6 +729,12 @@ function employeeForm(e) {
   };
   home.addEventListener('change', syncExtra);
   syncExtra();
+  // The pay field follows the type: monthly salary for staff, daily wage for labour.
+  const cat = dlg.form.querySelector('[name=category]');
+  const payLabel = dlg.form.querySelector('[name=salary]').closest('.field').querySelector('label');
+  const syncPay = () => { payLabel.firstChild.textContent = cat.value === 'labour' ? 'Daily wage (₹ per day)' : 'Monthly salary (₹)'; };
+  cat.addEventListener('change', syncPay);
+  syncPay();
 }
 
 /**
@@ -782,7 +794,9 @@ function importEmployees() {
     h('p', {}, 'Save your Excel sheet as CSV with a header row. Columns (any order):'),
     h('ul', {},
       h('li', {}, h('b', {}, 'employee_id, name, branch, salary'), ' – required. Branches that don’t exist yet are created; you then set their location.'),
-      h('li', {}, 'designation, phone, joined_on (DD-MM-YYYY, may be blank), salary is the monthly salary'),
+      h('li', {}, 'designation, phone, joined_on (DD-MM-YYYY, may be blank), salary (monthly salary, or the daily wage for labour)'),
+      h('li', {}, 'category – “labour” for daily-wage labour (blank = staff); aadhaar – 12-digit number, only the last 4 digits are kept'),
+      h('li', {}, 'upi_id (name@bank, or a mobile number like “9876543210 PhonePe”), bank_account and ifsc'),
       h('li', {}, 'shift_start, shift_end (default 09:00 and 18:00), weekly_off (default Sun), branch_radius_m (default 150)'),
       h('li', {}, 'branch_maps_link – Google Maps link of the branch (needed on one row per branch); its location is read automatically'),
       h('li', {}, 'pf, esic, pt, tds – fixed monthly deductions; conveyance, room_rent – fixed monthly earnings'),
@@ -803,7 +817,9 @@ function importEmployees() {
         { label: 'Line', render: (r) => String(r.line) },
         { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name || '—'), h('div', { class: 'small muted' }, `${r.code} · ${r.designation || ''}`)) },
         { label: 'Branch', render: (r) => r.branch },
-        { label: 'Salary', class: 'num', render: (r) => money(r.salary_paise) },
+        { label: 'Pay', class: 'num', render: (r) => `${money(r.salary_paise)} / ${r.category === 'labour' ? 'day' : 'month'}` },
+        { label: 'Mobile · Aadhaar', render: (r) => h('div', { class: 'small' }, r.phone || '—', h('div', { class: 'muted' }, r.aadhaar_no || 'no Aadhaar')) },
+        { label: 'Paid to', render: (r) => h('span', { class: 'small' }, r.payment || '—') },
         { label: 'Joined', render: (r) => (r.joined_on ? fmtDate(r.joined_on) : '—') },
         { label: 'Fixed items', render: (r) => r.items.map((i) => `${i.label} ${i.kind === 'deduction' ? '−' : '+'}${money(i.amount_paise)}`).join(', ') || '—' },
         { label: 'Problems', render: (r) => (r.errors.length ? h('span', { style: { color: 'var(--bad)' } }, r.errors.join('; ')) : '✓') },

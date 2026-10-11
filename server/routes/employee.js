@@ -7,7 +7,7 @@ const {
   bad, HttpError, istDate, haversineMeters, fmtKm, decodeDataUrl, requireDate, requireMonth, daysInMonth, hashSecret,
 } = require('../util');
 const {
-  allowedBranchIds, measurePunch, profileMissing, profileBlock, profileDeadline, paymentDetails, publicEmployee, validPin, punchState, createDocument, sendStoredFile, notFound, DOC_COLUMNS,
+  allowedBranchIds, measurePunch, profileMissing, profileBlock, profileDeadline, findEmployeeByCode, paymentDetails, publicEmployee, validPin, punchState, createDocument, sendStoredFile, notFound, DOC_COLUMNS,
 } = require('../common');
 
 const { addressAt } = require('../maps');
@@ -33,7 +33,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     r.post('/login', (req, res) => {
       const { code, pin } = req.body || {};
       if (typeof code !== 'string' || typeof pin !== 'string') throw bad('Employee ID and PIN are required');
-      const emp = db.prepare('SELECT * FROM employees WHERE code = ? AND active = 1').get(code.trim());
+      const emp = findEmployeeByCode(db, code);
       ctx.checkLogin('employees', emp, pin, 'pin_hash');
       ctx.startSession(res, 'employee', emp.id);
       db.prepare('UPDATE employees SET last_login_at = ? WHERE id = ?').run(ctx.now(), emp.id);
@@ -55,7 +55,8 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       employee: publicEmployee(req.employee),
       branch,
       can_visit: !!branch?.field_visits,
-      profile_missing: profileMissing(db, req.employee),
+      // Labour don't fill in their own details (the office does), so they aren't nagged about them.
+      profile_missing: req.employee.category === 'labour' ? [] : profileMissing(db, req.employee),
       profile_deadline: profileDeadline(db, req.employee, istDate(ctx.now()), settings.profile_grace_days),
       company_name: settings.company_name,
       late_warnings: settings.late_warnings,

@@ -306,6 +306,13 @@ function migrate(db) {
     // Anyone already on a personal shift keeps it.
     db.exec(`UPDATE employees SET follow_branch_shift = 0 WHERE shift_start != '09:00' OR shift_end != '18:00'`);
   }
+  if (!empCols.includes('category')) {
+    // 'staff' (monthly salary, fills in their own details) or 'labour' (daily wage; the office enters
+    // their details, including the Aadhaar number, and they are never locked out of punching).
+    db.exec("ALTER TABLE employees ADD COLUMN category TEXT NOT NULL DEFAULT 'staff'");
+    // Aadhaar number entered by an admin, kept masked (XXXX XXXX 1234) like uploaded Aadhaar cards.
+    db.exec("ALTER TABLE employees ADD COLUMN aadhaar_no TEXT NOT NULL DEFAULT ''");
+  }
   if (!empCols.includes('allow_offsite')) {
     // Staff of "block" branches who may still punch from a bank, client office etc. (with a note).
     db.exec('ALTER TABLE employees ADD COLUMN allow_offsite INTEGER NOT NULL DEFAULT 0');

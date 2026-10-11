@@ -14,8 +14,9 @@ function profileMissing(db, emp) {
   const docs = new Set(db.prepare("SELECT doc_type FROM documents WHERE employee_id = ? AND status != 'rejected'").all(emp.id).map((d) => d.doc_type));
   const missing = [];
   if (!/\d{10}$/.test(String(emp.phone || '').replace(/\D/g, ''))) missing.push('phone');
-  if (!docs.has('aadhaar')) missing.push('aadhaar');
-  if (!docs.has('pan')) missing.push('pan');
+  if (!docs.has('aadhaar') && !emp.aadhaar_no) missing.push('aadhaar');
+  // Labour (entered by the office) don't need a PAN card.
+  if (!docs.has('pan') && emp.category !== 'labour') missing.push('pan');
   if (!emp.upi_id && !(emp.bank_account && emp.bank_ifsc)) missing.push('payment');
   return missing;
 }
@@ -31,7 +32,8 @@ function profileBlock(db, emp, today, graceDays) {
 
 /** Missing details and how many more days on the app before Punch In locks (null: nothing missing / no rule). */
 function profileDeadline(db, emp, today, graceDays) {
-  if (!graceDays) return null;
+  // Labour can't fill in their own details (the office does), so they are never locked out.
+  if (!graceDays || emp.category === 'labour') return null;
   const missing = profileMissing(db, emp);
   if (!missing.length) return null;
   const daysUsed = db.prepare("SELECT COUNT(DISTINCT work_date) AS n FROM punches WHERE employee_id = ? AND work_date < ? AND status != 'rejected'").get(emp.id, today).n;
@@ -40,6 +42,15 @@ function profileDeadline(db, emp, today, graceDays) {
 
 const UPI_RE = /^[a-zA-Z0-9._-]{2,256}@[a-zA-Z][a-zA-Z0-9]{1,63}$/;
 const IFSC_RE = /^[A-Z]{4}0[A-Z0-9]{6}$/;
+const UPI_APPS = { phonepe: 'PhonePe', paytm: 'Paytm', gpay: 'Google Pay', googlepay: 'Google Pay', bhim: 'BHIM' };
+const UPI_PHONE_RE = /^(?:\+?91)?\s*([6-9]\d{9})\s*(?:[,(\-]?\s*(phone\s*pe|paytm|g\s*pay|google\s*pay|bhim)\s*\)?)?$/i;
+
+/** An Aadhaar number typed in by an admin: checked, then kept masked (XXXX XXXX 1234). */
+function maskAadhaar(raw) {
+  const v = String(raw ?? '').trim();
+  if (!v || /^X{4} X{4} \d{4}$/.test(v)) return v;
+  return normalizeDocNumber('aadhaar', v);
+}
 
 /** Validates phone / UPI / bank fields (any subset); returns normalised values. */
 function paymentDetails(b) {
@@ -51,8 +62,10 @@ function paymentDetails(b) {
   }
   if (b.upi_id !== undefined) {
     const upi = String(b.upi_id || '').trim();
-    if (upi && !UPI_RE.test(upi)) throw bad('UPI ID looks wrong — it should look like name@okhdfcbank or 98xxxxxx@ybl');
-    out.upi_id = upi;
+    // A UPI ID (name@bank), or a mobile number registered on PhonePe / Paytm / Google Pay.
+    const app = upi.match(UPI_PHONE_RE);
+    if (upi && !UPI_RE.test(upi) && !app) throw bad('UPI ID looks wrong — it should look like name@okhdfcbank, or a mobile number like 9876543210 (PhonePe)');
+    out.upi_id = app ? `${app[1]}${app[2] ? ` (${UPI_APPS[app[2].toLowerCase().replace(/\s/g, '')]})` : ''}` : upi;
   }
   if (b.bank_account !== undefined || b.bank_ifsc !== undefined) {
     const acct = String(b.bank_account || '').replace(/\s/g, '');
@@ -98,6 +111,24 @@ function measurePunch(db, emp, lat, lng, acc, settings, note = '') {
   if (acc === null || acc === undefined) flags.push('GPS accuracy unknown');
   else if (acc > settings.max_accuracy_m) flags.push(`low GPS accuracy (±${Math.round(acc)} m)`);
   return { nearest, inside, flags, mode: homeLocated ? home.geofence_mode : 'flag' };
+}
+
+/** Employee IDs: letters, digits, - _ and / (e.g. SECPL0025, SECPL/LAB/001). */
+const EMPLOYEE_CODE_RE = /^[A-Za-z0-9_/-]{1,20}$/;
+
+/**
+ * Login by Employee ID, forgiving how it is typed: case, spaces and / - _ are ignored, and the
+ * company prefix can be left out — so SECPL/LAB/001 can log in as "LAB001" or "lab/001".
+ */
+function findEmployeeByCode(db, typed) {
+  const key = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const want = key(typed);
+  if (!want) return null;
+  const all = db.prepare('SELECT * FROM employees WHERE active = 1').all();
+  const exact = all.filter((e) => key(e.code) === want);
+  if (exact.length === 1) return exact[0];
+  const short = all.filter((e) => key(e.code).replace(/^SECPL/, '') === want.replace(/^SECPL/, ''));
+  return short.length === 1 ? short[0] : null;
 }
 
 /** Branches an employee may punch at: their own plus any extra locations an admin allowed. */
@@ -195,6 +226,6 @@ function assertMonthOpen(db, month) {
 }
 
 module.exports = {
-  allowedBranchIds, measurePunch, profileMissing, profileBlock, profileDeadline, paymentDetails, publicEmployee, validPin, punchState, createDocument, normalizeDocNumber, sendStoredFile, notFound,
+  allowedBranchIds, measurePunch, profileMissing, profileBlock, profileDeadline, maskAadhaar, EMPLOYEE_CODE_RE, findEmployeeByCode, paymentDetails, publicEmployee, validPin, punchState, createDocument, normalizeDocNumber, sendStoredFile, notFound,
   assertMonthOpen, DOC_COLUMNS, DOC_TYPES,
 };

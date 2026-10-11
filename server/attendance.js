@@ -184,7 +184,8 @@ function computeDay(emp, date, ctx, settings, today) {
     day.status = 'absent';
   }
 
-  if (isWeekOff && !day.holiday && !day.future && ['present', 'half_day'].includes(day.status)) {
+  // Daily-wage labour are simply paid for the day they worked, so they don't earn comp-off.
+  if (isWeekOff && emp.salary_type !== 'daily' && !day.holiday && !day.future && ['present', 'half_day'].includes(day.status)) {
     day.comp_off_earned = day.status === 'present' ? 1 : 0.5;
     flags.push('worked_week_off');
   }

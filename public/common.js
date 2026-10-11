@@ -374,7 +374,7 @@ function openPayslip(company, month, row, opts = {}) {
     ...row.deductions.map((x) => line(x.label, money(x.amount_paise))),
     ...row.advances.map((x) => line(`Advance (${x.given_on}${x.note ? `, ${x.note}` : ''})`, money(x.amount_paise))),
   ].join('') || line('None', money(0));
-  const rate = `${money(row.salary_paise)} / month`;
+  const rate = `${money(row.salary_paise)} / ${row.salary_type === 'daily' ? 'day' : 'month'}`;
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Payslip ${esc(row.code)} ${esc(month)}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>

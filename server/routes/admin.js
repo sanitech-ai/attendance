@@ -10,7 +10,7 @@ const {
 } = require('../util');
 const {
   profileMissing, paymentDetails, publicEmployee, validPin, createDocument, sendStoredFile, notFound, assertMonthOpen, DOC_COLUMNS,
-  measurePunch, profileBlock,
+  measurePunch, profileBlock, maskAadhaar, EMPLOYEE_CODE_RE,
 } = require('../common');
 
 const OVERRIDE_STATUSES = ['present', 'half_day', 'absent', 'paid_leave', 'unpaid_leave', 'week_off', 'holiday'];
@@ -419,7 +419,7 @@ module.exports = function adminRoutes(ctx) {
   function employeeInput(b, before = null) {
     const code = String(b.code || '').trim();
     const name = String(b.name || '').trim();
-    if (!/^[A-Za-z0-9_-]{1,20}$/.test(code)) throw bad('Employee ID must be 1-20 letters, digits, - or _');
+    if (!EMPLOYEE_CODE_RE.test(code)) throw bad('Employee ID must be 1-20 letters, digits, / - or _');
     if (!name) throw bad('Name is required');
     const branchId = id(b.branch_id);
     const branch = db.prepare('SELECT shift_start, shift_end FROM branches WHERE id = ?').get(branchId);
@@ -436,17 +436,20 @@ module.exports = function adminRoutes(ctx) {
     for (const x of extra) {
       if (!Number.isInteger(x) || !db.prepare('SELECT 1 FROM branches WHERE id = ?').get(x)) throw bad('Unknown extra location');
     }
-    // Everyone is paid monthly.
-    if (b.salary_type && b.salary_type !== 'monthly') throw bad('All staff are paid a monthly salary');
-    b.salary_type = 'monthly';
-    const salary = toPaise(b.salary, 'Salary');
+    // Staff are paid a monthly salary; labour a daily wage.
+    const category = (b.category ?? before?.category) === 'labour' ? 'labour' : 'staff';
+    const payType = category === 'labour' ? 'daily' : 'monthly';
+    if (b.salary_type && b.salary_type !== payType) throw bad(category === 'labour' ? 'Labour are paid a daily wage' : 'Staff are paid a monthly salary');
+    b.salary_type = payType;
+    const salary = toPaise(b.salary, category === 'labour' ? 'Daily wage' : 'Salary');
+    const aadhaar = b.aadhaar_no !== undefined ? maskAadhaar(b.aadhaar_no) : before?.aadhaar_no || '';
     if (!isTime(b.shift_start) || !isTime(b.shift_end)) throw bad('Shift times must be HH:MM');
     const offs = Array.isArray(b.weekly_offs) ? b.weekly_offs : String(b.weekly_offs ?? '').split(',').filter((x) => x !== '');
     if (offs.some((d) => !/^[0-6]$/.test(String(d)))) throw bad('Weekly offs must be days 0 (Sun) to 6 (Sat)');
     const joinedOn = String(b.joined_on ?? '').trim();
     if (joinedOn && !isDate(joinedOn)) throw bad('Joining date must be a valid date');
     return {
-      code, name, branch_id: branchId, salary_type: b.salary_type, salary_paise: salary,
+      code, name, branch_id: branchId, salary_type: b.salary_type, salary_paise: salary, category, aadhaar_no: aadhaar,
       designation: String(b.designation || '').slice(0, 60),
       shift_start: b.shift_start, shift_end: b.shift_end, weekly_offs: [...new Set(offs.map(String))].sort().join(','),
       joined_on: joinedOn, active: b.active === false ? 0 : 1,
@@ -469,12 +472,13 @@ module.exports = function adminRoutes(ctx) {
     const newId = db
       .prepare(
         `INSERT INTO employees (code, name, phone, designation, branch_id, salary_type, salary_paise, shift_start, shift_end,
-           weekly_offs, joined_on, active, is_manager, manager_scope, follow_branch_shift, upi_id, bank_account, bank_ifsc, allow_offsite, pin_hash, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           weekly_offs, joined_on, active, is_manager, manager_scope, follow_branch_shift, upi_id, bank_account, bank_ifsc, allow_offsite,
+           category, aadhaar_no, pin_hash, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(v.code, v.name, v.phone, v.designation, v.branch_id, v.salary_type, v.salary_paise, v.shift_start, v.shift_end,
         v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, v.follow_branch_shift, v.upi_id, v.bank_account, v.bank_ifsc,
-        v.allow_offsite, hashSecret(pin), ctx.now()).lastInsertRowid;
+        v.allow_offsite, v.category, v.aadhaar_no, hashSecret(pin), ctx.now()).lastInsertRowid;
     setExtraLocations(Number(newId), v.extra_locations);
     ctx.audit(req, 'employee.created', { id: Number(newId), code: v.code });
     res.json({ ok: true, id: Number(newId) });
@@ -488,10 +492,10 @@ module.exports = function adminRoutes(ctx) {
     db.prepare(
       `UPDATE employees SET code = ?, name = ?, phone = ?, designation = ?, branch_id = ?, salary_type = ?, salary_paise = ?,
          shift_start = ?, shift_end = ?, weekly_offs = ?, joined_on = ?, active = ?, is_manager = ?, manager_scope = ?, follow_branch_shift = ?,
-         upi_id = ?, bank_account = ?, bank_ifsc = ?, allow_offsite = ? WHERE id = ?`,
+         upi_id = ?, bank_account = ?, bank_ifsc = ?, allow_offsite = ?, category = ?, aadhaar_no = ? WHERE id = ?`,
     ).run(v.code, v.name, v.phone, v.designation, v.branch_id, v.salary_type, v.salary_paise, v.shift_start, v.shift_end,
       v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, v.follow_branch_shift, v.upi_id, v.bank_account, v.bank_ifsc,
-      v.allow_offsite, empId);
+      v.allow_offsite, v.category, v.aadhaar_no, empId);
     setExtraLocations(empId, v.extra_locations);
     if (!v.active) ctx.endAllSessions('employee', empId);
     const changed = Object.keys(v).filter((k) => k !== 'extra_locations' && String(before[k]) !== String(v[k]));
@@ -708,7 +712,8 @@ module.exports = function adminRoutes(ctx) {
     for (const nb of plan.newBranches) nb.located = branchCoords.has(nb.name.toLowerCase());
     const summary = plan.rows.map((r) => ({
       line: r.line, code: r.data.code, name: r.data.name, branch: r.data.branch, designation: r.data.designation,
-      salary_paise: r.data.salary_paise, joined_on: r.data.joined_on, items: r.items, errors: r.errors,
+      salary_paise: r.data.salary_paise, category: r.data.category, phone: r.data.phone, aadhaar_no: r.data.aadhaar_no,
+      payment: r.data.upi_id || (r.data.bank_account ? `${r.data.bank_account} · ${r.data.bank_ifsc}` : ''), joined_on: r.data.joined_on, items: r.items, errors: r.errors,
     }));
     const errorCount = plan.rows.filter((r) => r.errors.length).length;
     if (dryRun || errorCount) {
@@ -734,7 +739,8 @@ module.exports = function adminRoutes(ctx) {
       }
       const insEmp = db.prepare(
         `INSERT INTO employees (code, name, phone, designation, branch_id, salary_type, salary_paise, shift_start, shift_end,
-           weekly_offs, joined_on, active, follow_branch_shift, pin_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+           weekly_offs, joined_on, active, follow_branch_shift, category, aadhaar_no, upi_id, bank_account, bank_ifsc, pin_hash, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       const branchShift = db.prepare('SELECT shift_start, shift_end FROM branches WHERE id = ?');
       const insItem = db.prepare('INSERT INTO pay_items (employee_id, kind, label, amount_paise, created_at) VALUES (?, ?, ?, ?, ?)');
@@ -744,7 +750,8 @@ module.exports = function adminRoutes(ctx) {
         const bid = branchIds.get(d.branchKey);
         const shift = d.shift_given ? d : branchShift.get(bid);
         const empId = insEmp.run(d.code, d.name, d.phone, d.designation, bid, d.salary_type, d.salary_paise,
-          shift.shift_start, shift.shift_end, d.weekly_offs, d.joined_on, d.shift_given ? 0 : 1, hashSecret(pin), ctx.now()).lastInsertRowid;
+          shift.shift_start, shift.shift_end, d.weekly_offs, d.joined_on, d.shift_given ? 0 : 1, d.category, d.aadhaar_no,
+          d.upi_id, d.bank_account, d.bank_ifsc, hashSecret(pin), ctx.now()).lastInsertRowid;
         for (const it of items) insItem.run(empId, it.kind, it.label, it.amount_paise, ctx.now());
         return { code: d.code, name: d.name, branch: d.branch, pin };
       });

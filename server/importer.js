@@ -1,6 +1,7 @@
 'use strict';
 const crypto = require('node:crypto');
 const { isDate, isTime } = require('./util');
+const { EMPLOYEE_CODE_RE, maskAadhaar, paymentDetails } = require('./common');
 
 /** Minimal RFC 4180 CSV parser (quotes, escaped quotes, CRLF, Excel BOM). */
 function parseCsv(text) {
@@ -38,7 +39,12 @@ const COLUMNS = {
   branch: ['branch', 'site', 'site / location', 'location'],
   joined_on: ['joined_on', 'joining date', 'doj', 'date of joining'],
   salary_type: ['salary_type', 'salary type'],
-  salary: ['salary', 'monthly salary', 'total salary'],
+  salary: ['salary', 'monthly salary', 'total salary', 'daily wage', 'per day'],
+  category: ['category', 'staff type', 'type'],
+  aadhaar: ['aadhaar', 'aadhaar no', 'aadhar', 'adhar no'],
+  upi_id: ['upi_id', 'upi', 'upi id'],
+  bank_account: ['bank_account', 'account number', 'bank account'],
+  bank_ifsc: ['bank_ifsc', 'ifsc', 'ifsc code'],
   shift_start: ['shift_start', 'shift start'],
   shift_end: ['shift_end', 'shift end'],
   weekly_off: ['weekly_off', 'weekly off', 'weekly offs'],
@@ -113,7 +119,7 @@ function planImport(db, csvText) {
     const get = (k) => (idx[k] >= 0 ? String(cells[idx[k]] ?? '').trim() : '');
     const errors = [];
     const code = get('employee_id');
-    if (!/^[A-Za-z0-9_-]{1,20}$/.test(code)) errors.push('Employee ID missing or invalid');
+    if (!EMPLOYEE_CODE_RE.test(code)) errors.push('Employee ID missing or invalid');
     else if (existingCodes.has(code.toLowerCase())) errors.push(`Employee ID ${code} already exists`);
     else if (seenCodes.has(code.toLowerCase())) errors.push(`Employee ID ${code} appears twice in the file`);
     seenCodes.add(code.toLowerCase());
@@ -121,8 +127,17 @@ function planImport(db, csvText) {
     if (!name) errors.push('Name missing');
     const branch = get('branch');
     if (!branch) errors.push('Branch missing');
-    const salaryType = (get('salary_type') || 'monthly').toLowerCase();
-    if (salaryType !== 'monthly') errors.push('All staff are paid monthly (salary_type must be monthly or blank)');
+    // Staff are paid monthly; labour ("labour" in the category column) a daily wage.
+    const category = /^lab/i.test(get('category')) ? 'labour' : 'staff';
+    const salaryType = category === 'labour' ? 'daily' : 'monthly';
+    const givenType = get('salary_type').toLowerCase();
+    if (givenType && givenType !== salaryType) errors.push(category === 'labour' ? 'Labour are paid a daily wage (salary_type daily or blank)' : 'Staff are paid monthly (salary_type monthly or blank)');
+    let aadhaar = '';
+    try { aadhaar = maskAadhaar(get('aadhaar')); } catch (err) { errors.push(err.message); }
+    let pay = {};
+    try {
+      pay = paymentDetails({ phone: get('phone'), upi_id: get('upi_id'), bank_account: get('bank_account'), bank_ifsc: get('bank_ifsc') });
+    } catch (err) { errors.push(err.message); }
     const salary = money(get('salary'));
     if (!salary) errors.push('Salary missing or invalid');
     const joined = normDate(get('joined_on'));
@@ -153,7 +168,8 @@ function planImport(db, csvText) {
       errors,
       items,
       data: {
-        code, name, branch, branchKey, phone: get('phone').slice(0, 20), designation: get('designation').slice(0, 60),
+        code, name, branch, branchKey, designation: get('designation').slice(0, 60), category, aadhaar_no: aadhaar,
+        phone: pay.phone ?? '', upi_id: pay.upi_id ?? '', bank_account: pay.bank_account ?? '', bank_ifsc: pay.bank_ifsc ?? '',
         salary_type: salaryType, salary_paise: salary, joined_on: joined || '', shift_start: shiftStart, shift_end: shiftEnd,
         weekly_offs: offs, pin, shift_given: !!(get('shift_start') || get('shift_end')),
       },

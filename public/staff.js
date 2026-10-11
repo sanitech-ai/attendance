@@ -192,7 +192,9 @@ async function renderHome(main) {
     h('dt', {}, 'Status'), h('dd', {}, statusBadge(d.status) || '—', d.late_minutes ? [' ', badge(lateText(d, S.me.late_warnings), lateKind(d))] : ''),
     h('dt', {}, 'In / Out'), h('dd', {}, `${d.first_in || '—'} / ${d.last_out || '—'}`),
     h('dt', {}, 'Worked'), h('dd', {}, fmtMinutes(d.worked_minutes)),
-    d.status === 'week_off' || d.flags.includes('worked_week_off') ? [h('dt', {}, 'Weekly off'), h('dd', {}, 'Working today earns you a comp-off (a paid day off on a weekday).')] : '');
+    d.status === 'week_off' || d.flags.includes('worked_week_off') ? [h('dt', {}, 'Weekly off'), h('dd', {}, S.me.employee.salary_type === 'daily'
+      ? 'If you work today, it is paid like any working day.'
+      : 'Working today earns you a comp-off (a paid day off on a weekday).')] : '');
 
   const visitKind = { pending: ['Waiting for review', 'warn'], approved: ['Approved', 'ok'], rejected: ['Rejected', 'bad'] };
   const visitItems = (t.visits || []).map((v) => ({ at: v.at, el: h('li', {},
@@ -655,7 +657,9 @@ async function renderSalary(main) {
   const line = (label, value, opts = {}) => h('div', { class: `pay-line${opts.total ? ' total' : ''}` },
     h('div', {}, label, opts.note ? h('div', { class: 'small muted' }, opts.note) : ''), h('div', { class: 'num' }, value));
   const sum = (xs) => xs.reduce((t, x) => t + x.amount_paise, 0);
-  const rateNote = `${money(r.salary_paise)}/month ÷ ${r.days_in_month} days = ${money(r.per_day_paise)}/day × ${r.paid_days} paid days`;
+  const rateNote = r.salary_type === 'daily'
+    ? `${money(r.salary_paise)}/day × ${r.paid_days} days worked`
+    : `${money(r.salary_paise)}/month ÷ ${r.days_in_month} days = ${money(r.per_day_paise)}/day × ${r.paid_days} paid days`;
   const status = d.status === 'final'
     ? badge('Final payslip', 'ok')
     : d.status === 'live' ? badge(`Live · updated ${fmtTime(d.as_of)}`, 'info') : badge('Not finalized yet', 'warn');
