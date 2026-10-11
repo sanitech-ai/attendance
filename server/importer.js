@@ -145,7 +145,8 @@ function planImport(db, csvText) {
       pay = paymentDetails({ phone: get('phone'), upi_id: get('upi_id'), bank_account: get('bank_account'), bank_ifsc: get('bank_ifsc') });
     } catch (err) { errors.push(err.message); }
     const salary = money(get('salary'));
-    if (!salary) errors.push('Salary missing or invalid');
+    // Labour can be added before their wage is known: it shows as a missing detail until entered.
+    if (salary === null || (!salary && category !== 'labour')) errors.push('Salary missing or invalid');
     const joined = normDate(get('joined_on'));
     if (joined === null) errors.push('Joining date must be DD-MM-YYYY');
     const shiftStart = get('shift_start') || '09:00';

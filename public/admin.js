@@ -87,7 +87,7 @@ const PAGES = [
   ['lateot', 'Late report'],
   ['leaves', 'Leave requests', 'leaves'],
   ['payroll', 'Payroll'],
-  ['employees', 'Employees'],
+  ['employees', 'Employees', 'labour_missing'],
   ['preview', 'Staff preview'],
   ['documents', 'Documents', 'documents'],
   ['branches', 'Branches'],
@@ -127,6 +127,7 @@ async function route() {
       h('div', { class: 'mobile-bar' }, h('button', { class: 'icon-btn', 'aria-label': 'Menu', onclick: () => sidebar.classList.toggle('open') }, '☰'), A.me.settings.company_name),
       content)));
   refreshCounts();
+  remindMissingDetails();
   const fn = PAGE_FNS[page] || PAGE_FNS.dashboard;
   content.append(h('div', { class: 'empty' }, 'Loading…'));
   try {
@@ -134,6 +135,28 @@ async function route() {
   } catch (err) {
     content.replaceChildren(h('div', { class: 'card' }, `Error: ${err.message}`));
   }
+}
+
+/**
+ * Every time the admin panel is opened (once per page load), remind the office about labour whose
+ * details are still missing — they can't fill them in themselves.
+ */
+let missingReminded = false;
+async function remindMissingDetails() {
+  if (missingReminded) return;
+  missingReminded = true;
+  const rows = await api('GET', '/api/admin/missing-details').catch(() => null);
+  if (!rows?.length) return;
+  const byWhat = {};
+  for (const r of rows) for (const m of r.missing) (byWhat[m] ||= []).push(r);
+  const dlg = modal(`⚠ Details missing for ${rows.length} labourer${rows.length === 1 ? '' : 's'}`, h('div', { class: 'stack' },
+    h('p', {}, 'Labourers can’t add these themselves, so the office has to. This reminder shows every time you open the admin panel until they are all filled in.'),
+    Object.entries(byWhat).map(([m, list]) => h('div', {},
+      h('strong', {}, `${MISSING_LABEL[m] || m} (${list.length})`),
+      h('div', { class: 'small muted' }, list.map((r) => `${r.name} (${r.code})`).join(', ')))),
+    h('div', { class: 'form-actions' },
+      h('button', { class: 'btn', onclick: () => dlg.close() }, 'Remind me later'),
+      h('button', { class: 'btn btn-primary', onclick: () => { dlg.close(); go('employees', { missing: '1' }); } }, 'Fill them in now'))), { wide: true });
 }
 
 async function refreshCounts() {
@@ -223,6 +246,9 @@ async function pageDashboard(el, params) {
       tile(d.pending.late_approvals, 'Over 1 hour late — to review', '#/late'),
       tile(d.pending.visits, 'Field visit selfies to review', '#/visits?status=pending'),
       tile(d.pending.incomplete_profiles, 'Staff with missing details', '#/employees?missing=1')),
+    d.pending.labour_missing ? h('div', { class: 'card', style: { marginTop: '10px', borderColor: 'var(--warn)', background: 'var(--warn-bg)' } },
+      h('strong', {}, `⚠ ${d.pending.labour_missing} labourer(s) still have missing details (wage, mobile, Aadhaar or bank/UPI). `),
+      'The office has to add these — ', h('a', { href: '#/employees?missing=1' }, 'fill them in now →')) : '',
     h('div', { class: 'spread', id: 'staff-list', style: { margin: '20px 0 10px' } },
       h('h2', {}, show ? `${DASH_FILTERS[show][0]} on ${fmtDate(date)} (${rows.length})` : `Staff on ${fmtDate(date)}`),
       show ? h('a', { href: `#/dashboard?date=${date}` }, 'Show everyone') : ''),

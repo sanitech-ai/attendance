@@ -646,6 +646,7 @@ module.exports = function adminRoutes(ctx) {
       late_approvals: pendingLateCount(),
       visits: db.prepare("SELECT COUNT(*) AS n FROM visits WHERE status = 'pending'").get().n,
       incomplete_profiles: db.prepare('SELECT * FROM employees WHERE active = 1').all().filter((e) => profileMissing(db, e).length).length,
+      labour_missing: db.prepare("SELECT * FROM employees WHERE active = 1 AND category = 'labour'").all().filter((e) => profileMissing(db, e).length).length,
       flagged_punches: db.prepare("SELECT COUNT(*) AS n FROM punches WHERE status = 'flagged'").get().n,
       leaves: db.prepare("SELECT COUNT(*) AS n FROM leave_requests WHERE status = 'pending'").get().n,
       documents: db.prepare("SELECT COUNT(*) AS n FROM documents WHERE status = 'pending'").get().n,
@@ -653,6 +654,16 @@ module.exports = function adminRoutes(ctx) {
   }
 
   r.get('/pending', (req, res) => res.json(pendingCounts()));
+
+  // Labour whose details the office still has to fill in (they can't do it themselves).
+  r.get('/missing-details', (req, res) => {
+    const rows = db.prepare(
+      `SELECT e.*, b.name AS branch_name FROM employees e JOIN branches b ON b.id = e.branch_id
+       WHERE e.active = 1 AND e.category = 'labour' ORDER BY e.code`,
+    ).all();
+    res.json(rows.map((e) => ({ id: e.id, code: e.code, name: e.name, branch_name: e.branch_name, missing: profileMissing(db, e) }))
+      .filter((e) => e.missing.length));
+  });
 
   // ---- staff app preview (read-only, as the employee sees it) ----
   r.use('/preview/:empId', (req, res, next) => {

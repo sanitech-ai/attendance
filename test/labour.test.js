@@ -79,3 +79,23 @@ test('weekly offs can be specific weeks: 2nd & 4th Sunday', async (t) => {
   assert.equal((await admin('PUT', `/api/admin/employees/${e.id}`, { ...e, salary: 600, weekly_offs: ['0#1', '0#3'] })).status, 200);
   assert.equal((await admin('GET', '/api/admin/employees')).data[0].weekly_offs, '0#1,0#3');
 });
+
+test('labour can be imported before their wage is known; the office is reminded until details are complete', async (t) => {
+  const s = await startServer(ist('2026-10-12', '08:00'));
+  t.after(() => s.close());
+  const admin = s.client();
+  await admin('POST', '/api/admin/setup', { username: 'firefueled', password: 'password123', name: 'Owner' });
+  await admin('POST', '/api/admin/branches', { name: 'M3M Golf Hills', ...SITE, radius_m: 300, geofence_mode: 'flag' });
+  const csv = ['employee_id,name,branch,category,salary,phone,aadhaar', 'SECPL/LAB/049,Raju Kumar,M3M Golf Hills,Labour,,,', 'SECPL0001,Staff,M3M Golf Hills,,,9876543210,'].join('\n');
+  let r = await admin('POST', '/api/admin/employees/import', { csv, dry_run: true });
+  assert.deepEqual(r.data.rows.map((x) => x.errors.length > 0), [false, true], 'staff still need a salary');
+  r = await admin('POST', '/api/admin/employees/import', { csv: csv.split('\n').slice(0, 2).join('\n') });
+  assert.equal(r.status, 200);
+  const list = (await admin('GET', '/api/admin/missing-details')).data;
+  assert.deepEqual(list.map((x) => [x.code, x.missing]), [['SECPL/LAB/049', ['phone', 'aadhaar', 'payment', 'wage']]]);
+  assert.equal((await admin('GET', '/api/admin/pending')).data.labour_missing, 1);
+  const e = (await admin('GET', '/api/admin/employees')).data[0];
+  await admin('PUT', `/api/admin/employees/${e.id}`, { ...e, salary: 550, phone: '9876501234', aadhaar_no: '1234 5678 9012', upi_id: '9876501234 PhonePe' });
+  assert.deepEqual((await admin('GET', '/api/admin/missing-details')).data, []);
+  assert.equal((await admin('GET', '/api/admin/pending')).data.labour_missing, 0);
+});

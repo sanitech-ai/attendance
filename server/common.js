@@ -18,6 +18,7 @@ function profileMissing(db, emp) {
   // Labour (entered by the office) don't need a PAN card.
   if (!docs.has('pan') && emp.category !== 'labour') missing.push('pan');
   if (!emp.upi_id && !(emp.bank_account && emp.bank_ifsc)) missing.push('payment');
+  if (!(emp.salary_paise > 0)) missing.push('wage');
   return missing;
 }
 
@@ -34,7 +35,7 @@ function profileBlock(db, emp, today, graceDays) {
 function profileDeadline(db, emp, today, graceDays) {
   // Labour can't fill in their own details (the office does), so they are never locked out.
   if (!graceDays || emp.category === 'labour') return null;
-  const missing = profileMissing(db, emp);
+  const missing = profileMissing(db, emp).filter((m) => m !== 'wage'); // only the office can set pay
   if (!missing.length) return null;
   const daysUsed = db.prepare("SELECT COUNT(DISTINCT work_date) AS n FROM punches WHERE employee_id = ? AND work_date < ? AND status != 'rejected'").get(emp.id, today).n;
   return { missing, days_used: daysUsed, days_left: Math.max(0, graceDays - daysUsed) };

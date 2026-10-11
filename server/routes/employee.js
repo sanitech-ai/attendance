@@ -56,7 +56,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       branch,
       can_visit: !!branch?.field_visits,
       // Labour don't fill in their own details (the office does), so they aren't nagged about them.
-      profile_missing: req.employee.category === 'labour' ? [] : profileMissing(db, req.employee),
+      profile_missing: req.employee.category === 'labour' ? [] : profileMissing(db, req.employee).filter((m) => m !== 'wage'),
       profile_deadline: profileDeadline(db, req.employee, istDate(ctx.now()), settings.profile_grace_days),
       company_name: settings.company_name,
       late_warnings: settings.late_warnings,
