@@ -645,7 +645,7 @@ module.exports = function adminRoutes(ctx) {
     return {
       late_approvals: pendingLateCount(),
       visits: db.prepare("SELECT COUNT(*) AS n FROM visits WHERE status = 'pending'").get().n,
-      incomplete_profiles: db.prepare('SELECT * FROM employees WHERE active = 1').all().filter((e) => profileMissing(db, e).length).length,
+      incomplete_profiles: db.prepare("SELECT * FROM employees WHERE active = 1 AND category != 'labour'").all().filter((e) => profileMissing(db, e).length).length,
       labour_missing: db.prepare("SELECT * FROM employees WHERE active = 1 AND category = 'labour'").all().filter((e) => profileMissing(db, e).length).length,
       flagged_punches: db.prepare("SELECT COUNT(*) AS n FROM punches WHERE status = 'flagged'").get().n,
       leaves: db.prepare("SELECT COUNT(*) AS n FROM leave_requests WHERE status = 'pending'").get().n,
@@ -777,7 +777,7 @@ module.exports = function adminRoutes(ctx) {
     const settings = getSettings(db);
     const emps = db.prepare(
       `SELECT e.*, b.name AS branch_name FROM employees e JOIN branches b ON b.id = e.branch_id
-       WHERE e.active = 1 ORDER BY b.name, e.name`,
+       WHERE e.active = 1 ${typeSql(typeOf(req))} ORDER BY b.name, e.name`,
     ).all();
     const lastPunch = db.prepare(
       `SELECT p.id, p.kind, p.at, p.status, p.flag_reason, p.distance_m, b.name AS branch_name FROM punches p
@@ -844,10 +844,16 @@ module.exports = function adminRoutes(ctx) {
     return [`${month}-01`, `${month}-${String(daysInMonth(month)).padStart(2, '0')}`];
   }
 
-  function registerEmployees(branchId) {
+  /** ?type=staff or ?type=labour keeps staff and labour apart on lists and reports (blank = everyone). */
+  function typeOf(req) {
+    return ['staff', 'labour'].includes(req.query.type) ? req.query.type : null;
+  }
+  const typeSql = (type) => (type === 'labour' ? "AND e.category = 'labour'" : type === 'staff' ? "AND e.category != 'labour'" : '');
+
+  function registerEmployees(branchId, type = null) {
     return db.prepare(
       `SELECT e.*, b.name AS branch_name FROM employees e JOIN branches b ON b.id = e.branch_id
-       WHERE e.active = 1 ${branchId ? 'AND e.branch_id = ?' : ''} ORDER BY b.name, e.name`,
+       WHERE e.active = 1 ${branchId ? 'AND e.branch_id = ?' : ''} ${typeSql(type)} ORDER BY b.name, e.name`,
     ).all(...(branchId ? [branchId] : []));
   }
 
@@ -855,7 +861,7 @@ module.exports = function adminRoutes(ctx) {
     const month = requireMonth(req.query.month);
     const [from, to] = monthRange(month);
     const settings = getSettings(db);
-    const emps = registerEmployees(req.query.branch_id ? id(req.query.branch_id) : null);
+    const emps = registerEmployees(req.query.branch_id ? id(req.query.branch_id) : null, typeOf(req));
     const rows = emps.map((e) => {
       const days = computeRange(db, e, from, to, settings, ctx.now());
       return { employee_id: e.id, code: e.code, name: e.name, branch_name: e.branch_name, days, summary: summarize(days) };
@@ -905,7 +911,7 @@ module.exports = function adminRoutes(ctx) {
     const [from, to] = monthRange(month);
     const settings = getSettings(db);
     const codes = { present: 'P', half_day: 'HD', absent: 'A', paid_leave: 'PL', unpaid_leave: 'UL', week_off: 'WO', holiday: 'H', not_marked: '-', upcoming: '', not_joined: '', working: 'W' };
-    const emps = registerEmployees(req.query.branch_id ? id(req.query.branch_id) : null);
+    const emps = registerEmployees(req.query.branch_id ? id(req.query.branch_id) : null, typeOf(req));
     const header = ['Employee ID', 'Name', 'Branch'];
     const dates = [];
     for (let d = from; d <= to; d = new Date(Date.parse(d) + 86400000).toISOString().slice(0, 10)) dates.push(d);
@@ -924,10 +930,10 @@ module.exports = function adminRoutes(ctx) {
   });
 
   // ---- monthly late report (and weekly offs worked) ----
-  function lateOtRows(month, branchId) {
+  function lateOtRows(month, branchId, type = null) {
     const [from, to] = monthRange(month);
     const settings = getSettings(db);
-    return registerEmployees(branchId).map((e) => {
+    return registerEmployees(branchId, type).map((e) => {
       const days = computeRange(db, e, from, to, settings, ctx.now()).filter((d) => !d.future);
       const s = summarize(days);
       let running = 0;
@@ -949,7 +955,7 @@ module.exports = function adminRoutes(ctx) {
 
   r.get('/late-ot', (req, res) => {
     const month = requireMonth(req.query.month);
-    res.json({ month, grace_minutes: getSettings(db).grace_minutes, late_max_minutes: getSettings(db).late_max_minutes, rows: lateOtRows(month, req.query.branch_id ? id(req.query.branch_id) : null) });
+    res.json({ month, grace_minutes: getSettings(db).grace_minutes, late_max_minutes: getSettings(db).late_max_minutes, rows: lateOtRows(month, req.query.branch_id ? id(req.query.branch_id) : null, typeOf(req)) });
   });
 
   r.get('/late-ot.csv', (req, res) => {
@@ -957,7 +963,7 @@ module.exports = function adminRoutes(ctx) {
     const st = getSettings(db);
     const rows = [['Employee ID', 'Name', 'Branch', `Late ${st.grace_minutes} min – ${st.late_max_minutes / 60} hour — days`, `Late over ${st.late_max_minutes / 60} hour — days`, 'Late days in total', 'Total late (minutes)',
       'Late days counted as half day', 'Weekly offs worked (comp-off earned)', 'Late dates', 'Weekly offs worked']];
-    for (const r2 of lateOtRows(month, req.query.branch_id ? id(req.query.branch_id) : null)) {
+    for (const r2 of lateOtRows(month, req.query.branch_id ? id(req.query.branch_id) : null, typeOf(req))) {
       rows.push([r2.code, r2.name, r2.branch_name, r2.late_short_days, r2.late_hour_days, r2.late_days, r2.late_minutes, r2.late_penalties, r2.comp_off_earned,
         r2.late.map((l) => `${l.date.slice(8)} (${l.minutes}m)`).join(' '), r2.week_off_worked.map((w) => w.date.slice(8)).join(' ')]);
     }
@@ -1259,7 +1265,18 @@ module.exports = function adminRoutes(ctx) {
     return { ...computePayroll(db, month, getSettings(db), ctx.now()), finalized: false };
   }
 
-  r.get('/payroll', (req, res) => res.json(payrollFor(requireMonth(req.query.month))));
+  /** Payroll for staff only / labour only (totals recalculated for those rows). */
+  function payrollOfType(month, type) {
+    const p = payrollFor(month);
+    if (!type) return p;
+    // Months finalized before rows carried a category: look it up from the employee.
+    const cat = new Map(db.prepare('SELECT id, category FROM employees').all().map((e) => [e.id, e.category]));
+    const rows = p.rows.filter((r) => ((r.category ?? cat.get(r.employee_id)) === 'labour') === (type === 'labour'));
+    const totals = Object.fromEntries(Object.keys(p.totals).map((k) => [k, rows.reduce((t, r) => t + (r[k] || 0), 0)]));
+    return { ...p, rows, totals };
+  }
+
+  r.get('/payroll', (req, res) => res.json(payrollOfType(requireMonth(req.query.month), typeOf(req))));
 
   r.post('/payroll/:month/finalize', (req, res) => {
     const month = requireMonth(req.params.month);
@@ -1284,9 +1301,10 @@ module.exports = function adminRoutes(ctx) {
 
   r.get('/payroll.csv', (req, res) => {
     const month = requireMonth(req.query.month);
-    const p = payrollFor(month);
+    const type = typeOf(req);
+    const p = payrollOfType(month, type);
     const rows = [[
-      'Employee ID', 'Name', 'Branch', 'Monthly salary (Rs)', 'Paid days', 'Present', 'Half days', 'Absent',
+      'Employee ID', 'Name', 'Branch', type === 'labour' ? 'Daily wage (Rs)' : type === 'staff' ? 'Monthly salary (Rs)' : 'Salary / daily wage (Rs)', 'Paid days', 'Present', 'Half days', 'Absent',
       'Paid leave', 'Week off', 'Holiday', 'Late time (h)', 'Comp-off earned', 'Base pay', 'Additions', 'Deductions', 'Advances', 'Net pay',
       'Phone', 'UPI ID', 'Bank account', 'IFSC',
     ]];
@@ -1304,7 +1322,7 @@ module.exports = function adminRoutes(ctx) {
       ]);
     }
     rows.push(['TOTAL', '', '', '', '', '', '', '', '', '', '', '', '', rupees(p.totals.base_paise), '', '', '', rupees(p.totals.net_paise)]);
-    sendCsv(res, `payroll-${month}.csv`, rows);
+    sendCsv(res, `payroll-${month}${type ? `-${type}` : ''}.csv`, rows);
   });
 
   return r;

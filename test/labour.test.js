@@ -99,3 +99,38 @@ test('labour can be imported before their wage is known; the office is reminded 
   assert.deepEqual((await admin('GET', '/api/admin/missing-details')).data, []);
   assert.equal((await admin('GET', '/api/admin/pending')).data.labour_missing, 0);
 });
+
+test('labour: kept apart from staff in the dashboard, register, late report and payroll', async (t) => {
+  const s = await startServer(ist('2026-10-12', '08:00'));
+  t.after(() => s.close());
+  const admin = s.client();
+  await admin('POST', '/api/admin/setup', { username: 'firefueled', password: 'password123', name: 'Owner' });
+  await admin('POST', '/api/admin/branches', { name: 'Site', ...SITE, radius_m: 300, geofence_mode: 'flag' });
+  const csv = [
+    'employee_id,name,branch,category,salary',
+    'S1,Office Person,Site,Staff,30000',
+    'LAB/001,Site Worker,Site,Labour,700',
+    'LAB/002,New Worker,Site,Labour,',
+  ].join('\n');
+  const r = await admin('POST', '/api/admin/employees/import', { csv });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+
+  const codes = (rows) => rows.map((x) => x.code).sort();
+  for (const [type, want] of [['', ['LAB/001', 'LAB/002', 'S1']], ['staff', ['S1']], ['labour', ['LAB/001', 'LAB/002']]]) {
+    const q = type ? `&type=${type}` : '';
+    const dash = (await admin('GET', `/api/admin/dashboard?date=2026-10-12${q}`)).data;
+    assert.deepEqual(codes(dash.rows), want, `dashboard ${type}`);
+    assert.equal(dash.totals.employees, want.length);
+    assert.deepEqual(codes((await admin('GET', `/api/admin/attendance?month=2026-10${q}`)).data.rows), want, `register ${type}`);
+    assert.deepEqual(codes((await admin('GET', `/api/admin/late-ot?month=2026-10${q}`)).data.rows), want, `late ${type}`);
+    const pay = (await admin('GET', `/api/admin/payroll?month=2026-10${q}`)).data;
+    assert.deepEqual(codes(pay.rows), want, `payroll ${type}`);
+    assert.equal(pay.totals.net_paise, pay.rows.reduce((x, y) => x + y.net_paise, 0));
+  }
+  const csvOut = await admin('GET', '/api/admin/payroll.csv?month=2026-10&type=labour');
+  assert.doesNotMatch(String(csvOut.data), /Office Person/);
+  // The staff "missing details" count leaves labour out (they have their own reminder).
+  const pending = (await admin('GET', '/api/admin/dashboard')).data.pending;
+  assert.equal(pending.labour_missing, 2, 'no mobile / Aadhaar / bank given for either labourer');
+  assert.equal(pending.incomplete_profiles, 1, 'only S1 counts as staff with missing details');
+});

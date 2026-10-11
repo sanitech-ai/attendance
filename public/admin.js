@@ -87,7 +87,8 @@ const PAGES = [
   ['lateot', 'Late report'],
   ['leaves', 'Leave requests', 'leaves'],
   ['payroll', 'Payroll'],
-  ['employees', 'Employees', 'labour_missing'],
+  ['employees', 'Employees', 'incomplete_profiles'],
+  ['labour', 'Labour', 'labour_missing'],
   ['preview', 'Staff preview'],
   ['documents', 'Documents', 'documents'],
   ['branches', 'Branches'],
@@ -156,7 +157,7 @@ async function remindMissingDetails() {
       h('div', { class: 'small muted' }, list.map((r) => `${r.name} (${r.code})`).join(', ')))),
     h('div', { class: 'form-actions' },
       h('button', { class: 'btn', onclick: () => dlg.close() }, 'Remind me later'),
-      h('button', { class: 'btn btn-primary', onclick: () => { dlg.close(); go('employees', { missing: '1' }); } }, 'Fill them in now'))), { wide: true });
+      h('button', { class: 'btn btn-primary', onclick: () => { dlg.close(); go('labour', { missing: '1' }); } }, 'Fill them in now'))), { wide: true });
 }
 
 async function refreshCounts() {
@@ -188,6 +189,14 @@ function branchSelect(value, onChange, allLabel = 'All branches') {
     A.branches.filter((b) => b.active).map((b) => h('option', { value: b.id, selected: String(b.id) === String(value) }, b.name)));
 }
 
+// Staff and labour are kept apart: reports can show one group or both.
+function typeSelect(value, onChange) {
+  return h('select', { onchange: (e) => onChange(e.target.value), 'aria-label': 'Staff or labour' },
+    [['', 'Staff + labour'], ['staff', 'Staff only'], ['labour', 'Labour only']].map(([v, l]) => h('option', { value: v, selected: v === (value || '') }, l)));
+}
+const typeQs = (type) => (type ? `&type=${type}` : '');
+const pageType = (params) => (['staff', 'labour'].includes(params.get('type')) ? params.get('type') : '');
+
 function employeeSelect(value, onChange, allLabel = 'All employees') {
   return h('select', { onchange: (e) => onChange(e.target.value), 'aria-label': 'Employee' },
     h('option', { value: '' }, allLabel),
@@ -212,12 +221,13 @@ const DASH_FILTERS = {
 async function pageDashboard(el, params) {
   const date = params.get('date') || todayIST();
   const show = DASH_FILTERS[params.get('show')] ? params.get('show') : '';
-  const d = await api('GET', `/api/admin/dashboard?date=${date}`);
+  const type = pageType(params);
+  const d = await api('GET', `/api/admin/dashboard?date=${date}${typeQs(type)}`);
   const t = d.totals;
   if (!A.branches.length) await loadBranches();
   const tile = (v, l, href, active) => h('a', { class: `stat${active ? ' active' : ''}`, href }, h('div', { class: 'v' }, String(v)), h('div', { class: 'l' }, l));
   // Status tiles filter the list below (click again to show everyone).
-  const filterTile = (key, v) => tile(v, DASH_FILTERS[key][0], `#/dashboard?date=${date}${show === key ? '' : `&show=${key}`}`, show === key);
+  const filterTile = (key, v) => tile(v, DASH_FILTERS[key][0], `#/dashboard?date=${date}${typeQs(type)}${show === key ? '' : `&show=${key}`}`, show === key);
   const rows = show ? d.rows.filter(DASH_FILTERS[show][1]) : d.rows;
   const gettingStarted = !A.branches.length || !t.employees
     ? h('div', { class: 'card', style: { marginBottom: '16px' } }, h('h2', {}, 'Getting started'),
@@ -233,11 +243,13 @@ async function pageDashboard(el, params) {
       h('a', { href: '#/branches' }, 'set the location'), '.')
     : '';
   el.replaceChildren(
-    pageHead('Dashboard', h('input', { type: 'date', value: date, onchange: (e) => go('dashboard', { date: e.target.value, show }) })),
+    pageHead('Dashboard',
+      typeSelect(type, (v) => go('dashboard', { date, show, type: v })),
+      h('input', { type: 'date', value: date, onchange: (e) => go('dashboard', { date: e.target.value, show, type }) })),
     gettingStarted,
     locationWarning,
     h('div', { class: 'stats' },
-      tile(t.employees, 'Active staff', '#/employees'), filterTile('in', t.in), filterTile('absent', t.absent),
+      tile(t.employees, type === 'labour' ? 'Active labour' : type === 'staff' ? 'Active staff' : 'Active staff + labour', type === 'labour' ? '#/labour' : '#/employees'), filterTile('in', t.in), filterTile('absent', t.absent),
       filterTile('late', t.late), filterTile('leave', t.on_leave), filterTile('off', t.off)),
     h('div', { class: 'stats', style: { marginTop: '10px' } },
       tile(d.pending.flagged_punches, 'Flagged punches to review', '#/punches?status=flagged'),
@@ -248,10 +260,10 @@ async function pageDashboard(el, params) {
       tile(d.pending.incomplete_profiles, 'Staff with missing details', '#/employees?missing=1')),
     d.pending.labour_missing ? h('div', { class: 'card', style: { marginTop: '10px', borderColor: 'var(--warn)', background: 'var(--warn-bg)' } },
       h('strong', {}, `⚠ ${d.pending.labour_missing} labourer(s) still have missing details (wage, mobile, Aadhaar or bank/UPI). `),
-      'The office has to add these — ', h('a', { href: '#/employees?missing=1' }, 'fill them in now →')) : '',
+      'The office has to add these — ', h('a', { href: '#/labour?missing=1' }, 'fill them in now →')) : '',
     h('div', { class: 'spread', id: 'staff-list', style: { margin: '20px 0 10px' } },
-      h('h2', {}, show ? `${DASH_FILTERS[show][0]} on ${fmtDate(date)} (${rows.length})` : `Staff on ${fmtDate(date)}`),
-      show ? h('a', { href: `#/dashboard?date=${date}` }, 'Show everyone') : ''),
+      h('h2', {}, show ? `${DASH_FILTERS[show][0]} on ${fmtDate(date)} (${rows.length})` : `${type === 'labour' ? 'Labour' : type === 'staff' ? 'Staff' : 'Staff + labour'} on ${fmtDate(date)}`),
+      show ? h('a', { href: `#/dashboard?date=${date}${typeQs(type)}` }, 'Show everyone') : ''),
     table([
       { label: 'Employee', render: (r) => h('a', { href: `#/attendance?month=${date.slice(0, 7)}`, title: 'Open the attendance register', style: { color: 'inherit', textDecoration: 'none' } },
         h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)) },
@@ -426,7 +438,8 @@ async function pageAttendance(el, params) {
   await loadBranches();
   const month = params.get('month') || thisMonth();
   const branchId = params.get('branch_id') || '';
-  const data = await api('GET', `/api/admin/attendance?month=${month}${branchId ? `&branch_id=${branchId}` : ''}`);
+  const type = pageType(params);
+  const data = await api('GET', `/api/admin/attendance?month=${month}${branchId ? `&branch_id=${branchId}` : ''}${typeQs(type)}`);
   const dates = data.rows[0]?.days.map((d) => d.date) || [];
   const today = todayIST();
 
@@ -448,10 +461,11 @@ async function pageAttendance(el, params) {
   el.replaceChildren(
     pageHead('Attendance register',
       A.me.admin.can_edit_attendance ? h('button', { class: 'btn', onclick: bulkMark }, 'Mark days for everyone') : '',
-      h('a', { class: 'btn', href: `/api/admin/attendance.csv?month=${month}${branchId ? `&branch_id=${branchId}` : ''}` }, 'Download Excel (CSV)')),
+      h('a', { class: 'btn', href: `/api/admin/attendance.csv?month=${month}${branchId ? `&branch_id=${branchId}` : ''}${typeQs(type)}` }, 'Download Excel (CSV)')),
     h('div', { class: 'toolbar' },
-      monthPicker(month, (m) => go('attendance', { month: m, branch_id: branchId })),
-      branchSelect(branchId, (v) => go('attendance', { month, branch_id: v }))),
+      monthPicker(month, (m) => go('attendance', { month: m, branch_id: branchId, type })),
+      branchSelect(branchId, (v) => go('attendance', { month, branch_id: v, type })),
+      typeSelect(type, (v) => go('attendance', { month, branch_id: branchId, type: v }))),
     data.finalized ? h('div', { class: 'card', style: { marginBottom: '12px' } }, '🔒 Payroll for this month is finalized. Reopen it on the Payroll page to make corrections.') : '',
     grid,
     h('p', { class: 'small muted' }, 'P present · HD half day · A absent · PL/UL paid/unpaid leave · WO week off · H holiday · W working now · – not marked. Dashed border = corrected by admin, red dot = needs attention. Click any cell to correct it.'));
@@ -524,7 +538,8 @@ async function pageLateOt(el, params) {
   await loadBranches();
   const month = params.get('month') || thisMonth();
   const branchId = params.get('branch_id') || '';
-  const qs = `month=${month}${branchId ? `&branch_id=${branchId}` : ''}`;
+  const type = pageType(params);
+  const qs = `month=${month}${branchId ? `&branch_id=${branchId}` : ''}${typeQs(type)}`;
   const d = await api('GET', `/api/admin/late-ot?${qs}`);
   const hrs = (m) => (m ? (m / 60).toFixed(1) : '—');
   const n = (v) => (v ? String(v) : '—');
@@ -532,8 +547,9 @@ async function pageLateOt(el, params) {
   el.replaceChildren(
     pageHead('Late report', h('a', { class: 'btn', href: `/api/admin/late-ot.csv?${qs}` }, 'Download Excel (CSV)')),
     h('div', { class: 'toolbar' },
-      monthPicker(month, (m) => go('lateot', { month: m, branch_id: branchId })),
-      branchSelect(branchId, (v) => go('lateot', { month, branch_id: v }))),
+      monthPicker(month, (m) => go('lateot', { month: m, branch_id: branchId, type })),
+      branchSelect(branchId, (v) => go('lateot', { month, branch_id: v, type })),
+      typeSelect(type, (v) => go('lateot', { month, branch_id: branchId, type: v }))),
     h('div', { class: 'stats', style: { marginBottom: '14px' } },
       h('div', { class: 'stat' }, h('div', { class: 'v' }, String(totals.late)), h('div', { class: 'l' }, `Late ${d.grace_minutes} min – ${d.late_max_minutes / 60} hour`)),
       h('div', { class: 'stat' }, h('div', { class: 'v' }, String(totals.hour)), h('div', { class: 'l' }, `Late over ${d.late_max_minutes / 60} hour`)),
@@ -652,26 +668,31 @@ async function pageLeaves(el, params) {
 
 // ---------------------------------------------------------------- employees
 
-async function pageEmployees(el, params) {
+/** Employees (monthly staff) and Labour (daily wage) are listed on separate pages. */
+async function pageEmployees(el, params, category = 'staff') {
   await Promise.all([loadBranches(), loadEmployees()]);
+  const labour = category === 'labour';
+  const page = labour ? 'labour' : 'employees';
+  const mine = A.employees.filter((e) => (e.category === 'labour') === labour);
   const onlyMissing = params?.get('missing') === '1';
-  const incomplete = A.employees.filter((e) => e.active && e.profile_missing?.length);
-  const list = onlyMissing ? incomplete : A.employees;
+  const incomplete = mine.filter((e) => e.active && e.profile_missing?.length);
+  const list = onlyMissing ? incomplete : mine;
   const rate = (e) => `${money(e.salary_paise)} / ${e.category === 'labour' ? 'day' : 'month'}`;
   el.replaceChildren(
-    pageHead('Employees',
+    pageHead(labour ? `Labour (${mine.length})` : `Employees (${mine.length})`,
       h('button', { class: 'btn', onclick: sendLogins }, '🔑 Send login details'),
       h('button', { class: 'btn', onclick: importEmployees }, 'Import from CSV'),
-      h('button', { class: 'btn btn-primary', onclick: () => employeeForm() }, '+ Add employee')),
-    !A.branches.length ? h('div', { class: 'card' }, 'Add a ', h('a', { href: '#/branches' }, 'branch'), ' first — every employee belongs to a branch.') : '',
+      h('button', { class: 'btn btn-primary', onclick: () => employeeForm(null, category) }, labour ? '+ Add labourer' : '+ Add employee')),
+    !A.branches.length ? h('div', { class: 'card' }, 'Add a ', h('a', { href: '#/branches' }, 'branch'), ' first — everyone belongs to a branch.') : '',
+    labour ? h('p', { class: 'small muted' }, 'Daily-wage labour. The office enters their details (mobile, Aadhaar, bank or PhonePe, wage); they log in with their short ID (e.g. LAB016) and the last 4 digits of their mobile.') : '',
     h('div', { class: 'toolbar' },
-      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: onlyMissing, onchange: (ev) => go('employees', { missing: ev.target.checked ? '1' : '' }) }),
-        `Only staff with missing details (${incomplete.length})`),
-      incomplete.length ? h('span', { class: 'small muted' }, 'They see a reminder every time they open the app until they add them.') : ''),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: onlyMissing, onchange: (ev) => go(page, { missing: ev.target.checked ? '1' : '' }) }),
+        `Only ${labour ? 'labourers' : 'staff'} with missing details (${incomplete.length})`),
+      incomplete.length ? h('span', { class: 'small muted' }, labour ? 'You are reminded every time you open the admin panel until they are filled in.' : 'They see a reminder every time they open the app until they add them.') : ''),
     table([
       { label: 'Employee', render: (e) => h('div', {}, h('strong', {}, e.name), e.category === 'labour' ? [' ', badge('Labour', 'neutral')] : '', e.is_manager ? [' ', badge(e.manager_scope === 'all' ? 'Manager · all branches' : 'Manager', 'info')] : '', h('div', { class: 'small muted' }, `${e.code}${e.designation ? ` · ${e.designation}` : ''}${e.phone ? ` · ${e.phone}` : ''}`)) },
       { label: 'Branch', render: (e) => h('div', {}, e.branch_name, e.extra_location_ids ? h('div', { class: 'small muted' }, `+ ${e.extra_location_ids.split(',').length} more location(s)`) : '') },
-      { label: 'Salary', render: (e) => rate(e) },
+      { label: labour ? 'Wage' : 'Salary', render: (e) => (e.salary_paise ? rate(e) : h('span', { style: { color: 'var(--warn)' } }, 'not set')) },
       { label: 'Shift', render: (e) => h('div', {}, `${e.shift_start}–${e.shift_end}`, h('div', { class: 'small muted' }, e.follow_branch_shift ? 'branch timing' : 'personal')) },
       { label: 'Week off', render: (e) => weeklyOffText(e.weekly_offs) },
       { label: 'Docs', class: 'num', render: (e) => h('a', { href: `#/documents?employee_id=${e.id}` }, String(e.document_count)) },
@@ -684,14 +705,18 @@ async function pageEmployees(el, params) {
         h('a', { class: 'btn btn-sm', href: `#/preview?employee_id=${e.id}` }, 'Preview'),
         h('button', { class: 'btn btn-sm', onclick: () => resetPin(e) }, 'Reset PIN'),
         h('button', { class: 'btn btn-sm', title: 'Delete permanently', onclick: () => deleteEmployee(e) }, 'Delete')) },
-    ], list, { empty: onlyMissing ? 'Everyone has given their details. 🎉' : 'No employees yet. Click “Add employee”.' }));
+    ], list, { empty: onlyMissing ? 'All details are filled in. 🎉' : labour ? 'No labourers yet. Click “Add labourer” or import a CSV.' : 'No employees yet. Click “Add employee”.' }));
 }
 
-function employeeForm(e) {
+function pageLabour(el, params) {
+  return pageEmployees(el, params, 'labour');
+}
+
+function employeeForm(e, defaultCategory = 'staff') {
   const isNew = !e;
   const fields = [
     { type: 'heading', label: 'Basic details' },
-    { name: 'category', label: 'Type', type: 'select', value: e?.category || 'staff', options: [
+    { name: 'category', label: 'Type', type: 'select', value: e?.category || defaultCategory, options: [
       { value: 'staff', label: 'Staff — monthly salary, fills in own details' },
       { value: 'labour', label: 'Labour — daily wage, office enters their details' }] },
     { name: 'code', label: 'Employee ID', required: true, value: e?.code, hint: 'They log in with this. Letters, digits, / - or _. Login also works without the / and without “SECPL” (SECPL/LAB/001 → LAB001).', autocomplete: 'off' },
@@ -731,7 +756,7 @@ function employeeForm(e) {
       : { name: 'active', label: 'Active (can log in and is included in payroll)', type: 'checkbox', value: !!e.active },
   ];
   const dlg = formDialog({
-    title: isNew ? 'Add employee' : `Edit ${e.name}`,
+    title: isNew ? (defaultCategory === 'labour' ? 'Add labourer' : 'Add employee') : `Edit ${e.name}`,
     fields,
     wide: true,
     async onSubmit(v) {
@@ -1264,16 +1289,18 @@ async function pagePayroll(el, params) {
   await loadEmployees();
   const month = params.get('month') || shiftMonth(thisMonth(), -1);
   const tab = params.get('tab') || 'sheet';
+  const type = pageType(params);
   const head = [
     pageHead('Payroll'),
-    h('div', { class: 'toolbar' }, monthPicker(month, (m) => go('payroll', { month: m, tab }))),
+    h('div', { class: 'toolbar' }, monthPicker(month, (m) => go('payroll', { month: m, tab, type })),
+      tab === 'sheet' ? typeSelect(type, (v) => go('payroll', { month, tab, type: v })) : ''),
     h('div', { class: 'tabs' }, [['sheet', 'Salary sheet'], ['advances', 'Advances'], ['adjustments', 'Bonus & deductions']].map(([k, l]) =>
-      h('button', { class: tab === k ? 'active' : '', onclick: () => go('payroll', { month, tab: k }) }, l))),
+      h('button', { class: tab === k ? 'active' : '', onclick: () => go('payroll', { month, tab: k, type }) }, l))),
   ];
   if (tab === 'advances') return payrollAdvances(el, month, head);
   if (tab === 'adjustments') return payrollAdjustments(el, month, head);
 
-  const p = await api('GET', `/api/admin/payroll?month=${month}`);
+  const p = await api('GET', `/api/admin/payroll?month=${month}${typeQs(type)}`);
   const isPast = month < thisMonth();
   const sum = (xs) => xs.reduce((t, x) => t + x.amount_paise, 0);
 
@@ -1295,7 +1322,7 @@ async function pagePayroll(el, params) {
       h('div', {}, p.finalized
         ? h('span', {}, '🔒 Finalized ', h('span', { class: 'muted small' }, `on ${fmtDateTime(p.finalized_at)}${p.finalized_by ? ` by ${p.finalized_by}` : ''}`))
         : h('span', { class: 'muted small' }, month >= thisMonth() ? 'Month in progress — figures cover days up to today.' : 'Draft — review, then finalize.')),
-      h('div', { class: 'row' }, h('a', { class: 'btn', href: `/api/admin/payroll.csv?month=${month}` }, 'Download Excel (CSV)'), finalizeBtn)),
+      h('div', { class: 'row' }, h('a', { class: 'btn', href: `/api/admin/payroll.csv?month=${month}${typeQs(type)}` }, 'Download Excel (CSV)'), finalizeBtn)),
     p.rows.some((r) => r.attendance.late_pending) && !p.finalized
       ? h('div', { class: 'card', style: { marginBottom: '12px', borderColor: 'var(--warn)' } },
         `ℹ Arrivals over 1 hour late not reviewed yet (counted from hours worked until you decide): ${p.rows.filter((r) => r.attendance.late_pending).map((r) => r.name).join(', ')}. `,
@@ -1303,10 +1330,10 @@ async function pagePayroll(el, params) {
       : '',
     h('div', { class: 'stats', style: { marginBottom: '12px' } },
       h('div', { class: 'stat' }, h('div', { class: 'v' }, money(p.totals.net_paise)), h('div', { class: 'l' }, 'Total net pay')),
-      h('div', { class: 'stat' }, h('div', { class: 'v' }, String(p.rows.length)), h('div', { class: 'l' }, 'Employees'))),
+      h('div', { class: 'stat' }, h('div', { class: 'v' }, String(p.rows.length)), h('div', { class: 'l' }, type === 'labour' ? 'Labourers' : type === 'staff' ? 'Staff' : 'Staff + labour'))),
     table([
       { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)) },
-      { label: 'Salary', render: (r) => h('div', {}, money(r.salary_paise), h('div', { class: 'small muted' }, 'per month')) },
+      { label: type === 'labour' ? 'Wage' : 'Salary', render: (r) => h('div', {}, money(r.salary_paise), h('div', { class: 'small muted' }, r.salary_type === 'daily' || r.category === 'labour' ? 'per day' : 'per month')) },
       { label: 'Paid days', class: 'num', render: (r) => h('span', { title: `P ${r.attendance.present} · HD ${r.attendance.half_day} · PL ${r.attendance.paid_leave} · WO ${r.attendance.week_off} · H ${r.attendance.holiday} · A ${r.attendance.absent + r.attendance.not_marked}` }, String(r.paid_days)) },
       { label: 'Base', class: 'num', render: (r) => money(r.base_paise) },
       { label: '+ Add', class: 'num', render: (r) => money(sum(r.additions)) },
@@ -1540,6 +1567,7 @@ const PAGE_FNS = {
   lateot: pageLateOt,
   leaves: pageLeaves,
   employees: pageEmployees,
+  labour: pageLabour,
   preview: pagePreview,
   documents: pageDocuments,
   branches: pageBranches,
