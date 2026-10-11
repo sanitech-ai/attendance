@@ -675,9 +675,16 @@ async function pageEmployees(el, params, category = 'staff') {
   const page = labour ? 'labour' : 'employees';
   const mine = A.employees.filter((e) => (e.category === 'labour') === labour);
   const onlyMissing = params?.get('missing') === '1';
+  const branchId = params?.get('branch_id') || '';
   const incomplete = mine.filter((e) => e.active && e.profile_missing?.length);
-  const list = onlyMissing ? incomplete : mine;
-  const rate = (e) => `${money(e.salary_paise)} / ${e.category === 'labour' ? 'day' : 'month'}`;
+  const list = (onlyMissing ? incomplete : mine).filter((e) => !branchId || String(e.branch_id) === branchId);
+  // Grouped site by site (sites A–Z; inside a site, active first, then by name).
+  const sites = new Map();
+  for (const e of [...list].sort((a, b) => a.branch_name.localeCompare(b.branch_name) || b.active - a.active || a.name.localeCompare(b.name))) {
+    if (!sites.has(e.branch_name)) sites.set(e.branch_name, []);
+    sites.get(e.branch_name).push(e);
+  }
+  const keep = { missing: onlyMissing ? '1' : '', branch_id: branchId };
   el.replaceChildren(
     pageHead(labour ? `Labour (${mine.length})` : `Employees (${mine.length})`,
       h('button', { class: 'btn', onclick: sendLogins }, '🔑 Send login details'),
@@ -686,12 +693,21 @@ async function pageEmployees(el, params, category = 'staff') {
     !A.branches.length ? h('div', { class: 'card' }, 'Add a ', h('a', { href: '#/branches' }, 'branch'), ' first — everyone belongs to a branch.') : '',
     labour ? h('p', { class: 'small muted' }, 'Daily-wage labour. The office enters their details (mobile, Aadhaar, bank or PhonePe, wage); they log in with their short ID (e.g. LAB016) and the last 4 digits of their mobile.') : '',
     h('div', { class: 'toolbar' },
-      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: onlyMissing, onchange: (ev) => go(page, { missing: ev.target.checked ? '1' : '' }) }),
+      branchSelect(branchId, (v) => go(page, { ...keep, branch_id: v }), 'All sites'),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: onlyMissing, onchange: (ev) => go(page, { ...keep, missing: ev.target.checked ? '1' : '' }) }),
         `Only ${labour ? 'labourers' : 'staff'} with missing details (${incomplete.length})`),
       incomplete.length ? h('span', { class: 'small muted' }, labour ? 'You are reminded every time you open the admin panel until they are filled in.' : 'They see a reminder every time they open the app until they add them.') : ''),
-    table([
-      { label: 'Employee', render: (e) => h('div', {}, h('strong', {}, e.name), e.category === 'labour' ? [' ', badge('Labour', 'neutral')] : '', e.is_manager ? [' ', badge(e.manager_scope === 'all' ? 'Manager · all branches' : 'Manager', 'info')] : '', h('div', { class: 'small muted' }, `${e.code}${e.designation ? ` · ${e.designation}` : ''}${e.phone ? ` · ${e.phone}` : ''}`)) },
-      { label: 'Branch', render: (e) => h('div', {}, e.branch_name, e.extra_location_ids ? h('div', { class: 'small muted' }, `+ ${e.extra_location_ids.split(',').length} more location(s)`) : '') },
+    !list.length ? h('div', { class: 'empty' }, onlyMissing ? 'All details are filled in. 🎉' : branchId ? 'Nobody at this site.' : labour ? 'No labourers yet. Click “Add labourer” or import a CSV.' : 'No employees yet. Click “Add employee”.') : '',
+    ...[...sites].map(([site, people]) => h('section', { class: 'site-group' },
+      h('h2', { class: 'site-head' }, site, h('span', { class: 'muted small' }, ` · ${people.length} ${labour ? (people.length === 1 ? 'labourer' : 'labourers') : (people.length === 1 ? 'person' : 'people')}`)),
+      employeeTable(people, labour))));
+}
+
+function employeeTable(list, labour) {
+  const rate = (e) => `${money(e.salary_paise)} / ${e.category === 'labour' ? 'day' : 'month'}`;
+  return table([
+      { label: 'Employee', render: (e) => h('div', {}, h('strong', {}, e.name), e.is_manager ? [' ', badge(e.manager_scope === 'all' ? 'Manager · all branches' : 'Manager', 'info')] : '', h('div', { class: 'small muted' }, `${e.code}${e.designation ? ` · ${e.designation}` : ''}${e.phone ? ` · ${e.phone}` : ''}`)) },
+      list.some((e) => e.extra_location_ids) && { label: 'Also at', render: (e) => (e.extra_location_ids ? h('span', { class: 'small muted', title: e.extra_location_ids.split(',').map((x) => A.branches.find((b) => String(b.id) === x)?.name).filter(Boolean).join(', ') }, `+ ${e.extra_location_ids.split(',').length} more location(s)`) : '') },
       { label: labour ? 'Wage' : 'Salary', render: (e) => (e.salary_paise ? rate(e) : h('span', { style: { color: 'var(--warn)' } }, 'not set')) },
       { label: 'Shift', render: (e) => h('div', {}, `${e.shift_start}–${e.shift_end}`, h('div', { class: 'small muted' }, e.follow_branch_shift ? 'branch timing' : 'personal')) },
       { label: 'Week off', render: (e) => weeklyOffText(e.weekly_offs) },
@@ -705,7 +721,7 @@ async function pageEmployees(el, params, category = 'staff') {
         h('a', { class: 'btn btn-sm', href: `#/preview?employee_id=${e.id}` }, 'Preview'),
         h('button', { class: 'btn btn-sm', onclick: () => resetPin(e) }, 'Reset PIN'),
         h('button', { class: 'btn btn-sm', title: 'Delete permanently', onclick: () => deleteEmployee(e) }, 'Delete')) },
-    ], list, { empty: onlyMissing ? 'All details are filled in. 🎉' : labour ? 'No labourers yet. Click “Add labourer” or import a CSV.' : 'No employees yet. Click “Add employee”.' }));
+    ].filter(Boolean), list);
 }
 
 function pageLabour(el, params) {
