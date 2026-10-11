@@ -197,14 +197,21 @@ function typeSelect(value, onChange) {
 const typeQs = (type) => (type ? `&type=${type}` : '');
 const pageType = (params) => (['staff', 'labour'].includes(params.get('type')) ? params.get('type') : '');
 
+// Pick-lists go site by site (labourers marked), so people are easy to find.
+const bySite = (list) => [...list].sort((a, b) => a.branch_name.localeCompare(b.branch_name) || a.name.localeCompare(b.name));
+const empLabel = (e) => `${e.name} (${e.code})${e.category === 'labour' ? ' · labour' : ''}`;
+
 function employeeSelect(value, onChange, allLabel = 'All employees') {
+  const sites = new Map();
+  for (const e of bySite(A.employees)) (sites.get(e.branch_name) || sites.set(e.branch_name, []).get(e.branch_name)).push(e);
   return h('select', { onchange: (e) => onChange(e.target.value), 'aria-label': 'Employee' },
     h('option', { value: '' }, allLabel),
-    A.employees.map((e) => h('option', { value: e.id, selected: String(e.id) === String(value) }, `${e.name} (${e.code})`)));
+    [...sites].map(([site, people]) => h('optgroup', { label: site },
+      people.map((e) => h('option', { value: e.id, selected: String(e.id) === String(value) }, empLabel(e))))));
 }
 
 function employeeOptions() {
-  return A.employees.filter((e) => e.active).map((e) => ({ value: e.id, label: `${e.name} (${e.code})` }));
+  return bySite(A.employees.filter((e) => e.active)).map((e) => ({ value: e.id, label: `${e.branch_name} — ${empLabel(e)}` }));
 }
 
 // ---------------------------------------------------------------- dashboard

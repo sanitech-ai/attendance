@@ -1010,7 +1010,7 @@ module.exports = function adminRoutes(ctx) {
     const emps = db.prepare(
       `SELECT DISTINCT e.*, b.name AS branch_name FROM employees e JOIN branches b ON b.id = e.branch_id
        JOIN punches p ON p.employee_id = e.id AND p.kind = 'IN' AND p.work_date BETWEEN ? AND ?
-       ORDER BY e.name`,
+       ORDER BY b.name, e.name`,
     ).all(from, to);
     const out = [];
     for (const e of emps) {
@@ -1080,7 +1080,7 @@ module.exports = function adminRoutes(ctx) {
   r.get('/leave-summary', (req, res) => {
     const year = Number(req.query.year) || Number(istDate(ctx.now()).slice(0, 4));
     const settings = getSettings(db);
-    const emps = db.prepare('SELECT e.*, b.name AS branch_name FROM employees e JOIN branches b ON b.id = e.branch_id WHERE e.active = 1 ORDER BY e.name').all();
+    const emps = db.prepare('SELECT e.*, b.name AS branch_name FROM employees e JOIN branches b ON b.id = e.branch_id WHERE e.active = 1 ORDER BY b.name, e.name').all();
     res.json({ year, rows: emps.map((e) => ({
       employee_id: e.id, code: e.code, name: e.name, branch_name: e.branch_name,
       ...leaveTotals(db, e, year, settings, ctx.now()), comp_off: compOffBalance(db, e, settings, ctx.now()),
