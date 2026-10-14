@@ -955,6 +955,42 @@ module.exports = function adminRoutes(ctx) {
     });
   }
 
+  // ---- month-end review: every half day with its reason ----
+  const REVIEW_NOTE = 'Full day given at month-end review';
+  function halfDayRows(month, branchId, type) {
+    const [from, to] = monthRange(month);
+    const settings = getSettings(db);
+    const rows = [];
+    const given = [];
+    for (const e of registerEmployees(branchId, type)) {
+      const who = { employee_id: e.id, code: e.code, name: e.name, branch_name: e.branch_name, category: e.category };
+      for (const d of computeRange(db, e, from, to, settings, ctx.now())) {
+        if (d.future) continue;
+        if (d.status === 'half_day') {
+          rows.push({ ...who, date: d.date, first_in: d.first_in, last_out: d.last_out, worked_minutes: d.worked_minutes, reasons: d.half_day_reasons });
+        } else if (d.override && d.status === 'present' && d.override.note.startsWith(REVIEW_NOTE)) {
+          given.push({ ...who, date: d.date, first_in: d.first_in, last_out: d.last_out, note: d.override.note });
+        }
+      }
+    }
+    return { rows, given };
+  }
+
+  r.get('/half-days', (req, res) => {
+    const month = requireMonth(req.query.month);
+    res.json({ month, review_note: REVIEW_NOTE, ...halfDayRows(month, req.query.branch_id ? id(req.query.branch_id) : null, typeOf(req)) });
+  });
+
+  r.get('/half-days.csv', (req, res) => {
+    const month = requireMonth(req.query.month);
+    const { rows, given } = halfDayRows(month, req.query.branch_id ? id(req.query.branch_id) : null, typeOf(req));
+    const out = [];
+    for (const x of rows) out.push([x.date, x.code, x.name, x.branch_name, x.first_in || '', x.last_out || '', (x.worked_minutes / 60).toFixed(2), 'Half day', x.reasons.map((r2) => r2.text).join(' | ')]);
+    for (const x of given) out.push([x.date, x.code, x.name, x.branch_name, x.first_in || '', x.last_out || '', '', 'Full day given', x.note]);
+    out.sort((p, q) => p[0].localeCompare(q[0]) || p[3].localeCompare(q[3]) || p[2].localeCompare(q[2]));
+    sendCsv(res, `half-days-${month}.csv`, [['Date', 'Employee ID', 'Name', 'Branch', 'In', 'Out', 'Worked (h)', 'Result', 'Reason'], ...out]);
+  });
+
   r.get('/late-ot', (req, res) => {
     const month = requireMonth(req.query.month);
     res.json({ month, grace_minutes: getSettings(db).grace_minutes, late_max_minutes: getSettings(db).late_max_minutes, rows: lateOtRows(month, req.query.branch_id ? id(req.query.branch_id) : null, typeOf(req)) });

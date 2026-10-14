@@ -1,5 +1,5 @@
 'use strict';
-const { istDate, istTime, istMs, isWeeklyOff, shiftMinutes } = require('./util');
+const { istDate, istTime, istMs, isWeeklyOff, shiftMinutes, fmtKm } = require('./util');
 const { punchOutDeadline } = require('./common');
 
 /**
@@ -154,7 +154,8 @@ function computeDay(emp, date, ctx, settings, today) {
     const out = p.openIn === null ? list.find((x) => x.kind === 'OUT' && x.at === p.lastOut) : null;
     const outLateBy = out ? Math.floor((out.at - shiftEndMs(emp, date)) / 60000) : 0;
     // If the admin approves that punch (a genuine late meeting elsewhere), its time counts.
-    if (out && away(out) && outLateBy > settings.late_out_minutes) {
+    // No exceptions: only an admin correction in the register (month-end review) changes it.
+    if (out && ctx.homeLocated && !out.inside_geofence && outLateBy > settings.late_out_minutes) {
       day.late_out = { minutes: outLateBy, distance_m: out.distance_m, note: out.note || '' };
     }
     // More than late_max_minutes (1 hour) late: not part of the "every 3rd late" rule — it goes to an
@@ -167,8 +168,12 @@ function computeDay(emp, date, ctx, settings, today) {
       day.status = 'working';
       if (veryLate && !decision) flags.push('late_approval');
     } else if (decision) {
-      // More than the allowed lateness: the admin decided full or half day.
+      // More than the allowed lateness: the admin decided full or half day. That decision is about
+      // the lateness only — a missed or late punch-out, or an away Punch In, still makes it a half day.
       day.status = decision.status;
+      if (p.openIn !== null) flags.push('missing_out');
+      if (day.late_out) flags.push('late_out');
+      if (p.openIn !== null || day.late_out || day.offsite_in) day.status = 'half_day';
     } else if (firstDay && p.openIn === null && !day.late_out && !day.offsite_in) {
       day.status = 'present';
     } else {
@@ -237,6 +242,33 @@ function applyLateMarks(day, state, settings) {
   }
 }
 
+const fmtMin = (m) => (m >= 60 ? `${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}` : `${m}m`);
+const ordinal = (n) => `${n}${({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 100 >= 11 && n % 100 <= 13 ? 0 : n % 10] || 'th'}`;
+
+/** Why a day is a half day, in plain words for staff and admin: [{ code, text }]. */
+function halfDayReasons(day, emp, settings) {
+  const out = [];
+  const add = (code, text) => out.push({ code, text });
+  if (day.override) {
+    add('admin', `Marked half day by the admin${day.override.note ? `: “${day.override.note}”` : ''}`);
+    return out;
+  }
+  if (day.late_review === 'half_day') add('very_late', `Arrived ${fmtMin(day.late_minutes)} late (in at ${day.first_in}) — the admin confirmed a half day`);
+  else if (day.late_review === 'pending') add('very_late', `Arrived ${fmtMin(day.late_minutes)} late (in at ${day.first_in}, shift starts ${emp.shift_start}) — more than ${fmtMin(settings.late_max_minutes)} late`);
+  if (day.offsite_in) {
+    add('offsite_in', `Punched in at ${day.offsite_in.at} away from the site${day.offsite_in.distance_m != null ? ` (${fmtKm(day.offsite_in.distance_m)} away)` : ''}${day.offsite_in.note ? ` — “${day.offsite_in.note}”` : ''}, not approved`);
+  }
+  if (day.late_out) {
+    add('late_out', `Punched out at ${day.last_out} away from the site${day.late_out.distance_m != null ? ` (${fmtKm(day.late_out.distance_m)} away)` : ''}, ${fmtMin(day.late_out.minutes)} after the shift ended (${emp.shift_end})${day.late_out.note ? ` — “${day.late_out.note}”` : ''}`);
+  }
+  if (day.flags.includes('missing_out')) add('missing_out', `Punched in at ${day.first_in} and did not punch out by midnight`);
+  if (day.flags.includes('late_penalty')) {
+    add('late_penalty', `${ordinal(day.late_mark)} late this month (in at ${day.first_in}, ${fmtMin(day.late_minutes)} late) — every ${ordinal(settings.late_warnings + 1)} late is a half day`);
+  }
+  if (!out.length) add('short_hours', `Worked only ${fmtMin(day.worked_minutes)} (in ${day.first_in || '—'}, out ${day.last_out || '—'}) — a full day needs ${fmtMin(fullDayMinutes(emp, settings))}`);
+  return out;
+}
+
 function computeRange(db, emp, from, to, settings, nowMs = Date.now()) {
   // Start at the 1st of the month so late marks earlier in the month are counted.
   const start = `${from.slice(0, 7)}-01`;
@@ -248,6 +280,7 @@ function computeRange(db, emp, from, to, settings, nowMs = Date.now()) {
   for (let d = start; d <= to; ) {
     const day = computeDay(emp, d, ctx, settings, today);
     applyLateMarks(day, late, settings);
+    day.half_day_reasons = day.status === 'half_day' ? halfDayReasons(day, emp, settings) : [];
     if (d >= from) days.push(day);
     const next = new Date(`${d}T00:00:00Z`);
     next.setUTCDate(next.getUTCDate() + 1);

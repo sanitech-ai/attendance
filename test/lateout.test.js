@@ -35,7 +35,7 @@ test('punching out away from the site long after shift end counts as a half day'
   await punch('2026-10-03', '09:00', 'IN'); assert.equal((await punch('2026-10-03', '18:20', 'OUT', HOME)).late_out, null);
   // Stayed late at the site: real time counts
   await punch('2026-10-05', '09:00', 'IN'); await punch('2026-10-05', '21:00', 'OUT');
-  // Genuine late meeting elsewhere: the admin approves that punch, so the day counts in full
+  // Even if the admin approves that punch, it stays a half day (no exceptions — corrected only in the register)
   await punch('2026-10-06', '09:00', 'IN'); const approved = await punch('2026-10-06', '20:00', 'OUT', HOME);
 
   s.clock.now = ist('2026-10-07', '08:00');
@@ -47,14 +47,14 @@ test('punching out away from the site long after shift end counts as a half day'
   assert.equal(days['02'].late_out.minutes, 180);
   assert.equal(days['03'].status, 'present');
   assert.equal(days['05'].status, 'present', 'at the site: real time counts');
-  assert.equal(days['06'].status, 'present', 'approved punch');
-  assert.equal(days['06'].late_out, null);
+  assert.equal(days['06'].status, 'half_day', 'approving the punch does not change it');
+  assert.match(days['02'].half_day_reasons[0].text, /^Punched out at 21:00 away from the site \(6\.\d+ km away\), 3h after the shift ended \(18:00\) — “forgot to punch out”$/);
 
   const row = (await admin('GET', '/api/admin/late-ot?month=2026-10')).data.rows[0];
-  assert.deepEqual(row.late_out.map((l) => [l.date, l.last_out]), [['2026-10-02', '21:00']]);
+  assert.deepEqual(row.late_out.map((l) => [l.date, l.last_out]), [['2026-10-02', '21:00'], ['2026-10-06', '20:00']]);
   assert.match(String((await admin('GET', '/api/admin/late-ot.csv?month=2026-10')).data), /02 \(out 21:00\)/);
   const staff = (await a('GET', '/api/employee/attendance?month=2026-10')).data;
-  assert.equal(staff.summary.late_out_days, 1);
+  assert.equal(staff.summary.late_out_days, 2);
 
   // The admin can change the allowance
   assert.equal((await admin('PUT', '/api/admin/settings', { late_out_minutes: 240 })).status, 200);
@@ -190,4 +190,43 @@ test('night shift: Punch Out stays open until an hour after the shift ends', asy
   await admin('POST', '/api/admin/login', { username: 'firefueled', password: 'password123' });
   const d1 = (await admin('GET', `/api/admin/attendance/${id}?month=2026-10`)).data.days.find((d) => d.date === '2026-10-01');
   assert.equal(d1.status, 'present');
+});
+
+test('half-day review: every half day with its reason, for admin and staff; full day given at month end', async (t) => {
+  const s = await startServer(ist('2026-10-01', '08:00'));
+  t.after(() => s.close());
+  const admin = s.client();
+  await admin('POST', '/api/admin/setup', { username: 'firefueled', password: 'password123', name: 'Owner' });
+  const b = (await admin('POST', '/api/admin/branches', { name: 'HO', ...HQ, radius_m: 150, geofence_mode: 'flag' })).data.id;
+  const id = (await admin('POST', '/api/admin/employees', { branch_id: b, salary: 30000, weekly_offs: [], pin: '1234', code: 'A1', name: 'Asha', joined_on: '' })).data.id;
+  const a = s.client();
+  await a('POST', '/api/employee/login', { code: 'A1', pin: '1234' });
+  const punch = async (date, time, kind, where = HQ) => {
+    s.clock.now = ist(date, time);
+    const r = await a('POST', '/api/employee/punch', { kind, ...where, accuracy: 10, selfie: JPEG, note: where === HQ ? '' : 'home' });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+  };
+  await punch('2026-10-01', '09:00', 'IN'); await punch('2026-10-01', '18:00', 'OUT');
+  await punch('2026-10-02', '10:30', 'IN'); await punch('2026-10-02', '18:00', 'OUT');        // 90 min late
+  await punch('2026-10-03', '09:00', 'IN');                                                    // no punch-out
+  await punch('2026-10-05', '09:00', 'IN'); await punch('2026-10-05', '13:30', 'OUT');        // short hours
+
+  s.clock.now = ist('2026-10-06', '08:00');
+  await admin('POST', '/api/admin/login', { username: 'firefueled', password: 'password123' });
+  let r = (await admin('GET', '/api/admin/half-days?month=2026-10')).data;
+  assert.deepEqual(r.rows.map((x) => [x.date, x.reasons.map((y) => y.code)]), [['2026-10-02', ['very_late']], ['2026-10-03', ['missing_out']], ['2026-10-05', ['short_hours']]]);
+  assert.equal(r.rows[0].reasons[0].text, 'Arrived 1h 30m late (in at 10:30, shift starts 09:00) — more than 1h late');
+  assert.equal(r.rows[1].reasons[0].text, 'Punched in at 09:00 and did not punch out by midnight');
+  assert.equal(r.rows[2].reasons[0].text, 'Worked only 4h 30m (in 09:00, out 13:30) — a full day needs 8h 45m');
+  // Staff see the same reasons
+  const days = (await a('GET', '/api/employee/attendance?month=2026-10')).data.days;
+  assert.equal(days.find((d) => d.date === '2026-10-03').half_day_reasons[0].code, 'missing_out');
+  // Month end: the admin gives 03 a full day
+  assert.equal((await admin('PUT', '/api/admin/attendance/override', { employee_id: id, date: '2026-10-03', status: 'present', note: `${r.review_note} — was: no punch-out` })).status, 200);
+  r = (await admin('GET', '/api/admin/half-days?month=2026-10')).data;
+  assert.deepEqual(r.rows.map((x) => x.date), ['2026-10-02', '2026-10-05']);
+  assert.deepEqual(r.given.map((x) => x.date), ['2026-10-03']);
+  const csv = String((await admin('GET', '/api/admin/half-days.csv?month=2026-10')).data);
+  assert.match(csv, /2026-10-05,A1,Asha,HO,09:00,13:30,4\.50,Half day,"Worked only 4h 30m/);
+  assert.match(csv, /2026-10-03,A1,Asha,HO,.*Full day given/);
 });

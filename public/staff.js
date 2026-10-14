@@ -199,6 +199,7 @@ async function renderHome(main) {
   const facts = h('dl', { class: 'kv' },
     h('dt', {}, 'Shift'), h('dd', {}, `${t.shift.start} – ${t.shift.end}`),
     h('dt', {}, 'Status'), h('dd', {}, statusBadge(d.status) || '—', d.late_minutes ? [' ', badge(lateText(d, S.me.late_warnings), lateKind(d))] : ''),
+    d.half_day_reasons?.length ? [h('dt', {}, 'Why half day'), h('dd', { class: 'small' }, d.half_day_reasons.map((r) => h('div', {}, r.text)))] : '',
     h('dt', {}, 'In / Out'), h('dd', {}, `${d.first_in || '—'} / ${d.last_out || '—'}`),
     h('dt', {}, 'Worked'), h('dd', {}, fmtMinutes(d.worked_minutes)),
     d.status === 'week_off' || d.flags.includes('worked_week_off') ? [h('dt', {}, 'Weekly off'), h('dd', {}, S.me.employee.salary_type === 'daily'
@@ -484,10 +485,24 @@ async function renderAttendance(main) {
       stat(s.comp_off_earned, 'Comp-off earned (weekly offs worked)')),
     h('div', { class: 'card', style: { marginTop: '12px' } }, cal,
       h('p', { class: 'small muted' }, 'P present · HD half day · A absent · PL/UL leave · WO week off · H holiday. Tap a day for details.')),
+    halfDayList(data.days),
     lateList(data.days));
 }
 
 /** Every late day this month with how late, and the running total. */
+/** Every half day this month and why, so there are no surprises on payday. */
+function halfDayList(days) {
+  const half = days.filter((d) => !d.future && d.status === 'half_day');
+  return h('div', { class: 'card', style: { marginTop: '12px' } },
+    h('h2', {}, `Half days this month (${half.length})`),
+    half.length
+      ? h('ul', { class: 'reason-list' }, half.map((d) => h('li', {},
+        h('strong', {}, fmtDate(d.date)),
+        (d.half_day_reasons || []).map((r) => h('div', { class: 'small' }, `• ${r.text}`)))))
+      : h('p', { class: 'muted' }, 'No half days this month.'),
+    half.length ? h('p', { class: 'small muted' }, 'The admin reviews all half days at the end of the month.') : '');
+}
+
 function lateList(days) {
   const late = days.filter((d) => !d.future && d.late_minutes > 0);
   let running = 0;
@@ -511,6 +526,7 @@ function stat(v, label) {
 function dayDetails(d) {
   modal(fmtDate(d.date), h('dl', { class: 'kv' },
     h('dt', {}, 'Status'), h('dd', {}, statusBadge(d.status) || '—'),
+    d.half_day_reasons?.length ? [h('dt', {}, 'Why half day'), h('dd', {}, d.half_day_reasons.map((r) => h('div', {}, r.text)))] : '',
     d.holiday ? [h('dt', {}, 'Holiday'), h('dd', {}, d.holiday)] : '',
     h('dt', {}, 'In / Out'), h('dd', {}, `${d.first_in || '—'} / ${d.last_out || '—'}`),
     h('dt', {}, 'Worked'), h('dd', {}, fmtMinutes(d.worked_minutes)),
@@ -698,7 +714,7 @@ async function renderSalary(main) {
         h('dt', {}, 'Days in month'), h('dd', {}, String(r.days_in_month)),
         h('dt', {}, 'Paid days'), h('dd', {}, String(r.paid_days)),
         h('dt', {}, 'Present'), h('dd', {}, String(a.present)),
-        h('dt', {}, 'Half days'), h('dd', {}, String(a.half_day), a.late_penalties ? h('span', { class: 'muted' }, ` (${a.late_penalties} from late marks)`) : ''),
+        h('dt', {}, 'Half days'), h('dd', {}, String(a.half_day), a.half_day ? h('span', { class: 'muted' }, ' (reasons: Attendance tab)') : ''),
         h('dt', {}, 'Absent'), h('dd', {}, String(a.absent + a.not_marked)),
         h('dt', {}, 'Paid / unpaid leave'), h('dd', {}, `${a.paid_leave} / ${a.unpaid_leave}`),
         h('dt', {}, 'Week offs / holidays'), h('dd', {}, `${a.week_off} / ${a.holiday}`),

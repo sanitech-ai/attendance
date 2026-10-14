@@ -85,6 +85,7 @@ const PAGES = [
   ['attendance', 'Attendance register'],
   ['late', 'Late approvals', 'late_approvals'],
   ['lateot', 'Late report'],
+  ['halfdays', 'Half-day review'],
   ['leaves', 'Leave requests', 'leaves'],
   ['payroll', 'Payroll'],
   ['employees', 'Employees', 'incomplete_profiles'],
@@ -458,7 +459,7 @@ async function pageAttendance(el, params) {
       h('td', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)),
       r.days.map((d) => h('td', {}, STATUS_SHORT[d.status] !== '' || d.override ? h('span', {
         class: `c ${d.status}${d.override ? ' ovr' : ''}${d.flags.some((x) => x !== 'first_day') ? ' flag' : ''}`,
-        title: `${fmtDate(d.date)}: ${STATUS_LABEL[d.status] || d.status}${d.first_in ? ` · ${d.first_in}–${d.last_out || '?'}` : ''}${d.flags.length ? ` · ${d.flags.map((x) => FLAG_LABEL[x]).join(', ')}` : ''}`,
+        title: `${fmtDate(d.date)}: ${STATUS_LABEL[d.status] || d.status}${d.first_in ? ` · ${d.first_in}–${d.last_out || '?'}` : ''}${d.half_day_reasons?.length ? ` · Half day: ${d.half_day_reasons.map((x) => x.text).join('; ')}` : d.flags.length ? ` · ${d.flags.map((x) => FLAG_LABEL[x]).join(', ')}` : ''}`,
         onclick: () => editDay(r, d, data.finalized),
       }, STATUS_SHORT[d.status] || '·') : h('span', { class: 'c', onclick: () => editDay(r, d, data.finalized) }, '·'))),
       h('td', {}, r.summary.present), h('td', {}, r.summary.half_day), h('td', {}, r.summary.absent + r.summary.not_marked),
@@ -504,6 +505,7 @@ function editDay(r, d, finalized) {
     modal(`${r.name} · ${fmtDate(d.date)}`, h('div', {},
       h('dl', { class: 'kv' },
         h('dt', {}, 'Status'), h('dd', {}, STATUS_LABEL[d.status] || d.status),
+        d.half_day_reasons?.length ? [h('dt', {}, 'Why half day'), h('dd', {}, d.half_day_reasons.map((x) => h('div', {}, x.text)))] : '',
         h('dt', {}, 'In / Out'), h('dd', {}, `${d.first_in || '—'} / ${d.last_out || '—'}`),
         h('dt', {}, 'Worked'), h('dd', {}, fmtMinutes(d.worked_minutes)),
         d.late_minutes ? [h('dt', {}, 'Late'), h('dd', {}, lateText(d, A.me.settings.late_warnings))] : '',
@@ -514,6 +516,7 @@ function editDay(r, d, finalized) {
   if (finalized) return toast('This month is finalized. Reopen payroll to edit.', 'error');
   const info = h('dl', { class: 'kv', style: { marginBottom: '14px' } },
     h('dt', {}, 'Calculated'), h('dd', {}, STATUS_LABEL[d.status] || d.status),
+    d.half_day_reasons?.length ? [h('dt', {}, 'Why half day'), h('dd', {}, d.half_day_reasons.map((x) => h('div', {}, x.text)))] : '',
     h('dt', {}, 'In / Out'), h('dd', {}, `${d.first_in || '—'} / ${d.last_out || '—'}`),
     h('dt', {}, 'Worked'), h('dd', {}, fmtMinutes(d.worked_minutes)),
     d.late_minutes ? [h('dt', {}, 'Late'), h('dd', {}, lateText(d, A.me.settings.late_warnings))] : '',
@@ -537,6 +540,63 @@ function editDay(r, d, finalized) {
     },
   });
   document.querySelector('.modal .form').prepend(info, h('p', { class: 'small' }, h('a', { href: `#/punches?date=${d.date}&employee_id=${r.employee_id}`, onclick: () => dlg.close() }, 'See selfies for this day →')));
+}
+
+// ---------------------------------------------------------------- month-end half-day review
+
+const REASON_TITLE = {
+  missing_out: 'No punch-out by midnight', late_out: 'Punched out late, away from site', offsite_in: 'Punched in away from site',
+  very_late: 'Over 1 hour late', late_penalty: 'Every 3rd late', short_hours: 'Short hours', admin: 'Set by admin',
+};
+
+async function pageHalfDays(el, params) {
+  await loadBranches();
+  const month = params.get('month') || thisMonth();
+  const branchId = params.get('branch_id') || '';
+  const type = pageType(params);
+  const reason = REASON_TITLE[params.get('reason')] ? params.get('reason') : '';
+  const qs = `month=${month}${branchId ? `&branch_id=${branchId}` : ''}${typeQs(type)}`;
+  const d = await api('GET', `/api/admin/half-days?${qs}`);
+  const keep = { month, branch_id: branchId, type, reason };
+  const counts = {};
+  for (const r of d.rows) for (const x of new Set(r.reasons.map((y) => y.code))) counts[x] = (counts[x] || 0) + 1;
+  const rows = reason ? d.rows.filter((r) => r.reasons.some((x) => x.code === reason)) : d.rows;
+  const canEdit = A.me.admin.can_edit_attendance;
+  const setDay = (r, status, note) => run(async () => {
+    await api('PUT', '/api/admin/attendance/override', { employee_id: r.employee_id, date: r.date, status, note });
+    toast(status ? `${r.name}: full day given for ${fmtDate(r.date)}` : `${r.name}: ${fmtDate(r.date)} back to the calculated result`);
+    route();
+  });
+  el.replaceChildren(
+    pageHead('Half-day review', h('a', { class: 'btn', href: `/api/admin/half-days.csv?${qs}` }, 'Download Excel (CSV)')),
+    h('div', { class: 'toolbar' },
+      monthPicker(month, (m) => go('halfdays', { ...keep, month: m })),
+      branchSelect(branchId, (v) => go('halfdays', { ...keep, branch_id: v })),
+      typeSelect(type, (v) => go('halfdays', { ...keep, type: v }))),
+    h('p', { class: 'muted small' }, 'Every half day this month and why. Staff see the same reasons in their app. Review at month end: give a full day where it was genuine; the rest stay half days. Nothing else changes them.'),
+    h('div', { class: 'stats', style: { marginBottom: '14px' } },
+      h('a', { class: `stat${reason ? '' : ' active'}`, href: `#/halfdays?${new URLSearchParams(Object.entries({ ...keep, reason: '' }).filter(([, v]) => v))}` },
+        h('div', { class: 'v' }, String(d.rows.length)), h('div', { class: 'l' }, 'All half days')),
+      Object.keys(REASON_TITLE).filter((k) => counts[k]).map((k) => h('a', { class: `stat${reason === k ? ' active' : ''}`, href: `#/halfdays?${new URLSearchParams(Object.entries({ ...keep, reason: k }).filter(([, v]) => v))}` },
+        h('div', { class: 'v' }, String(counts[k])), h('div', { class: 'l' }, REASON_TITLE[k])))),
+    table([
+      { label: 'Date', render: (r) => fmtDate(r.date) },
+      { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)) },
+      { label: 'In / Out', render: (r) => `${r.first_in || '—'} / ${r.last_out || '—'}` },
+      { label: 'Why half day', render: (r) => r.reasons.map((x) => h('div', { class: 'small' }, h('strong', {}, `${REASON_TITLE[x.code] || x.code}: `), x.text)) },
+      { label: '', render: (r) => h('div', { class: 'row' },
+        canEdit ? h('button', { class: 'btn btn-sm btn-ok', onclick: () => setDay(r, 'present', `${d.review_note} — was: ${r.reasons.map((x) => x.text).join('; ')}`.slice(0, 300)) }, 'Give full day') : '',
+        h('a', { class: 'btn btn-sm', href: `#/punches?date=${r.date}&employee_id=${r.employee_id}` }, 'Selfies')) },
+    ], rows, { empty: reason ? 'None for this reason.' : 'No half days this month.' }),
+    d.given.length ? [
+      h('h2', { style: { margin: '22px 0 10px' } }, `Full days given at review (${d.given.length})`),
+      table([
+        { label: 'Date', render: (r) => fmtDate(r.date) },
+        { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)) },
+        { label: 'Was', render: (r) => h('span', { class: 'small' }, r.note.replace(`${d.review_note} — was: `, '')) },
+        { label: '', render: (r) => (canEdit ? h('button', { class: 'btn btn-sm', onclick: () => setDay(r, null) }, 'Undo') : '') },
+      ], d.given)] : '',
+    canEdit ? '' : h('p', { class: 'small muted' }, 'Only admins with permission to change the attendance register can give a full day.'));
 }
 
 // ---------------------------------------------------------------- monthly late report
@@ -1568,7 +1628,7 @@ async function pageSettings(el, params) {
       h('dt', {}, 'Very late'), h('dd', {}, `More than ${s.late_max_minutes} min late: half day by default; you can give a full day in Late approvals (not part of the 3rd-late rule)`),
       h('dt', {}, 'Punch in from elsewhere'), h('dd', {}, 'A Punch In away from their sites counts only if you approve it (Punches & selfies); otherwise the day is a half day. Staff who reach the site punch in again there and the day starts from that punch.'),
       h('dt', {}, 'No punch-out'), h('dd', {}, 'Punch Out closes at midnight. No punch-out by then = half day (correct it in the register if needed).'),
-      h('dt', {}, 'Late punch-out'), h('dd', {}, `Punching out away from their site more than ${s.late_out_minutes} min after shift end counts as a half day, like a missed punch-out. Approving that punch (Punches & selfies) counts its real time.`),
+      h('dt', {}, 'Late punch-out'), h('dd', {}, `Punching out away from their site more than ${s.late_out_minutes} min after shift end counts as a half day — no exceptions. Review all half days at month end in Half-day review.`),
       h('dt', {}, 'Staff salary view'), h('dd', {}, `From ${fmtMonth(s.salary_visible_from)} onwards`),
       h('dt', {}, 'GPS accuracy'), h('dd', {}, `Flag punches worse than ±${s.max_accuracy_m} m`),
       h('dt', {}, 'Missing details'), h('dd', {}, s.profile_grace_days ? `Punch In is locked after ${s.profile_grace_days} day(s) on the app until phone, Aadhaar, PAN and bank/UPI are added` : 'Never blocks punching (reminders only)'),
@@ -1608,6 +1668,7 @@ const PAGE_FNS = {
   attendance: pageAttendance,
   late: pageLate,
   lateot: pageLateOt,
+  halfdays: pageHalfDays,
   leaves: pageLeaves,
   employees: pageEmployees,
   labour: pageLabour,
