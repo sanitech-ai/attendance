@@ -285,10 +285,10 @@ test('late rules: every 3rd late is a half day; over 1 hour late goes to the adm
   assert.equal(d['10'].status, 'half_day', 'admin gave a half day');
   assert.ok(!d['09'].flags.includes('late_approval'));
 
-  // Undecided very-late days count from the hours worked (stayed till 18:00 = full day) and don't hold up payroll
+  // Undecided very-late days are a half day by default (even if they stayed till 18:00) and don't hold up payroll
   await admin('POST', '/api/admin/late-approvals/decision', { employee_id: emp.data.id, date: '2026-10-10', status: null });
   d = await get();
-  assert.equal(d['10'].status, 'present', 'over 1 hour late but stayed until shift end: full day until reviewed');
+  assert.equal(d['10'].status, 'half_day', 'over 1 hour late: half day unless the admin gives a full day');
   assert.equal(d['10'].late_review, 'pending');
   s.clock.now = ist('2026-11-02', '10:00');
   await admin('POST', '/api/admin/login', { username: 'owner', password: 'password123' });

@@ -86,7 +86,7 @@ module.exports = function adminRoutes(ctx) {
       if (!String(b.company_name).trim()) throw bad('Company name is required');
       updates.company_name = String(b.company_name).trim().slice(0, 100);
     }
-    for (const [k, min, max] of [['half_day_hours', 0.5, 24], ['grace_minutes', 0, 240], ['late_warnings', 0, 31], ['late_max_minutes', 0, 480], ['max_accuracy_m', 10, 5000], ['profile_grace_days', 0, 60]]) {
+    for (const [k, min, max] of [['half_day_hours', 0.5, 24], ['grace_minutes', 0, 240], ['late_warnings', 0, 31], ['late_max_minutes', 0, 480], ['max_accuracy_m', 10, 5000], ['profile_grace_days', 0, 60], ['late_out_minutes', 0, 720]]) {
       if (b[k] !== undefined) {
         const n = Number(b[k]);
         if (!Number.isFinite(n) || n < min || n > max) throw bad(`${k} must be between ${min} and ${max}`);
@@ -941,12 +941,13 @@ module.exports = function adminRoutes(ctx) {
         employee_id: e.id, code: e.code, name: e.name, branch_name: e.branch_name, shift_start: e.shift_start,
         late_days: s.late_days, late_short_days: s.late_short_days, late_hour_days: s.late_hour_days, late_minutes: s.late_minutes,
         late_penalties: s.late_penalties, late_pending: s.late_pending,
+        late_out: days.filter((d) => d.late_out).map((d) => ({ date: d.date, last_out: d.last_out, ...d.late_out })),
         comp_off_earned: s.comp_off_earned,
         week_off_worked: days.filter((d) => d.comp_off_earned).map((d) => ({ date: d.date, first_in: d.first_in, last_out: d.last_out, earned: d.comp_off_earned })),
         first_day: days.find((d) => d.flags.includes('first_day'))?.date || null,
         late: days.filter((d) => d.late_minutes > 0).map((d) => ({
           date: d.date, first_in: d.first_in, minutes: d.late_minutes, cumulative: (running += d.late_minutes), over_max: d.late_over_max,
-          outcome: d.late_review ? (d.late_review === 'pending' ? 'over 1 hour — to review' : `over 1 hour — ${d.late_review === 'present' ? 'full day given' : 'half day'}`)
+          outcome: d.late_review ? (d.late_review === 'pending' ? 'over 1 hour — half day (not reviewed)' : `over 1 hour — ${d.late_review === 'present' ? 'full day given' : 'half day'}`)
             : d.flags.includes('late_penalty') ? `late #${d.late_mark} — half day` : `late #${d.late_mark} — warning`,
         })),
       };
@@ -962,10 +963,10 @@ module.exports = function adminRoutes(ctx) {
     const month = requireMonth(req.query.month);
     const st = getSettings(db);
     const rows = [['Employee ID', 'Name', 'Branch', `Late ${st.grace_minutes} min – ${st.late_max_minutes / 60} hour — days`, `Late over ${st.late_max_minutes / 60} hour — days`, 'Late days in total', 'Total late (minutes)',
-      'Late days counted as half day', 'Weekly offs worked (comp-off earned)', 'Late dates', 'Weekly offs worked']];
+      'Late days counted as half day', 'Punched out late away from site — days (half day)', 'Weekly offs worked (comp-off earned)', 'Late dates', 'Late punch-out dates', 'Weekly offs worked']];
     for (const r2 of lateOtRows(month, req.query.branch_id ? id(req.query.branch_id) : null, typeOf(req))) {
-      rows.push([r2.code, r2.name, r2.branch_name, r2.late_short_days, r2.late_hour_days, r2.late_days, r2.late_minutes, r2.late_penalties, r2.comp_off_earned,
-        r2.late.map((l) => `${l.date.slice(8)} (${l.minutes}m)`).join(' '), r2.week_off_worked.map((w) => w.date.slice(8)).join(' ')]);
+      rows.push([r2.code, r2.name, r2.branch_name, r2.late_short_days, r2.late_hour_days, r2.late_days, r2.late_minutes, r2.late_penalties, r2.late_out.length, r2.comp_off_earned,
+        r2.late.map((l) => `${l.date.slice(8)} (${l.minutes}m)`).join(' '), r2.late_out.map((l) => `${l.date.slice(8)} (out ${l.last_out})`).join(' '), r2.week_off_worked.map((w) => w.date.slice(8)).join(' ')]);
     }
     sendCsv(res, `late-report-${month}.csv`, rows);
   });

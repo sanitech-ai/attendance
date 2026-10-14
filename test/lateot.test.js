@@ -58,7 +58,7 @@ test('monthly late report; no late on the joining day or first app day', async (
   assert.match(String(csv.data), /Asha/);
 });
 
-test('over 1 hour late goes to the admin: shown and totalled, not a late mark, not a half day by itself', async (t) => {
+test('over 1 hour late goes to the admin: shown and totalled, not a late mark, a half day until a full day is given', async (t) => {
   const s = await startServer(ist('2026-10-01', '08:00'));
   t.after(() => s.close());
   const admin = s.client();
@@ -83,7 +83,7 @@ test('over 1 hour late goes to the admin: shown and totalled, not a late mark, n
 
   const days = (await admin('GET', `/api/admin/attendance/${id}?month=2026-10`)).data.days;
   const d2 = days.find((d) => d.date === '2026-10-02');
-  assert.equal(d2.status, 'present', 'stayed till shift end: full day until the admin decides');
+  assert.equal(d2.status, 'half_day', 'half day by default, even though they stayed till shift end');
   assert.equal(d2.late_review, 'pending');
   assert.equal(d2.late_mark, null);
   assert.ok(d2.late_over_max);

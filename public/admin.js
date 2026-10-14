@@ -262,7 +262,7 @@ async function pageDashboard(el, params) {
       tile(d.pending.flagged_punches, 'Flagged punches to review', '#/punches?status=flagged'),
       tile(d.pending.leaves, 'Leave requests pending', '#/leaves?status=pending'),
       tile(d.pending.documents, 'Documents to verify', '#/documents?status=pending'),
-      tile(d.pending.late_approvals, 'Over 1 hour late — to review', '#/late'),
+      tile(d.pending.late_approvals, 'Over 1 hour late (half day unless you approve)', '#/late'),
       tile(d.pending.visits, 'Field visit selfies to review', '#/visits?status=pending'),
       tile(d.pending.incomplete_profiles, 'Staff with missing details', '#/employees?missing=1')),
     d.pending.labour_missing ? h('div', { class: 'card', style: { marginTop: '10px', borderColor: 'var(--warn)', background: 'var(--warn-bg)' } },
@@ -568,8 +568,9 @@ async function pageLateOt(el, params) {
       { label: `Late over ${d.late_max_minutes / 60} hr`, class: 'num', render: (r) => h('strong', { style: r.late_hour_days ? { color: 'var(--bad)' } : null }, n(r.late_hour_days)) },
       { label: 'Total late', class: 'num', render: (r) => (r.late_minutes ? fmtMinutes(r.late_minutes) : '—') },
       { label: 'Half days from lates', class: 'num', render: (r) => n(r.late_penalties) },
+      { label: 'Late punch-outs (half day)', class: 'num', render: (r) => h('strong', { style: r.late_out.length ? { color: 'var(--bad)' } : null }, n(r.late_out.length)) },
       { label: 'Weekly offs worked', class: 'num', render: (r) => n(r.comp_off_earned) },
-      { label: '', render: (r) => (r.late.length || r.week_off_worked.length || r.first_day ? h('button', { class: 'btn btn-sm', onclick: () => lateOtDetail(r) }, 'Dates') : '') },
+      { label: '', render: (r) => (r.late.length || r.late_out.length || r.week_off_worked.length || r.first_day ? h('button', { class: 'btn btn-sm', onclick: () => lateOtDetail(r) }, 'Dates') : '') },
     ], d.rows, { empty: 'No employees.' }),
     h('p', { class: 'small muted' }, 'Working on a weekly off earns a comp-off (a paid day off to take on a weekday). ', `Late = first punch in more than ${d.grace_minutes} minutes after shift start. No late is counted on an employee’s joining day or their first day on the app. Days corrected in the attendance register are not counted.`));
 }
@@ -585,6 +586,13 @@ function lateOtDetail(r) {
       { label: 'Total so far', class: 'num', render: (l) => fmtMinutes(l.cumulative) },
       { label: 'Result', render: (l) => l.outcome },
     ], r.late) : h('p', { class: 'muted' }, 'None'),
+    h('h3', {}, `Punched out late, away from site (${r.late_out.length})`),
+    r.late_out.length ? table([
+      { label: 'Date', render: (l) => fmtDate(l.date) },
+      { label: 'Punched out', render: (l) => `${l.last_out} (${fmtMinutes(l.minutes)} after shift)` },
+      { label: 'Where', render: (l) => [l.distance_m != null ? fmtDistance(l.distance_m) + ' from site' : '', l.note ? h('div', { class: 'small muted' }, `“${l.note}”`) : ''] },
+      { label: 'Result', render: () => 'half day' },
+    ], r.late_out) : h('p', { class: 'muted' }, 'None'),
     h('h3', {}, `Weekly offs worked (${r.week_off_worked.length})`),
     r.week_off_worked.length ? table([
       { label: 'Date', render: (w) => fmtDate(w.date) },
@@ -609,7 +617,7 @@ async function pageLate(el, params) {
   el.replaceChildren(
     pageHead('Late approvals'),
     h('div', { class: 'toolbar' }, monthPicker(month, (m) => go('late', { month: m }))),
-    h('p', { class: 'muted small' }, `Arrivals more than ${data.late_max_minutes} minutes late come here instead of counting toward "every 3rd late is a half day". Decide full day or half day. Until you decide, the day counts from the hours worked (a full day if they stayed until shift end).`),
+    h('p', { class: 'muted small' }, `Arrivals more than ${data.late_max_minutes} minutes late come here instead of counting toward "every 3rd late is a half day". They count as a half day by default — at month end, give a full day where it was genuine. Nothing to do for the ones that stay half days.`),
     table([
       { label: 'Date', render: (r) => fmtDate(r.date) },
       { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)) },
@@ -1348,7 +1356,7 @@ async function pagePayroll(el, params) {
       h('div', { class: 'row' }, h('a', { class: 'btn', href: `/api/admin/payroll.csv?month=${month}${typeQs(type)}` }, 'Download Excel (CSV)'), finalizeBtn)),
     p.rows.some((r) => r.attendance.late_pending) && !p.finalized
       ? h('div', { class: 'card', style: { marginBottom: '12px', borderColor: 'var(--warn)' } },
-        `ℹ Arrivals over 1 hour late not reviewed yet (counted from hours worked until you decide): ${p.rows.filter((r) => r.attendance.late_pending).map((r) => r.name).join(', ')}. `,
+        `ℹ Arrivals over 1 hour late, counted as half days unless you give a full day: ${p.rows.filter((r) => r.attendance.late_pending).map((r) => r.name).join(', ')}. `,
         h('a', { href: `#/late?month=${month}` }, 'Review →'))
       : '',
     h('div', { class: 'stats', style: { marginBottom: '12px' } },
@@ -1369,7 +1377,7 @@ async function pagePayroll(el, params) {
         h('li', {}, 'Per-day pay = monthly salary ÷ days in the month. Paid days = present + ½ × half days + paid leave + week offs + holidays.'),
         h('li', {}, 'No overtime pay. Working on a weekly off is paid like any present day and also earns a comp-off: a paid day off to take on a weekday (shown on the Leave requests page).'),
         h('li', {}, `Full day = the employee’s shift length minus the ${A.me.settings.grace_minutes}-minute grace (9:00–18:00 → ${fmtMinutes(540 - A.me.settings.grace_minutes)} worked). Half day needs ${A.me.settings.half_day_hours} h. A missing punch-out counts as a half day until you correct it.`),
-        h('li', {}, `Late arrivals: every ${A.me.settings.late_warnings + 1}${A.me.settings.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month counts as a half day; the others are warnings. A late arrival who stays until shift end is otherwise a full day. More than ${A.me.settings.late_max_minutes} min late is not part of that count: it goes to Late approvals, where you decide full or half day. Every late day and the month’s total late time are shown to you and the employee.`),
+        h('li', {}, `Late arrivals: every ${A.me.settings.late_warnings + 1}${A.me.settings.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month counts as a half day; the others are warnings. A late arrival who stays until shift end is otherwise a full day. More than ${A.me.settings.late_max_minutes} min late is not part of that count: it is a half day unless you give a full day in Late approvals. Punching out away from the site more than ${A.me.settings.late_out_minutes} min after shift end also counts as a half day. Every late day and the month’s total late time are shown to you and the employee.`),
         h('li', {}, 'Net = base + additions − deductions − advances.'))));
 }
 
@@ -1549,7 +1557,8 @@ async function pageSettings(el, params) {
       h('dt', {}, 'Half day'), h('dd', {}, `${s.half_day_hours} hours worked`),
       h('dt', {}, 'Late after'), h('dd', {}, `${s.grace_minutes} minutes past shift start`),
       h('dt', {}, 'Late rule'), h('dd', {}, `Every ${s.late_warnings + 1}${s.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month is a half day (others are warnings)`),
-      h('dt', {}, 'Very late'), h('dd', {}, `More than ${s.late_max_minutes} min late: sent to Late approvals — you decide full or half day (not part of the 3rd-late rule)`),
+      h('dt', {}, 'Very late'), h('dd', {}, `More than ${s.late_max_minutes} min late: half day by default; you can give a full day in Late approvals (not part of the 3rd-late rule)`),
+      h('dt', {}, 'Late punch-out'), h('dd', {}, `Punching out away from their site more than ${s.late_out_minutes} min after shift end counts as a half day, like a missed punch-out. Approving that punch (Punches & selfies) counts its real time.`),
       h('dt', {}, 'Staff salary view'), h('dd', {}, `From ${fmtMonth(s.salary_visible_from)} onwards`),
       h('dt', {}, 'GPS accuracy'), h('dd', {}, `Flag punches worse than ±${s.max_accuracy_m} m`),
       h('dt', {}, 'Missing details'), h('dd', {}, s.profile_grace_days ? `Punch In is locked after ${s.profile_grace_days} day(s) on the app until phone, Aadhaar, PAN and bank/UPI are added` : 'Never blocks punching (reminders only)'),
@@ -1561,7 +1570,8 @@ async function pageSettings(el, params) {
         { name: 'half_day_hours', label: 'Hours for a half day', type: 'number', step: '0.25', min: 0.5, max: 24, required: true, value: s.half_day_hours, hint: 'Less than this counts as absent.' },
         { name: 'grace_minutes', label: 'Late grace period (minutes)', type: 'number', min: 0, max: 240, required: true, value: s.grace_minutes, hint: 'Also sets the full day: shift length minus this grace.' },
         { name: 'late_warnings', label: 'Warnings between half days', type: 'number', min: 0, max: 31, step: 1, required: true, value: s.late_warnings, hint: 'With 2: the 3rd, 6th, 9th… late in a month is a half day; the others are warnings.' },
-        { name: 'late_max_minutes', label: 'Arrivals later than this (minutes) go to you for review instead of the 3rd-late rule', type: 'number', min: 0, max: 480, required: true, value: s.late_max_minutes },
+        { name: 'late_max_minutes', label: 'Arrivals later than this (minutes) are a half day unless you give a full day (instead of the 3rd-late rule)', type: 'number', min: 0, max: 480, required: true, value: s.late_max_minutes },
+        { name: 'late_out_minutes', label: 'Punch-out away from the site this many minutes after shift end counts as a half day', type: 'number', min: 0, max: 720, step: 1, required: true, value: s.late_out_minutes },
         { name: 'salary_visible_from', label: 'Staff can see salary from (month)', type: 'month', required: true, value: s.salary_visible_from },
         { name: 'profile_grace_days', label: 'Lock Punch In after this many days on the app if details are still missing (0 = never lock)', type: 'number', min: 0, max: 60, step: 1, required: true, value: s.profile_grace_days },
         { name: 'max_accuracy_m', label: 'Flag punches with GPS accuracy worse than (metres)', type: 'number', min: 10, max: 5000, required: true, value: s.max_accuracy_m },

@@ -123,7 +123,7 @@ const MISSING_LABEL = { phone: 'Mobile number', aadhaar: 'Aadhaar card', pan: 'P
 const DOC_LABEL = { aadhaar: 'Aadhaar', pan: 'PAN', bank: 'Bank passbook / cheque', photo: 'Photo', other: 'Other' };
 const FLAG_LABEL = {
   flagged_punch: 'Location flagged', missing_out: 'No punch out', short_hours: 'Short hours', missing_ot_out: 'OT not ended',
-  first_day: 'First day — late not counted', worked_week_off: 'Worked on weekly off — comp-off earned', comp_off: 'Comp-off', late_warning: 'Late (warning)', late_penalty: 'Late → half day', late_approval: 'Over 1 hour late — waiting for admin review',
+  first_day: 'First day — late not counted', worked_week_off: 'Worked on weekly off — comp-off earned', comp_off: 'Comp-off', late_warning: 'Late (warning)', late_penalty: 'Late → half day', late_approval: 'Over 1 hour late — half day unless the admin gives a full day', late_out: 'Punched out away from site after shift end — half day',
 };
 
 /** "Late 20m · warning 1 of 2" / "Late 20m · 3rd late → half day" */

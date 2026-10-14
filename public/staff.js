@@ -185,6 +185,8 @@ async function renderHome(main) {
       h('button', { class: 'btn btn-primary btn-block', onclick: () => { S.tab = 'more'; renderShell(); } }, 'Add my details now'))
     : t.allowed.map((kind) =>
       h('button', { class: 'btn btn-primary punch-btn', onclick: () => punchFlow(kind, t) }, PUNCH_LABEL[kind])),
+    t.on_duty && t.late_out_after && Date.now() > t.late_out_after - (S.me.late_out_minutes + 30) * 60000
+      ? h('div', { class: 'small', style: { marginTop: '10px', fontWeight: 600 } }, `⏰ Your shift ${Date.now() > t.late_out_after - S.me.late_out_minutes * 60000 ? 'ended' : 'ends'} at ${t.shift.end}. Punch out at your site before you leave — punching out later from somewhere else counts as a half day.`) : '',
     t.can_visit && t.on_duty ? h('button', { class: 'btn punch-btn visit', onclick: () => visitFlow(t) }, '📍 Field visit selfie (bank, client, office…)') : '');
 
   const facts = h('dl', { class: 'kv' },
@@ -255,9 +257,12 @@ function punchFlow(kind, today, note = '') {
   const confirm = h('button', { class: 'btn btn-primary hidden', style: { minWidth: '160px' } }, `Confirm ${PUNCH_LABEL[kind]}`);
   // Punching from a bank, GST office, client office…: show the detected address and ask where they are.
   const placeLine = h('div', { class: 'small' }, '📍 Finding the address…');
+  // Punching out away from the site well after the shift ended counts as a half day.
+  const lateOutWarn = h('div', { class: 'small hidden', style: { fontWeight: 700 } },
+    `⚠ Your shift ended at ${today.shift.end} and you are not at your site, so this punch-out counts as a HALF DAY (same as forgetting to punch out). Always punch out at your site before you leave.`);
   const offsiteNote = h('input', { type: 'text', maxlength: 200, placeholder: 'e.g. HDFC Bank Ameerpet – depositing cheques', 'aria-label': 'Where are you punching from?' });
   const offsite = h('div', { class: 'camera-offsite hidden' },
-    h('strong', {}, 'You are not at your branch. Where are you punching from?'), placeLine, offsiteNote,
+    h('strong', {}, 'You are not at your branch. Where are you punching from?'), placeLine, offsiteNote, lateOutWarn,
     h('div', { class: 'small' }, 'Your selfie, exact location and this note go to the admin for approval.'));
   const overlay = h('div', { class: 'camera' },
     h('div', { class: 'camera-view' }, video, preview,
@@ -312,6 +317,7 @@ function punchFlow(kind, today, note = '') {
     const show = kind !== 'VISIT' && !rough && n && !n.inside;
     offsite.classList.toggle('hidden', !show);
     if (!show) return;
+    lateOutWarn.classList.toggle('hidden', !(kind === 'OUT' && today.late_out_after && Date.now() > today.late_out_after));
     if (!today.offsite_allowed) {
       offsite.replaceChildren(h('strong', {}, 'You are not at your site.'), h('div', { class: 'small' }, 'Punching from other places is not allowed for you. Go to your site, or ask the admin.'));
       return;
@@ -426,9 +432,10 @@ function punchFlow(kind, today, note = '') {
     close();
     if (res.status === 'flagged') toast(`${PUNCH_LABEL[kind]} saved at ${fmtTime(res.at)}, but flagged for review: ${res.flag_reason}`, 'error');
     else toast(`${PUNCH_LABEL[kind]} done at ${fmtTime(res.at)}`);
+    if (res.late_out) toast(`You punched out ${fmtMinutes(res.late_out.minutes)} after your shift ended (${res.late_out.shift_end}), away from your site, so today counts as a half day. Next time punch out at your site before you leave.`, 'error');
     if (res.late) {
       toast(res.late.review
-        ? `You are ${fmtMinutes(res.late.minutes)} late. More than ${S.me.late_max_minutes / 60} hour late is sent to the admin, who decides full or half day.`
+        ? `You are ${fmtMinutes(res.late.minutes)} late. More than ${S.me.late_max_minutes / 60} hour late counts as a half day; the admin may change it to a full day at month end.`
         : res.late.half_day
           ? `You are late by ${fmtMinutes(res.late.minutes)}. This is late #${res.late.mark} this month — every ${res.late.every}rd late counts as a half day, so today is a half day.`
           : `You are late by ${fmtMinutes(res.late.minutes)}. This is late #${res.late.mark} this month — every ${res.late.every}rd late counts as a half day.`, 'error');
@@ -686,7 +693,8 @@ async function renderSalary(main) {
         h('dt', {}, 'Paid / unpaid leave'), h('dd', {}, `${a.paid_leave} / ${a.unpaid_leave}`),
         h('dt', {}, 'Week offs / holidays'), h('dd', {}, `${a.week_off} / ${a.holiday}`),
         h('dt', {}, 'Late marks'), h('dd', {}, `${a.late_days}`, h('span', { class: 'muted' }, ` (every ${S.me.late_warnings + 1}rd late is a half day)`)),
-        a.late_pending ? [h('dt', {}, 'Over 1 hour late, waiting for admin'), h('dd', {}, `${a.late_pending} day(s) — counted from hours worked until decided`)] : '',
+        a.late_pending ? [h('dt', {}, 'Over 1 hour late, waiting for admin'), h('dd', {}, `${a.late_pending} day(s) — counted as half days unless the admin gives a full day`)] : '',
+        a.late_out_days ? [h('dt', {}, 'Punched out late, away from site'), h('dd', {}, `${a.late_out_days} day(s) — counted as half days`)] : '',
         h('dt', {}, 'Total late time'), h('dd', {}, r.late_minutes ? fmtMinutes(r.late_minutes) : '—'),
         a.comp_off_earned ? [h('dt', {}, 'Comp-off earned'), h('dd', {}, `${a.comp_off_earned} day(s) — worked on weekly offs`)] : '')),
     h('div', { class: 'card' }, h('h2', {}, 'Earnings'),

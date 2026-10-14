@@ -9,7 +9,7 @@ function loadContext(db, emp, from, to) {
   const punches = new Map();
   const rows = db
     .prepare(
-      `SELECT id, kind, at, work_date, status, flag_reason FROM punches
+      `SELECT id, kind, at, work_date, status, flag_reason, inside_geofence, distance_m, note FROM punches
        WHERE employee_id = ? AND work_date BETWEEN ? AND ? AND status != 'rejected' AND kind IN ('IN', 'OUT')
        ORDER BY at`,
     )
@@ -103,7 +103,8 @@ function computeDay(emp, date, ctx, settings, today) {
     last_out: p.lastOut ? istTime(p.lastOut) : null,
     late_minutes: 0,
     late_mark: null,
-    late_review: null, // more than 1 hour late: 'pending' until an admin decides 'present' or 'half_day'
+    late_review: null, // more than 1 hour late: 'pending' (half day for now) until an admin decides 'present' or 'half_day'
+    late_out: null, // punched out away from the site long after shift end: { minutes, distance_m, note } — counts as half day
     late_over_max: false, // later than late_max_minutes (shown as "over 1 hour")
     future: date > today, // shown on the calendar, but not counted until the day has passed
     comp_off_earned: 0, // worked on a weekly off: earns a paid day off (comp-off) to take on a weekday
@@ -134,8 +135,16 @@ function computeDay(emp, date, ctx, settings, today) {
     day.override = { note: override.note, worked_minutes: override.worked_minutes };
     if (override.worked_minutes !== null) day.worked_minutes = override.worked_minutes;
   } else if (p.firstIn !== null) {
+    // Left early and punched out later from somewhere else ("forgot to punch out"): a punch-out away
+    // from their sites, more than late_out_minutes after shift end, counts like a missed punch-out.
+    const out = p.openIn === null ? list.find((x) => x.kind === 'OUT' && x.at === p.lastOut) : null;
+    const outLateBy = out ? Math.floor((out.at - shiftEndMs(emp, date)) / 60000) : 0;
+    // If the admin approves that punch (a genuine late meeting elsewhere), its time counts.
+    if (out && !out.inside_geofence && out.status !== 'approved' && outLateBy > settings.late_out_minutes) {
+      day.late_out = { minutes: outLateBy, distance_m: out.distance_m, note: out.note || '' };
+    }
     // More than late_max_minutes (1 hour) late: not part of the "every 3rd late" rule — it goes to an
-    // admin, who decides full or half day. Until then the day counts from the hours worked.
+    // admin, who decides full or half day at month end. Until then it counts as a half day.
     const veryLate = day.late_minutes > settings.late_max_minutes;
     const decision = veryLate ? ctx.late.get(date) : null;
     if (veryLate) day.late_review = decision ? decision.status : 'pending';
@@ -145,7 +154,7 @@ function computeDay(emp, date, ctx, settings, today) {
     } else if (decision) {
       // More than the allowed lateness: the admin decided full or half day.
       day.status = decision.status;
-    } else if (firstDay) {
+    } else if (firstDay && !day.late_out) {
       day.status = 'present';
     } else {
       day.status = statusFromMinutes(p.regularMinutes, settings, emp);
@@ -163,6 +172,9 @@ function computeDay(emp, date, ctx, settings, today) {
         flags.push('short_hours');
       }
       if (veryLate) flags.push('late_approval');
+      // Over 1 hour late (until reviewed) or a late punch-out from elsewhere: at most a half day.
+      if ((veryLate || day.late_out) && day.status === 'present') day.status = 'half_day';
+      if (day.late_out) flags.push('late_out');
     }
   } else if (day.holiday) {
     day.status = 'holiday';
@@ -240,6 +252,7 @@ function summarize(days) {
   s.late_minutes = 0;
   s.late_penalties = 0;
   s.late_pending = 0;
+  s.late_out_days = 0; // punched out away from the site long after shift end (counted as half day)
   for (const d of days) {
     if (d.future) continue;
     if (d.status in s) s[d.status]++;
@@ -250,6 +263,7 @@ function summarize(days) {
     else if (d.late_minutes > 0) s.late_short_days++;
     if (d.flags.includes('late_penalty')) s.late_penalties++;
     if (d.flags.includes('late_approval')) s.late_pending++;
+    if (d.flags.includes('late_out')) s.late_out_days++;
   }
   return s;
 }
@@ -316,4 +330,4 @@ function compOffBalance(db, emp, settings, nowMs = Date.now(), exceptRequestId =
   return { earned, used, balance: earned - used, earned_days: days };
 }
 
-module.exports = { computeRange, computeDay, pairPunches, summarize, shiftMinutes, leaveTotals, compOffBalance, workingDays };
+module.exports = { shiftEndMs, computeRange, computeDay, pairPunches, summarize, shiftMinutes, leaveTotals, compOffBalance, workingDays };

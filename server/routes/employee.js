@@ -1,7 +1,7 @@
 'use strict';
 const express = require('express');
 const { getSettings } = require('../db');
-const { computeRange, summarize, leaveTotals, compOffBalance, workingDays } = require('../attendance');
+const { shiftEndMs, computeRange, summarize, leaveTotals, compOffBalance, workingDays } = require('../attendance');
 const { employeeSalary } = require('../payroll');
 const {
   bad, HttpError, istDate, haversineMeters, fmtKm, decodeDataUrl, requireDate, requireMonth, daysInMonth, hashSecret,
@@ -61,6 +61,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       company_name: settings.company_name,
       late_warnings: settings.late_warnings,
       late_max_minutes: settings.late_max_minutes,
+      late_out_minutes: settings.late_out_minutes,
       salary_visible_from: settings.salary_visible_from,
       grace_minutes: settings.grace_minutes,
       late_offsets_ot: settings.late_offsets_ot,
@@ -120,6 +121,8 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       // Details still missing after the grace days: Punch In is blocked until they are filled in.
       profile_block: state.allowed.includes('IN') ? profileBlock(db, emp, today, settings.profile_grace_days) : null,
       on_duty: !!state.openIn,
+      // After this time a punch-out away from their site counts as a half day (like a missed punch-out).
+      late_out_after: state.openIn ? shiftEndMs(emp, workDate) + settings.late_out_minutes * 60000 : null,
       visits: db.prepare('SELECT id, at, note, place, status, lat, lng FROM visits WHERE employee_id = ? AND work_date = ? ORDER BY at').all(emp.id, workDate),
     });
   });
@@ -227,6 +230,11 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       );
     if (!inside) fillPlace('punches', result.lastInsertRowid, lat, lng);
     let late = null;
+    let lateOut = null;
+    if (kind === 'OUT') {
+      const [day] = computeRange(db, emp, workDate, workDate, settings, now);
+      if (day.late_out) lateOut = { minutes: day.late_out.minutes, shift_end: emp.shift_end };
+    }
     if (kind === 'IN') {
       const monthDays = computeRange(db, emp, `${workDate.slice(0, 7)}-01`, workDate, settings, now);
       const day = monthDays[monthDays.length - 1];
@@ -242,6 +250,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       ok: true,
       id: Number(result.lastInsertRowid),
       late,
+      late_out: lateOut,
       at: now,
       status: flags.length ? 'flagged' : 'ok',
       flag_reason: flags.join('; ') || null,
