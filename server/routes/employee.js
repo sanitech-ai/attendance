@@ -91,7 +91,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
   r.get('/today', (req, res) => {
     const now = ctx.now();
     const emp = req.employee;
-    const state = punchState(db, emp.id, now);
+    const state = punchState(db, emp, now);
     const today = istDate(now);
     const workDate = state.openIn?.work_date || today;
     const settings = getSettings(db);
@@ -121,6 +121,8 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       // Details still missing after the grace days: Punch In is blocked until they are filled in.
       profile_block: state.allowed.includes('IN') ? profileBlock(db, emp, today, settings.profile_grace_days) : null,
       on_duty: !!state.openIn,
+      // Didn't punch out before midnight: that day is a half day.
+      missed_out: state.missed && !state.openIn ? { date: state.missed.work_date, in_at: state.missed.at } : null,
       // Punched in away from their site: they can punch in again once they reach it.
       away_in: state.openIn && awayIn(state.openIn.id) ? { at: state.openIn.at } : null,
       // After this time a punch-out away from their site counts as a half day (like a missed punch-out).
@@ -142,7 +144,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       throw bad('Location is required. Allow location access and try again.');
     }
     const { buf } = decodeDataUrl(selfie, ['image/jpeg'], SELFIE_MAX_BYTES);
-    const state = punchState(db, emp.id, now);
+    const state = punchState(db, emp, now);
     if (!state.openIn) throw new HttpError(409, 'Punch in first — field visit selfies are for while you are on duty.');
     const last = db.prepare('SELECT at FROM visits WHERE employee_id = ? ORDER BY at DESC LIMIT 1').get(emp.id);
     if (last && now - last.at < 60000) throw new HttpError(409, 'You just added a visit. Wait a minute before adding another.');
@@ -198,7 +200,7 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     const acc = typeof accuracy === 'number' && accuracy >= 0 ? accuracy : null;
     const { buf } = decodeDataUrl(selfie, ['image/jpeg'], SELFIE_MAX_BYTES);
 
-    const state = punchState(db, emp.id, now);
+    const state = punchState(db, emp, now);
     // Punched in away from their site (e.g. from home): when they reach the site they punch in again,
     // and the day starts from there.
     const redo = kind === 'IN' && state.openIn ? awayIn(state.openIn.id) : null;

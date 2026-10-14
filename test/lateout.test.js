@@ -136,3 +136,58 @@ test('away-from-site rules wait until the branch has a GPS location', async (t) 
   assert.equal(d2.status, 'present');
   assert.deepEqual([d2.offsite_in, d2.late_out], [null, null]);
 });
+
+test('no punch-out by midnight: Punch Out closes and the day is a half day', async (t) => {
+  const s = await startServer(ist('2026-10-01', '08:00'));
+  t.after(() => s.close());
+  const admin = s.client();
+  await admin('POST', '/api/admin/setup', { username: 'firefueled', password: 'password123', name: 'Owner' });
+  const b = (await admin('POST', '/api/admin/branches', { name: 'HO', ...HQ, radius_m: 150, geofence_mode: 'flag' })).data.id;
+  const id = (await admin('POST', '/api/admin/employees', { branch_id: b, salary: 30000, weekly_offs: [], pin: '1234', code: 'A1', name: 'Asha', joined_on: '' })).data.id;
+  const a = s.client();
+  await a('POST', '/api/employee/login', { code: 'A1', pin: '1234' });
+  const punch = async (date, time, kind, where = HQ) => {
+    s.clock.now = ist(date, time);
+    return a('POST', '/api/employee/punch', { kind, ...where, accuracy: 10, selfie: JPEG, note: where === HQ ? '' : 'home' });
+  };
+  // 01 (first day on the app): punched in, never punched out
+  assert.equal((await punch('2026-10-01', '09:00', 'IN')).status, 200);
+  s.clock.now = ist('2026-10-01', '23:30');
+  assert.deepEqual((await a('GET', '/api/employee/today')).data.allowed, ['OUT'], 'still open before midnight');
+  s.clock.now = ist('2026-10-02', '00:10');
+  const today = (await a('GET', '/api/employee/today')).data;
+  assert.deepEqual(today.allowed, ['IN'], 'closed at midnight');
+  assert.equal(today.missed_out.date, '2026-10-01');
+  assert.equal((await punch('2026-10-02', '00:15', 'OUT', HOME)).status, 409, 'too late to punch out from home');
+  // 02: worked late at the site until 23:00 — counts in full
+  assert.equal((await punch('2026-10-02', '09:00', 'IN')).status, 200);
+  assert.equal((await punch('2026-10-02', '23:00', 'OUT')).status, 200);
+
+  s.clock.now = ist('2026-10-03', '08:00');
+  await admin('POST', '/api/admin/login', { username: 'firefueled', password: 'password123' });
+  const days = Object.fromEntries((await admin('GET', `/api/admin/attendance/${id}?month=2026-10`)).data.days.map((d) => [d.date.slice(8), d]));
+  assert.equal(days['01'].status, 'half_day', 'no punch-out, even on the first day');
+  assert.ok(days['01'].flags.includes('missing_out'));
+  assert.equal(days['02'].status, 'present');
+});
+
+test('night shift: Punch Out stays open until an hour after the shift ends', async (t) => {
+  const s = await startServer(ist('2026-10-01', '20:00'));
+  t.after(() => s.close());
+  const admin = s.client();
+  await admin('POST', '/api/admin/setup', { username: 'firefueled', password: 'password123', name: 'Owner' });
+  const b = (await admin('POST', '/api/admin/branches', { name: 'HO', ...HQ, radius_m: 150, geofence_mode: 'flag' })).data.id;
+  const id = (await admin('POST', '/api/admin/employees', { branch_id: b, salary: 30000, weekly_offs: [], pin: '1234', code: 'N1', name: 'Night', joined_on: '', follow_branch_shift: false, shift_start: '22:00', shift_end: '06:00' })).data.id;
+  const a = s.client();
+  await a('POST', '/api/employee/login', { code: 'N1', pin: '1234' });
+  s.clock.now = ist('2026-10-01', '21:55');
+  assert.equal((await a('POST', '/api/employee/punch', { kind: 'IN', ...HQ, accuracy: 10, selfie: JPEG })).status, 200);
+  s.clock.now = ist('2026-10-02', '03:00');
+  const mid = (await admin('GET', `/api/admin/attendance/${id}?month=2026-10`)).data.days.find((d) => d.date === '2026-10-01');
+  assert.equal(mid.status, 'working', 'still on the night shift after midnight');
+  s.clock.now = ist('2026-10-02', '06:05');
+  assert.equal((await a('POST', '/api/employee/punch', { kind: 'OUT', ...HQ, accuracy: 10, selfie: JPEG })).status, 200);
+  await admin('POST', '/api/admin/login', { username: 'firefueled', password: 'password123' });
+  const d1 = (await admin('GET', `/api/admin/attendance/${id}?month=2026-10`)).data.days.find((d) => d.date === '2026-10-01');
+  assert.equal(d1.status, 'present');
+});

@@ -1,5 +1,6 @@
 'use strict';
 const { istDate, istTime, istMs, isWeeklyOff, shiftMinutes } = require('./util');
+const { punchOutDeadline } = require('./common');
 
 /**
  * Loads everything needed to compute day-by-day attendance for one employee
@@ -161,13 +162,14 @@ function computeDay(emp, date, ctx, settings, today) {
     const veryLate = day.late_minutes > settings.late_max_minutes;
     const decision = veryLate ? ctx.late.get(date) : null;
     if (veryLate) day.late_review = decision ? decision.status : 'pending';
-    if (p.openIn !== null && date >= today) {
+    // Still on duty until Punch Out closes (midnight; later for a night shift).
+    if (p.openIn !== null && (date >= today || ctx.nowMs < punchOutDeadline(emp, date))) {
       day.status = 'working';
       if (veryLate && !decision) flags.push('late_approval');
     } else if (decision) {
       // More than the allowed lateness: the admin decided full or half day.
       day.status = decision.status;
-    } else if (firstDay && !day.late_out && !day.offsite_in) {
+    } else if (firstDay && p.openIn === null && !day.late_out && !day.offsite_in) {
       day.status = 'present';
     } else {
       day.status = statusFromMinutes(p.regularMinutes, settings, emp);
@@ -179,8 +181,8 @@ function computeDay(emp, date, ctx, settings, today) {
       }
       if (p.openIn !== null) {
         flags.push('missing_out');
-        // Came in but never punched out: give half a day until an admin corrects it.
-        if (day.status === 'absent') day.status = 'half_day';
+        // No punch-out by midnight: a half day (an admin can correct it in the register).
+        day.status = 'half_day';
       } else if (day.status === 'absent') {
         flags.push('short_hours');
       }
@@ -239,6 +241,7 @@ function computeRange(db, emp, from, to, settings, nowMs = Date.now()) {
   // Start at the 1st of the month so late marks earlier in the month are counted.
   const start = `${from.slice(0, 7)}-01`;
   const ctx = loadContext(db, emp, start, to);
+  ctx.nowMs = nowMs;
   const today = istDate(nowMs);
   const days = [];
   const late = { month: null, count: 0 };

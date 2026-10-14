@@ -185,12 +185,15 @@ async function renderHome(main) {
       h('button', { class: 'btn btn-primary btn-block', onclick: () => { S.tab = 'more'; renderShell(); } }, 'Add my details now'))
     : t.allowed.map((kind) =>
       h('button', { class: 'btn btn-primary punch-btn', onclick: () => punchFlow(kind, t) }, PUNCH_LABEL[kind])),
+    t.missed_out && !t.on_duty ? h('div', { class: 'profile-block', style: { marginTop: '12px' } },
+      h('strong', {}, `⚠ You did not punch out on ${fmtDate(t.missed_out.date)}.`),
+      h('p', { class: 'small' }, 'Punch Out closes at midnight, so that day counts as a half day. Always punch out at your site before you leave.')) : '',
     t.away_in ? h('div', { class: 'profile-block', style: { marginTop: '12px' } },
       h('strong', {}, `📍 You punched in away from your site at ${fmtTime(t.away_in.at)}.`),
       h('p', { class: 'small' }, 'That only counts if the admin approves it (bank, client office…) — otherwise today is a half day. If you have now reached your site, punch in again here: your day starts from this punch.'),
       h('button', { class: 'btn btn-primary btn-block', onclick: () => punchFlow('IN', t) }, '✓ I’m at my site — Punch In here')) : '',
     t.on_duty && t.late_out_after && Date.now() > t.late_out_after - (S.me.late_out_minutes + 30) * 60000
-      ? h('div', { class: 'small', style: { marginTop: '10px', fontWeight: 600 } }, `⏰ Your shift ${Date.now() > t.late_out_after - S.me.late_out_minutes * 60000 ? 'ended' : 'ends'} at ${t.shift.end}. Punch out at your site before you leave — punching out later from somewhere else counts as a half day.`) : '',
+      ? h('div', { class: 'small', style: { marginTop: '10px', fontWeight: 600 } }, `⏰ Your shift ${Date.now() > t.late_out_after - S.me.late_out_minutes * 60000 ? 'ended' : 'ends'} at ${t.shift.end}. Punch out at your site before you leave — punching out later from somewhere else, or not punching out by midnight, counts as a half day.`) : '',
     t.can_visit && t.on_duty ? h('button', { class: 'btn punch-btn visit', onclick: () => visitFlow(t) }, '📍 Field visit selfie (bank, client, office…)') : '');
 
   const facts = h('dl', { class: 'kv' },

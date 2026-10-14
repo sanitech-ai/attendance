@@ -1,5 +1,5 @@
 'use strict';
-const { bad, decodeDataUrl, HttpError, haversineMeters, fmtKm } = require('./util');
+const { bad, decodeDataUrl, HttpError, haversineMeters, fmtKm, istMs, addDays } = require('./util');
 
 const PUNCH_WINDOW_MS = 20 * 60 * 60 * 1000;
 const DOC_TYPES = ['aadhaar', 'pan', 'bank', 'photo', 'other'];
@@ -151,16 +151,33 @@ function validPin(pin) {
 }
 
 /** An open session in the last 20 hours decides whether the next punch is In or Out. */
-function punchState(db, employeeId, nowMs) {
+/**
+ * Whether the employee is on duty. Punch Out closes at midnight after the shift's date (for a night
+ * shift: an hour after it ends); a shift still open then is a missed punch-out (half day), and
+ * `missed` reports it so the app can tell them.
+ */
+function punchState(db, emp, nowMs) {
   const rows = db
     .prepare(
       `SELECT id, kind, at, work_date FROM punches
        WHERE employee_id = ? AND at > ? AND status != 'rejected' AND kind IN ('IN', 'OUT') ORDER BY at`,
     )
-    .all(employeeId, nowMs - PUNCH_WINDOW_MS);
+    .all(emp.id, nowMs - PUNCH_WINDOW_MS);
   let openIn = null;
   for (const p of rows) openIn = p.kind === 'IN' ? p : null;
-  return { openIn, allowed: openIn ? ['OUT'] : ['IN'], last: rows[rows.length - 1] || null };
+  let missed = null;
+  if (openIn && nowMs >= punchOutDeadline(emp, openIn.work_date)) {
+    missed = openIn;
+    openIn = null;
+  }
+  return { openIn, missed, allowed: openIn ? ['OUT'] : ['IN'], last: rows[rows.length - 1] || null };
+}
+
+/** Last moment to punch out for a shift starting on `date`. */
+function punchOutDeadline(emp, date) {
+  const midnight = istMs(addDays(date, 1), '00:00');
+  if (!(emp.shift_end <= emp.shift_start)) return midnight;
+  return Math.max(midnight, istMs(addDays(date, 1), emp.shift_end) + 3600000); // night shift
 }
 
 /** Normalises and validates a document number; Aadhaar is never stored in full. */
@@ -227,6 +244,7 @@ function assertMonthOpen(db, month) {
 }
 
 module.exports = {
+  punchOutDeadline,
   allowedBranchIds, measurePunch, profileMissing, profileBlock, profileDeadline, maskAadhaar, EMPLOYEE_CODE_RE, findEmployeeByCode, paymentDetails, publicEmployee, validPin, punchState, createDocument, normalizeDocNumber, sendStoredFile, notFound,
   assertMonthOpen, DOC_COLUMNS, DOC_TYPES,
 };
