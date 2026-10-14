@@ -4,7 +4,7 @@ const { getSettings } = require('../db');
 const { shiftEndMs, computeRange, summarize, leaveTotals, compOffBalance, workingDays } = require('../attendance');
 const { employeeSalary } = require('../payroll');
 const {
-  bad, HttpError, istDate, haversineMeters, fmtKm, decodeDataUrl, requireDate, requireMonth, daysInMonth, hashSecret,
+  bad, HttpError, istDate, istTime, haversineMeters, fmtKm, decodeDataUrl, requireDate, requireMonth, daysInMonth, hashSecret,
 } = require('../util');
 const {
   allowedBranchIds, measurePunch, profileMissing, profileBlock, profileDeadline, findEmployeeByCode, paymentDetails, publicEmployee, validPin, punchState, createDocument, sendStoredFile, notFound, DOC_COLUMNS,
@@ -121,6 +121,8 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       // Details still missing after the grace days: Punch In is blocked until they are filled in.
       profile_block: state.allowed.includes('IN') ? profileBlock(db, emp, today, settings.profile_grace_days) : null,
       on_duty: !!state.openIn,
+      // Punched in away from their site: they can punch in again once they reach it.
+      away_in: state.openIn && awayIn(state.openIn.id) ? { at: state.openIn.at } : null,
       // After this time a punch-out away from their site counts as a half day (like a missed punch-out).
       late_out_after: state.openIn ? shiftEndMs(emp, workDate) + settings.late_out_minutes * 60000 : null,
       visits: db.prepare('SELECT id, at, note, place, status, lat, lng FROM visits WHERE employee_id = ? AND work_date = ? ORDER BY at').all(emp.id, workDate),
@@ -177,6 +179,12 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     res.json({ place: await addressAt(lat, lng, ctx.fetch).catch(() => '') });
   });
 
+  /** The open Punch In, if it was made away from their sites and not approved (the day then counts as half). */
+  function awayIn(punchId) {
+    const p = db.prepare("SELECT p.*, b.location_set FROM punches p JOIN employees e ON e.id = p.employee_id JOIN branches b ON b.id = e.branch_id WHERE p.id = ? AND p.kind = 'IN'").get(punchId);
+    return p && p.location_set && !p.inside_geofence && p.status !== 'approved' && p.status !== 'rejected' ? p : null;
+  }
+
   r.post('/punch', (req, res) => {
     const now = ctx.now();
     const emp = req.employee;
@@ -191,10 +199,13 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     const { buf } = decodeDataUrl(selfie, ['image/jpeg'], SELFIE_MAX_BYTES);
 
     const state = punchState(db, emp.id, now);
-    if (!state.allowed.includes(kind)) {
+    // Punched in away from their site (e.g. from home): when they reach the site they punch in again,
+    // and the day starts from there.
+    const redo = kind === 'IN' && state.openIn ? awayIn(state.openIn.id) : null;
+    if (!state.allowed.includes(kind) && !redo) {
       throw new HttpError(409, `You can't do that right now. Allowed: ${state.allowed.join(', ')}`);
     }
-    if (kind === 'IN') {
+    if (kind === 'IN' && !redo) {
       const block = profileBlock(db, emp, istDate(now), getSettings(db).profile_grace_days);
       if (block) {
         const labels = { phone: 'mobile number', aadhaar: 'Aadhaar card', pan: 'PAN card', payment: 'bank account or UPI ID' };
@@ -210,6 +221,9 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     if (!inside && mode === 'block' && !emp.allow_offsite) {
       const where = nearest ? `${fmtKm(nearest.distance)} from ${nearest.branch.name}` : 'not near any branch';
       throw new HttpError(403, `You are ${where}. Punch from inside one of your sites. If you are inside, wait for a better GPS signal and retry.`);
+    }
+    if (redo && !inside) {
+      throw bad(nearest ? `You are still ${fmtKm(nearest.distance)} from ${nearest.branch.name}. Punch in again when you reach your site.` : 'Punch in again when you reach your site.');
     }
     // Punching from a bank, GST office, client office…: they must say where; an admin approves it.
     if (!inside && note.length < 3) throw bad('You are not at one of your sites. Write where you are punching from (e.g. HDFC Bank Ameerpet, client office).');
@@ -229,6 +243,10 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
         inside ? null : note,
       );
     if (!inside) fillPlace('punches', result.lastInsertRowid, lat, lng);
+    if (redo) {
+      db.prepare("UPDATE punches SET status = 'rejected', flag_reason = ? WHERE id = ?")
+        .run(`${redo.flag_reason ? `${redo.flag_reason}; ` : ''}replaced by Punch In at the site at ${istTime(now)}`, redo.id);
+    }
     let late = null;
     let lateOut = null;
     if (kind === 'OUT') {

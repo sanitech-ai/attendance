@@ -942,6 +942,7 @@ module.exports = function adminRoutes(ctx) {
         late_days: s.late_days, late_short_days: s.late_short_days, late_hour_days: s.late_hour_days, late_minutes: s.late_minutes,
         late_penalties: s.late_penalties, late_pending: s.late_pending,
         late_out: days.filter((d) => d.late_out).map((d) => ({ date: d.date, last_out: d.last_out, ...d.late_out })),
+        offsite_in: days.filter((d) => d.offsite_in && d.status !== 'working').map((d) => ({ date: d.date, ...d.offsite_in })),
         comp_off_earned: s.comp_off_earned,
         week_off_worked: days.filter((d) => d.comp_off_earned).map((d) => ({ date: d.date, first_in: d.first_in, last_out: d.last_out, earned: d.comp_off_earned })),
         first_day: days.find((d) => d.flags.includes('first_day'))?.date || null,
@@ -963,10 +964,10 @@ module.exports = function adminRoutes(ctx) {
     const month = requireMonth(req.query.month);
     const st = getSettings(db);
     const rows = [['Employee ID', 'Name', 'Branch', `Late ${st.grace_minutes} min – ${st.late_max_minutes / 60} hour — days`, `Late over ${st.late_max_minutes / 60} hour — days`, 'Late days in total', 'Total late (minutes)',
-      'Late days counted as half day', 'Punched out late away from site — days (half day)', 'Weekly offs worked (comp-off earned)', 'Late dates', 'Late punch-out dates', 'Weekly offs worked']];
+      'Late days counted as half day', 'Punched out late away from site — days (half day)', 'Punched in away from site, not approved — days (half day)', 'Weekly offs worked (comp-off earned)', 'Late dates', 'Late punch-out dates', 'Away punch-in dates', 'Weekly offs worked']];
     for (const r2 of lateOtRows(month, req.query.branch_id ? id(req.query.branch_id) : null, typeOf(req))) {
-      rows.push([r2.code, r2.name, r2.branch_name, r2.late_short_days, r2.late_hour_days, r2.late_days, r2.late_minutes, r2.late_penalties, r2.late_out.length, r2.comp_off_earned,
-        r2.late.map((l) => `${l.date.slice(8)} (${l.minutes}m)`).join(' '), r2.late_out.map((l) => `${l.date.slice(8)} (out ${l.last_out})`).join(' '), r2.week_off_worked.map((w) => w.date.slice(8)).join(' ')]);
+      rows.push([r2.code, r2.name, r2.branch_name, r2.late_short_days, r2.late_hour_days, r2.late_days, r2.late_minutes, r2.late_penalties, r2.late_out.length, r2.offsite_in.length, r2.comp_off_earned,
+        r2.late.map((l) => `${l.date.slice(8)} (${l.minutes}m)`).join(' '), r2.late_out.map((l) => `${l.date.slice(8)} (out ${l.last_out})`).join(' '), r2.offsite_in.map((l) => `${l.date.slice(8)} (in ${l.at})`).join(' '), r2.week_off_worked.map((w) => w.date.slice(8)).join(' ')]);
     }
     sendCsv(res, `late-report-${month}.csv`, rows);
   });

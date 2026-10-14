@@ -569,8 +569,9 @@ async function pageLateOt(el, params) {
       { label: 'Total late', class: 'num', render: (r) => (r.late_minutes ? fmtMinutes(r.late_minutes) : '—') },
       { label: 'Half days from lates', class: 'num', render: (r) => n(r.late_penalties) },
       { label: 'Late punch-outs (half day)', class: 'num', render: (r) => h('strong', { style: r.late_out.length ? { color: 'var(--bad)' } : null }, n(r.late_out.length)) },
+      { label: 'Punch-ins away from site (half day)', class: 'num', render: (r) => h('strong', { style: r.offsite_in.length ? { color: 'var(--bad)' } : null }, n(r.offsite_in.length)) },
       { label: 'Weekly offs worked', class: 'num', render: (r) => n(r.comp_off_earned) },
-      { label: '', render: (r) => (r.late.length || r.late_out.length || r.week_off_worked.length || r.first_day ? h('button', { class: 'btn btn-sm', onclick: () => lateOtDetail(r) }, 'Dates') : '') },
+      { label: '', render: (r) => (r.late.length || r.late_out.length || r.offsite_in.length || r.week_off_worked.length || r.first_day ? h('button', { class: 'btn btn-sm', onclick: () => lateOtDetail(r) }, 'Dates') : '') },
     ], d.rows, { empty: 'No employees.' }),
     h('p', { class: 'small muted' }, 'Working on a weekly off earns a comp-off (a paid day off to take on a weekday). ', `Late = first punch in more than ${d.grace_minutes} minutes after shift start. No late is counted on an employee’s joining day or their first day on the app. Days corrected in the attendance register are not counted.`));
 }
@@ -593,6 +594,13 @@ function lateOtDetail(r) {
       { label: 'Where', render: (l) => [l.distance_m != null ? fmtDistance(l.distance_m) + ' from site' : '', l.note ? h('div', { class: 'small muted' }, `“${l.note}”`) : ''] },
       { label: 'Result', render: () => 'half day' },
     ], r.late_out) : h('p', { class: 'muted' }, 'None'),
+    h('h3', {}, `Punched in away from site, not approved (${r.offsite_in.length})`),
+    r.offsite_in.length ? table([
+      { label: 'Date', render: (l) => fmtDate(l.date) },
+      { label: 'Punched in', render: (l) => l.at },
+      { label: 'Where', render: (l) => [l.distance_m != null ? fmtDistance(l.distance_m) + ' from site' : '', l.note ? h('div', { class: 'small muted' }, `“${l.note}”`) : ''] },
+      { label: 'Result', render: (l) => h('span', {}, 'half day · ', h('a', { href: `#/punches?date=${l.date}&employee_id=${r.employee_id}` }, 'approve if genuine')) },
+    ], r.offsite_in) : h('p', { class: 'muted' }, 'None'),
     h('h3', {}, `Weekly offs worked (${r.week_off_worked.length})`),
     r.week_off_worked.length ? table([
       { label: 'Date', render: (w) => fmtDate(w.date) },
@@ -1377,7 +1385,7 @@ async function pagePayroll(el, params) {
         h('li', {}, 'Per-day pay = monthly salary ÷ days in the month. Paid days = present + ½ × half days + paid leave + week offs + holidays.'),
         h('li', {}, 'No overtime pay. Working on a weekly off is paid like any present day and also earns a comp-off: a paid day off to take on a weekday (shown on the Leave requests page).'),
         h('li', {}, `Full day = the employee’s shift length minus the ${A.me.settings.grace_minutes}-minute grace (9:00–18:00 → ${fmtMinutes(540 - A.me.settings.grace_minutes)} worked). Half day needs ${A.me.settings.half_day_hours} h. A missing punch-out counts as a half day until you correct it.`),
-        h('li', {}, `Late arrivals: every ${A.me.settings.late_warnings + 1}${A.me.settings.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month counts as a half day; the others are warnings. A late arrival who stays until shift end is otherwise a full day. More than ${A.me.settings.late_max_minutes} min late is not part of that count: it is a half day unless you give a full day in Late approvals. Punching out away from the site more than ${A.me.settings.late_out_minutes} min after shift end also counts as a half day. Every late day and the month’s total late time are shown to you and the employee.`),
+        h('li', {}, `Late arrivals: every ${A.me.settings.late_warnings + 1}${A.me.settings.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month counts as a half day; the others are warnings. A late arrival who stays until shift end is otherwise a full day. More than ${A.me.settings.late_max_minutes} min late is not part of that count: it is a half day unless you give a full day in Late approvals. Punching out away from the site more than ${A.me.settings.late_out_minutes} min after shift end also counts as a half day, and so does a Punch In away from the site that you don’t approve. Every late day and the month’s total late time are shown to you and the employee.`),
         h('li', {}, 'Net = base + additions − deductions − advances.'))));
 }
 
@@ -1558,6 +1566,7 @@ async function pageSettings(el, params) {
       h('dt', {}, 'Late after'), h('dd', {}, `${s.grace_minutes} minutes past shift start`),
       h('dt', {}, 'Late rule'), h('dd', {}, `Every ${s.late_warnings + 1}${s.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month is a half day (others are warnings)`),
       h('dt', {}, 'Very late'), h('dd', {}, `More than ${s.late_max_minutes} min late: half day by default; you can give a full day in Late approvals (not part of the 3rd-late rule)`),
+      h('dt', {}, 'Punch in from elsewhere'), h('dd', {}, 'A Punch In away from their sites counts only if you approve it (Punches & selfies); otherwise the day is a half day. Staff who reach the site punch in again there and the day starts from that punch.'),
       h('dt', {}, 'Late punch-out'), h('dd', {}, `Punching out away from their site more than ${s.late_out_minutes} min after shift end counts as a half day, like a missed punch-out. Approving that punch (Punches & selfies) counts its real time.`),
       h('dt', {}, 'Staff salary view'), h('dd', {}, `From ${fmtMonth(s.salary_visible_from)} onwards`),
       h('dt', {}, 'GPS accuracy'), h('dd', {}, `Flag punches worse than ±${s.max_accuracy_m} m`),

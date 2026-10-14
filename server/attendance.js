@@ -50,7 +50,10 @@ function loadContext(db, emp, from, to) {
   // The first day someone used the app: they often installed it partway through the day.
   const firstAppDay = db.prepare("SELECT MIN(work_date) AS d FROM punches WHERE employee_id = ? AND status != 'rejected'").get(emp.id)?.d || null;
 
-  return { punches, overrides, leaves, holidays, late, firstAppDay };
+  // "Away from their site" rules only apply once their branch has a GPS location.
+  const homeLocated = !!db.prepare('SELECT location_set FROM branches WHERE id = ?').get(emp.branch_id)?.location_set;
+
+  return { punches, overrides, leaves, holidays, late, firstAppDay, homeLocated };
 }
 
 /** Pairs IN->OUT punches; an open session is reported, not counted. */
@@ -105,6 +108,7 @@ function computeDay(emp, date, ctx, settings, today) {
     late_mark: null,
     late_review: null, // more than 1 hour late: 'pending' (half day for now) until an admin decides 'present' or 'half_day'
     late_out: null, // punched out away from the site long after shift end: { minutes, distance_m, note } — counts as half day
+    offsite_in: null, // punched in away from their site and the admin hasn't approved it: { at, distance_m, note } — counts as half day
     late_over_max: false, // later than late_max_minutes (shown as "over 1 hour")
     future: date > today, // shown on the calendar, but not counted until the day has passed
     comp_off_earned: 0, // worked on a weekly off: earns a paid day off (comp-off) to take on a weekday
@@ -135,12 +139,21 @@ function computeDay(emp, date, ctx, settings, today) {
     day.override = { note: override.note, worked_minutes: override.worked_minutes };
     if (override.worked_minutes !== null) day.worked_minutes = override.worked_minutes;
   } else if (p.firstIn !== null) {
+    // Away from all their sites, and not approved by the admin (approving = it was genuine work there).
+    const away = (x) => ctx.homeLocated && !x.inside_geofence && x.status !== 'approved';
+    // Punched in from home (or anywhere but their site) and never punched in again at the site: only an
+    // admin approval makes it count, otherwise it is at most a half day.
+    const firstInPunch = list.find((x) => x.kind === 'IN');
+    if (firstInPunch && away(firstInPunch)) {
+      day.offsite_in = { at: istTime(firstInPunch.at), distance_m: firstInPunch.distance_m, note: firstInPunch.note || '' };
+      flags.push('offsite_in');
+    }
     // Left early and punched out later from somewhere else ("forgot to punch out"): a punch-out away
     // from their sites, more than late_out_minutes after shift end, counts like a missed punch-out.
     const out = p.openIn === null ? list.find((x) => x.kind === 'OUT' && x.at === p.lastOut) : null;
     const outLateBy = out ? Math.floor((out.at - shiftEndMs(emp, date)) / 60000) : 0;
     // If the admin approves that punch (a genuine late meeting elsewhere), its time counts.
-    if (out && !out.inside_geofence && out.status !== 'approved' && outLateBy > settings.late_out_minutes) {
+    if (out && away(out) && outLateBy > settings.late_out_minutes) {
       day.late_out = { minutes: outLateBy, distance_m: out.distance_m, note: out.note || '' };
     }
     // More than late_max_minutes (1 hour) late: not part of the "every 3rd late" rule — it goes to an
@@ -154,7 +167,7 @@ function computeDay(emp, date, ctx, settings, today) {
     } else if (decision) {
       // More than the allowed lateness: the admin decided full or half day.
       day.status = decision.status;
-    } else if (firstDay && !day.late_out) {
+    } else if (firstDay && !day.late_out && !day.offsite_in) {
       day.status = 'present';
     } else {
       day.status = statusFromMinutes(p.regularMinutes, settings, emp);
@@ -172,8 +185,8 @@ function computeDay(emp, date, ctx, settings, today) {
         flags.push('short_hours');
       }
       if (veryLate) flags.push('late_approval');
-      // Over 1 hour late (until reviewed) or a late punch-out from elsewhere: at most a half day.
-      if ((veryLate || day.late_out) && day.status === 'present') day.status = 'half_day';
+      // Over 1 hour late (until reviewed), or punched in / out from elsewhere: at most a half day.
+      if ((veryLate || day.late_out || day.offsite_in) && day.status === 'present') day.status = 'half_day';
       if (day.late_out) flags.push('late_out');
     }
   } else if (day.holiday) {
@@ -253,6 +266,7 @@ function summarize(days) {
   s.late_penalties = 0;
   s.late_pending = 0;
   s.late_out_days = 0; // punched out away from the site long after shift end (counted as half day)
+  s.offsite_in_days = 0; // punched in away from the site, not approved (counted as half day)
   for (const d of days) {
     if (d.future) continue;
     if (d.status in s) s[d.status]++;
@@ -264,6 +278,7 @@ function summarize(days) {
     if (d.flags.includes('late_penalty')) s.late_penalties++;
     if (d.flags.includes('late_approval')) s.late_pending++;
     if (d.flags.includes('late_out')) s.late_out_days++;
+    if (d.flags.includes('offsite_in') && !['working'].includes(d.status)) s.offsite_in_days++;
   }
   return s;
 }
