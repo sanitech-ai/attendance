@@ -6,7 +6,7 @@ const { computePayroll } = require('../payroll');
 const { planImport, randomPin } = require('../importer');
 const { resolveMapsLink, placeName } = require('../maps');
 const {
-  bad, HttpError, istDate, requireDate, requireMonth, daysInMonth, hashSecret, toPaise, isTime, isDate, haversineMeters, fmtKm, isWeeklyOff, WEEKLY_OFF_RE,
+  bad, HttpError, istDate, istTime, istMs, addDays, requireDate, requireMonth, daysInMonth, hashSecret, toPaise, isTime, isDate, haversineMeters, fmtKm, isWeeklyOff, WEEKLY_OFF_RE,
 } = require('../util');
 const {
   profileMissing, paymentDetails, publicEmployee, validPin, createDocument, sendStoredFile, notFound, assertMonthOpen, DOC_COLUMNS,
@@ -590,6 +590,44 @@ module.exports = function adminRoutes(ctx) {
     });
     ctx.audit(req, 'staff.reset', { employees: ids.length, branches });
     res.json({ ok: true, employees: ids.length, branches });
+  });
+
+  // Staff who got out of step (tapped Punch Out in the morning, Punch In in the evening): for each day of
+  // the month, the first punch becomes Punch In, the next Punch Out, and so on, all on that day.
+  r.post('/punches/fix-order', (req, res) => {
+    requireAttendanceEditor(req);
+    const { employee_id, month: m } = req.body || {};
+    const month = requireMonth(m);
+    assertMonthOpen(db, month);
+    const emp = db.prepare('SELECT * FROM employees WHERE id = ?').get(id(employee_id));
+    if (!emp) throw notFound();
+    if (emp.shift_end <= emp.shift_start) throw bad('This works for day shifts only. For a night shift, correct the days in the attendance register.');
+    const [from, to] = monthRange(month);
+    const rows = db.prepare(
+      `SELECT id, kind, at, work_date FROM punches WHERE employee_id = ? AND status != 'rejected' AND kind IN ('IN', 'OUT')
+         AND at >= ? AND at < ? ORDER BY at`,
+    ).all(emp.id, istMs(from, '00:00'), istMs(addDays(to, 1), '00:00'));
+    const changed = [];
+    const byDay = new Map();
+    for (const p of rows) {
+      const date = istDate(p.at);
+      if (!byDay.has(date)) byDay.set(date, []);
+      byDay.get(date).push(p);
+    }
+    const update = db.prepare('UPDATE punches SET kind = ?, work_date = ? WHERE id = ?');
+    tx(db, () => {
+      for (const [date, list] of byDay) {
+        list.forEach((p, i) => {
+          const kind = i % 2 === 0 ? 'IN' : 'OUT';
+          if (p.kind !== kind || p.work_date !== date) {
+            update.run(kind, date, p.id);
+            changed.push({ id: p.id, date, time: istTime(p.at), from: p.kind, to: kind, was_date: p.work_date });
+          }
+        });
+      }
+    });
+    ctx.audit(req, 'punches.fix_order', { employee_id: emp.id, month, changed: changed.length });
+    res.json({ ok: true, changed });
   });
 
   // Delete a single punch or field visit with its selfie (e.g. a test or duplicate entry).

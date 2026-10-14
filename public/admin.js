@@ -539,7 +539,16 @@ function editDay(r, d, finalized) {
       return true;
     },
   });
-  document.querySelector('.modal .form').prepend(info, h('p', { class: 'small' }, h('a', { href: `#/punches?date=${d.date}&employee_id=${r.employee_id}`, onclick: () => dlg.close() }, 'See selfies for this day →')));
+  // Out-of-step punches (Punch Out in the morning, Punch In in the evening): put them back in order.
+  const fixOrder = h('button', { class: 'btn btn-sm', type: 'button', onclick: async (e) => {
+    if (!(await confirmDialog('Fix In / Out order?', `For every day in ${fmtMonth(d.date.slice(0, 7))}, ${r.name}'s first punch becomes Punch In, the next Punch Out, and so on. Use this when they tapped Punch Out in the morning and Punch In in the evening.`, 'Fix order'))) return;
+    const res = await run(() => api('POST', '/api/admin/punches/fix-order', { employee_id: r.employee_id, month: d.date.slice(0, 7) }), e.currentTarget);
+    if (!res) return;
+    dlg.close();
+    toast(res.changed.length ? `Fixed ${res.changed.length} punch(es): ${res.changed.map((x) => `${fmtDate(x.date)} ${x.time} → ${x.to === 'IN' ? 'In' : 'Out'}`).join(', ')}` : 'Punches were already in order.');
+    route();
+  } }, '⇅ Fix In / Out order for this month');
+  document.querySelector('.modal .form').prepend(info, h('p', { class: 'small row' }, h('a', { href: `#/punches?date=${d.date}&employee_id=${r.employee_id}`, onclick: () => dlg.close() }, 'See selfies for this day →'), fixOrder));
 }
 
 // ---------------------------------------------------------------- month-end half-day review

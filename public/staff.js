@@ -184,7 +184,8 @@ async function renderHome(main) {
       h('ul', { class: 'checklist' }, blocked.missing.map((m) => h('li', { class: 'todo' }, '◻ ', MISSING_LABEL[m]))),
       h('button', { class: 'btn btn-primary btn-block', onclick: () => { S.tab = 'more'; renderShell(); } }, 'Add my details now'))
     : t.allowed.map((kind) =>
-      h('button', { class: 'btn btn-primary punch-btn', onclick: () => punchFlow(kind, t) }, PUNCH_LABEL[kind])),
+      h('button', { class: 'btn btn-primary punch-btn', onclick: () => punchFlow(kind, t) }, PUNCH_LABEL[kind],
+        kind === 'OUT' && t.day.first_in ? h('div', { class: 'small', style: { fontWeight: 400 } }, `You punched in at ${t.day.first_in}${t.work_date !== todayIST() ? ` on ${fmtDate(t.work_date)}` : ''}`) : '')),
     t.missed_out && !t.on_duty ? h('div', { class: 'profile-block', style: { marginTop: '12px' } },
       h('strong', {}, `⚠ You did not punch out on ${fmtDate(t.missed_out.date)}.`),
       h('p', { class: 'small' }, 'Punch Out closes at midnight, so that day counts as a half day. Always punch out at your site before you leave.')) : '',
