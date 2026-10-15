@@ -123,16 +123,16 @@ const MISSING_LABEL = { phone: 'Mobile number', aadhaar: 'Aadhaar card', pan: 'P
 const DOC_LABEL = { aadhaar: 'Aadhaar', pan: 'PAN', bank: 'Bank passbook / cheque', photo: 'Photo', other: 'Other' };
 const FLAG_LABEL = {
   flagged_punch: 'Location flagged', missing_out: 'No punch out by midnight — half day', short_hours: 'Short hours', missing_ot_out: 'OT not ended',
-  first_day: 'First day — late not counted', worked_week_off: 'Worked on weekly off — comp-off earned', comp_off: 'Comp-off', late_warning: 'Late (warning)', late_penalty: 'Late → half day', late_approval: 'Over 1 hour late — half day unless the admin gives a full day', late_out: 'Punched out away from site after shift end — half day', offsite_in: 'Punched in away from site — half day unless approved',
+  first_day: 'First day — late not counted', worked_week_off: 'Worked on weekly off — comp-off earned', comp_off: 'Comp-off', late_warning: 'Late (warning)', late_penalty: 'Late → half day', late_approval: 'Over 1 hour late — half day, reviewed by the admin at month end', late_out: 'Punched out away from site after shift end — half day', offsite_in: 'Punched in away from site — half day unless approved',
 };
 
 /** "Late 20m · warning 1 of 2" / "Late 20m · 3rd late → half day" */
-/** "Late 20m · late #1 this month (every 3rd is a half day)" / "Late 1h 30m · waiting for approval" */
+/** "Late 20m · late #1 this month (every 3rd is a half day)" / "Late 1h 30m · half day — the admin reviews it at month end" */
 function lateText(day, warnings) {
   if (!day.late_minutes) return '';
   const ord = (n) => `${n}${({ 1: 'st', 2: 'nd', 3: 'rd' })[n % 100 >= 11 && n % 100 <= 13 ? 0 : n % 10] || 'th'}`;
   const late = `Late ${fmtMinutes(day.late_minutes)}`;
-  if (day.late_review === 'pending') return `${late} · counted as half day (to be reviewed)`;
+  if (day.late_review === 'pending') return `${late} · half day — the admin reviews it at month end`;
   if (day.late_review === 'present') return `${late} · approved as full day`;
   if (day.late_review === 'half_day') return `${late} · marked half day`;
   if (!day.late_mark) return late;

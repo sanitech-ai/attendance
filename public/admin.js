@@ -83,7 +83,6 @@ const PAGES = [
   ['punches', 'Punches & selfies', 'flagged_punches'],
   ['visits', 'Field visits', 'visits'],
   ['attendance', 'Attendance register'],
-  ['late', 'Late approvals', 'late_approvals'],
   ['lateot', 'Late report'],
   ['halfdays', 'Half-day review'],
   ['leaves', 'Leave requests', 'leaves'],
@@ -263,7 +262,7 @@ async function pageDashboard(el, params) {
       tile(d.pending.flagged_punches, 'Flagged punches to review', '#/punches?status=flagged'),
       tile(d.pending.leaves, 'Leave requests pending', '#/leaves?status=pending'),
       tile(d.pending.documents, 'Documents to verify', '#/documents?status=pending'),
-      tile(d.pending.late_approvals, 'Over 1 hour late (half day unless you approve)', '#/late'),
+      tile(d.half_days_month, 'Half days this month (review at month end)', '#/halfdays'),
       tile(d.pending.visits, 'Field visit selfies to review', '#/visits?status=pending'),
       tile(d.pending.incomplete_profiles, 'Staff with missing details', '#/employees?missing=1')),
     d.pending.labour_missing ? h('div', { class: 'card', style: { marginTop: '10px', borderColor: 'var(--warn)', background: 'var(--warn-bg)' } },
@@ -679,37 +678,6 @@ function lateOtDetail(r) {
     h('div', { class: 'form-actions' }, h('button', { class: 'btn btn-primary', onclick: () => dlg.close() }, 'Close'))), { wide: true });
 }
 
-// ---------------------------------------------------------------- very late arrivals
-
-async function pageLate(el, params) {
-  const month = params.get('month') || thisMonth();
-  const data = await api('GET', `/api/admin/late-approvals?month=${month}`);
-  const kind = { pending: 'warn', present: 'ok', half_day: 'bad' };
-  const label = { present: 'Full day (granted)', half_day: 'Half day (confirmed)' };
-  const decide = (r, status) => run(async () => {
-    await api('POST', '/api/admin/late-approvals/decision', { employee_id: r.employee_id, date: r.date, status });
-    toast(status ? `${r.name}: ${label[status]} on ${fmtDate(r.date)}` : 'Decision cleared');
-    route();
-  });
-  el.replaceChildren(
-    pageHead('Late approvals'),
-    h('div', { class: 'toolbar' }, monthPicker(month, (m) => go('late', { month: m }))),
-    h('p', { class: 'muted small' }, `Arrivals more than ${data.late_max_minutes} minutes late come here instead of counting toward "every 3rd late is a half day". They count as a half day by default — at month end, give a full day where it was genuine. Nothing to do for the ones that stay half days.`),
-    table([
-      { label: 'Date', render: (r) => fmtDate(r.date) },
-      { label: 'Employee', render: (r) => h('div', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)) },
-      { label: 'Shift', render: (r) => `${r.shift_start}–${r.shift_end}` },
-      { label: 'In / Out', render: (r) => `${r.first_in || '—'} / ${r.last_out || (r.status === 'working' ? 'working' : '—')}` },
-      { label: 'Late by', class: 'num', render: (r) => fmtMinutes(r.late_minutes) },
-      { label: 'Worked', class: 'num', render: (r) => fmtMinutes(r.worked_minutes) },
-      { label: 'Decision', render: (r) => h('div', {}, badge(r.late_review === 'pending' ? `To review · counts as ${(STATUS_LABEL[r.status] || r.status).toLowerCase()} for now` : label[r.late_review], kind[r.late_review]), verifBadge(r.verification)) },
-      { label: '', render: (r) => h('div', { class: 'row' },
-        r.late_review !== 'present' ? h('button', { class: 'btn btn-sm btn-ok', onclick: () => decide(r, 'present') }, 'Full day') : '',
-        r.late_review !== 'half_day' ? h('button', { class: 'btn btn-sm', onclick: () => decide(r, 'half_day') }, 'Half day') : '',
-        r.late_review !== 'pending' ? h('button', { class: 'btn btn-sm', onclick: () => decide(r, null) }, 'Undo') : '',
-        h('a', { class: 'btn btn-sm', href: `#/punches?date=${r.date}&employee_id=${r.employee_id}` }, 'Selfies')) },
-    ], data.rows, { empty: `Nobody was more than ${data.late_max_minutes} minutes late this month.`, rowClass: (r) => (r.late_review === 'pending' ? 'row-flag' : null) }));
-}
 
 // ---------------------------------------------------------------- leaves
 
@@ -1431,10 +1399,10 @@ async function pagePayroll(el, params) {
         ? h('span', {}, '🔒 Finalized ', h('span', { class: 'muted small' }, `on ${fmtDateTime(p.finalized_at)}${p.finalized_by ? ` by ${p.finalized_by}` : ''}`))
         : h('span', { class: 'muted small' }, month >= thisMonth() ? 'Month in progress — figures cover days up to today.' : 'Draft — review, then finalize.')),
       h('div', { class: 'row' }, h('a', { class: 'btn', href: `/api/admin/payroll.csv?month=${month}${typeQs(type)}` }, 'Download Excel (CSV)'), finalizeBtn)),
-    p.rows.some((r) => r.attendance.late_pending) && !p.finalized
+    p.rows.some((r) => r.attendance.half_day) && !p.finalized
       ? h('div', { class: 'card', style: { marginBottom: '12px', borderColor: 'var(--warn)' } },
-        `ℹ Arrivals over 1 hour late, counted as half days unless you give a full day: ${p.rows.filter((r) => r.attendance.late_pending).map((r) => r.name).join(', ')}. `,
-        h('a', { href: `#/late?month=${month}` }, 'Review →'))
+        `ℹ ${p.rows.reduce((t, r) => t + r.attendance.half_day, 0)} half day(s) this month. Review them before you finalize — give a full day where it was genuine. `,
+        h('a', { href: `#/halfdays?month=${month}` }, 'Half-day review →'))
       : '',
     h('div', { class: 'stats', style: { marginBottom: '12px' } },
       h('div', { class: 'stat' }, h('div', { class: 'v' }, money(p.totals.net_paise)), h('div', { class: 'l' }, 'Total net pay')),
@@ -1454,7 +1422,7 @@ async function pagePayroll(el, params) {
         h('li', {}, 'Per-day pay = monthly salary ÷ days in the month. Paid days = present + ½ × half days + paid leave + week offs + holidays.'),
         h('li', {}, 'No overtime pay. Working on a weekly off is paid like any present day and also earns a comp-off: a paid day off to take on a weekday (shown on the Leave requests page).'),
         h('li', {}, `Full day = the employee’s shift length minus the ${A.me.settings.grace_minutes}-minute grace (9:00–18:00 → ${fmtMinutes(540 - A.me.settings.grace_minutes)} worked). Half day needs ${A.me.settings.half_day_hours} h. No punch-out by midnight counts as a half day (you can correct it).`),
-        h('li', {}, `Late arrivals: every ${A.me.settings.late_warnings + 1}${A.me.settings.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month counts as a half day; the others are warnings. A late arrival who stays until shift end is otherwise a full day. More than ${A.me.settings.late_max_minutes} min late is not part of that count: it is a half day unless you give a full day in Late approvals. Punching out away from the site more than ${A.me.settings.late_out_minutes} min after shift end also counts as a half day, and so does a Punch In away from the site that you don’t approve. Every late day and the month’s total late time are shown to you and the employee.`),
+        h('li', {}, `Late arrivals: every ${A.me.settings.late_warnings + 1}${A.me.settings.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month counts as a half day; the others are warnings. A late arrival who stays until shift end is otherwise a full day. More than ${A.me.settings.late_max_minutes} min late is not part of that count: it is a half day; you review it at month end in Half-day review. Punching out away from the site more than ${A.me.settings.late_out_minutes} min after shift end also counts as a half day, and so does a Punch In away from the site that you don’t approve. Every late day and the month’s total late time are shown to you and the employee.`),
         h('li', {}, 'Net = base + additions − deductions − advances.'))));
 }
 
@@ -1634,7 +1602,7 @@ async function pageSettings(el, params) {
       h('dt', {}, 'Half day'), h('dd', {}, `${s.half_day_hours} hours worked`),
       h('dt', {}, 'Late after'), h('dd', {}, `${s.grace_minutes} minutes past shift start`),
       h('dt', {}, 'Late rule'), h('dd', {}, `Every ${s.late_warnings + 1}${s.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month is a half day (others are warnings)`),
-      h('dt', {}, 'Very late'), h('dd', {}, `More than ${s.late_max_minutes} min late: half day by default; you can give a full day in Late approvals (not part of the 3rd-late rule)`),
+      h('dt', {}, 'Very late'), h('dd', {}, `More than ${s.late_max_minutes} min late: half day; reviewed at month end in Half-day review (not part of the 3rd-late rule)`),
       h('dt', {}, 'Punch in from elsewhere'), h('dd', {}, 'A Punch In away from their sites counts only if you approve it (Punches & selfies); otherwise the day is a half day. Staff who reach the site punch in again there and the day starts from that punch.'),
       h('dt', {}, 'No punch-out'), h('dd', {}, 'Punch Out closes at midnight. No punch-out by then = half day (correct it in the register if needed).'),
       h('dt', {}, 'Late punch-out'), h('dd', {}, `Punching out away from their site more than ${s.late_out_minutes} min after shift end counts as a half day — no exceptions. Review all half days at month end in Half-day review.`),
@@ -1675,7 +1643,7 @@ const PAGE_FNS = {
   punches: pagePunches,
   visits: pageVisits,
   attendance: pageAttendance,
-  late: pageLate,
+  late: (el, params) => go('halfdays', { month: params.get('month') || '', reason: 'very_late' }), // old Late approvals link
   lateot: pageLateOt,
   halfdays: pageHalfDays,
   leaves: pageLeaves,

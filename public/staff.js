@@ -188,7 +188,7 @@ async function renderHome(main) {
         kind === 'OUT' && t.day.first_in ? h('div', { class: 'small', style: { fontWeight: 400 } }, `You punched in at ${t.day.first_in}${t.work_date !== todayIST() ? ` on ${fmtDate(t.work_date)}` : ''}`) : '')),
     t.missed_out && !t.on_duty ? h('div', { class: 'profile-block', style: { marginTop: '12px' } },
       h('strong', {}, `⚠ You did not punch out on ${fmtDate(t.missed_out.date)}.`),
-      h('p', { class: 'small' }, 'Punch Out closes at midnight, so that day counts as a half day. Always punch out at your site before you leave.')) : '',
+      h('p', { class: 'small' }, 'Punch Out closes at midnight, so that day is marked as a half day. Your case will be reviewed by the admin at the end of the month. Always punch out at your site before you leave.')) : '',
     t.away_in ? h('div', { class: 'profile-block', style: { marginTop: '12px' } },
       h('strong', {}, `📍 You punched in away from your site at ${fmtTime(t.away_in.at)}.`),
       h('p', { class: 'small' }, 'That only counts if the admin approves it (bank, client office…) — otherwise today is a half day. If you have now reached your site, punch in again here: your day starts from this punch.'),
@@ -444,10 +444,10 @@ function punchFlow(kind, today, note = '') {
     close();
     if (res.status === 'flagged') toast(`${PUNCH_LABEL[kind]} saved at ${fmtTime(res.at)}, but flagged for review: ${res.flag_reason}`, 'error');
     else toast(`${PUNCH_LABEL[kind]} done at ${fmtTime(res.at)}`);
-    if (res.late_out) toast(`You punched out ${fmtMinutes(res.late_out.minutes)} after your shift ended (${res.late_out.shift_end}), away from your site, so today counts as a half day. Next time punch out at your site before you leave.`, 'error');
+    if (res.late_out) toast(`You punched out ${fmtMinutes(res.late_out.minutes)} after your shift ended (${res.late_out.shift_end}), away from your site, so today is marked as a half day. Your case will be reviewed by the admin at the end of the month. Next time punch out at your site before you leave.`, 'error');
     if (res.late) {
       toast(res.late.review
-        ? `You are ${fmtMinutes(res.late.minutes)} late. More than ${S.me.late_max_minutes / 60} hour late counts as a half day; the admin may change it to a full day at month end.`
+        ? `You are ${fmtMinutes(res.late.minutes)} late. Arriving more than ${fmtMinutes(S.me.late_max_minutes)} late is marked as a half day. Your case will be reviewed by the admin at the end of the month.`
         : res.late.half_day
           ? `You are late by ${fmtMinutes(res.late.minutes)}. This is late #${res.late.mark} this month — every ${res.late.every}rd late counts as a half day, so today is a half day.`
           : `You are late by ${fmtMinutes(res.late.minutes)}. This is late #${res.late.mark} this month — every ${res.late.every}rd late counts as a half day.`, 'error');
@@ -501,7 +501,7 @@ function halfDayList(days) {
         h('strong', {}, fmtDate(d.date)),
         (d.half_day_reasons || []).map((r) => h('div', { class: 'small' }, `• ${r.text}`)))))
       : h('p', { class: 'muted' }, 'No half days this month.'),
-    half.length ? h('p', { class: 'small muted' }, 'The admin reviews all half days at the end of the month.') : '');
+    half.length ? h('p', { class: 'small muted' }, 'You don’t need to do anything — the admin reviews all half days at the end of the month.') : '');
 }
 
 function lateList(days) {
@@ -663,7 +663,7 @@ async function renderTeam(main) {
       h('div', { style: { flex: 1 } },
         h('div', {}, h('strong', {}, x.name), ` · ${fmtDate(x.date)}`),
         h('div', { class: 'small muted' }, `Shift ${x.shift_start} · came ${x.first_in} (${fmtMinutes(x.late_minutes)} late) · left ${x.last_out || '—'}`),
-        actions({ kind: 'late', employee_id: x.employee_id, date: x.date }, x.verification))), 'No very late arrivals waiting.'));
+        actions({ kind: 'late', employee_id: x.employee_id, date: x.date }, x.verification))), 'No very late arrivals this month.'));
 }
 
 // ---------------------------------------------------------------- salary (live + finalized)
@@ -720,7 +720,7 @@ async function renderSalary(main) {
         h('dt', {}, 'Paid / unpaid leave'), h('dd', {}, `${a.paid_leave} / ${a.unpaid_leave}`),
         h('dt', {}, 'Week offs / holidays'), h('dd', {}, `${a.week_off} / ${a.holiday}`),
         h('dt', {}, 'Late marks'), h('dd', {}, `${a.late_days}`, h('span', { class: 'muted' }, ` (every ${S.me.late_warnings + 1}rd late is a half day)`)),
-        a.late_pending ? [h('dt', {}, 'Over 1 hour late, waiting for admin'), h('dd', {}, `${a.late_pending} day(s) — counted as half days unless the admin gives a full day`)] : '',
+        a.late_pending ? [h('dt', {}, 'Over 1 hour late'), h('dd', {}, `${a.late_pending} day(s) — marked half days; the admin reviews them at the end of the month`)] : '',
         a.late_out_days ? [h('dt', {}, 'Punched out late, away from site'), h('dd', {}, `${a.late_out_days} day(s) — counted as half days`)] : '',
         a.offsite_in_days ? [h('dt', {}, 'Punched in away from site (not approved)'), h('dd', {}, `${a.offsite_in_days} day(s) — counted as half days`)] : '',
         h('dt', {}, 'Total late time'), h('dd', {}, r.late_minutes ? fmtMinutes(r.late_minutes) : '—'),

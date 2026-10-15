@@ -826,6 +826,7 @@ module.exports = function adminRoutes(ctx) {
       return { employee_id: e.id, code: e.code, name: e.name, branch_id: e.branch_id, branch_name: e.branch_name, day, last_punch: lastPunch.get(e.id, date) || null };
     });
     const count = (s) => rows.filter((x) => s.includes(x.day.status)).length;
+    const halfDaysMonth = halfDayRows(date.slice(0, 7), null, typeOf(req)).rows.length;
     res.json({
       date,
       totals: {
@@ -837,6 +838,7 @@ module.exports = function adminRoutes(ctx) {
         late: rows.filter((x) => x.day.late_minutes > 0).length,
       },
       pending: pendingCounts(),
+      half_days_month: halfDaysMonth,
       rows,
     });
   });
