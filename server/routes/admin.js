@@ -453,7 +453,7 @@ module.exports = function adminRoutes(ctx) {
       designation: String(b.designation || '').slice(0, 60),
       shift_start: b.shift_start, shift_end: b.shift_end, weekly_offs: [...new Set(offs.map(String))].sort().join(','),
       joined_on: joinedOn, active: b.active === false ? 0 : 1,
-      is_manager: b.is_manager ? 1 : 0, manager_scope: b.manager_scope === 'all' ? 'all' : 'branch',
+      is_manager: 0, manager_scope: 'branch', // the manager Team view was removed: staff only see their own records
       follow_branch_shift: follow ? 1 : 0, extra_locations: extra,
       allow_offsite: (b.allow_offsite ?? before?.allow_offsite) ? 1 : 0,
       // Fields not sent keep their current value (staff may have filled them in themselves).

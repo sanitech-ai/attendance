@@ -766,7 +766,7 @@ async function pageEmployees(el, params, category = 'staff') {
 function employeeTable(list, labour) {
   const rate = (e) => `${money(e.salary_paise)} / ${e.category === 'labour' ? 'day' : 'month'}`;
   return table([
-      { label: 'Employee', render: (e) => h('div', {}, h('strong', {}, e.name), e.is_manager ? [' ', badge(e.manager_scope === 'all' ? 'Manager · all branches' : 'Manager', 'info')] : '', h('div', { class: 'small muted' }, `${e.code}${e.designation ? ` · ${e.designation}` : ''}${e.phone ? ` · ${e.phone}` : ''}`)) },
+      { label: 'Employee', render: (e) => h('div', {}, h('strong', {}, e.name), h('div', { class: 'small muted' }, `${e.code}${e.designation ? ` · ${e.designation}` : ''}${e.phone ? ` · ${e.phone}` : ''}`)) },
       list.some((e) => e.extra_location_ids) && { label: 'Also at', render: (e) => (e.extra_location_ids ? h('span', { class: 'small muted', title: e.extra_location_ids.split(',').map((x) => A.branches.find((b) => String(b.id) === x)?.name).filter(Boolean).join(', ') }, `+ ${e.extra_location_ids.split(',').length} more location(s)`) : '') },
       { label: labour ? 'Wage' : 'Salary', render: (e) => (e.salary_paise ? rate(e) : h('span', { style: { color: 'var(--warn)' } }, 'not set')) },
       { label: 'Shift', render: (e) => h('div', {}, `${e.shift_start}–${e.shift_end}`, h('div', { class: 'small muted' }, e.follow_branch_shift ? 'branch timing' : 'personal')) },
@@ -823,10 +823,6 @@ function employeeForm(e, defaultCategory = 'staff') {
       options: branchCheckOptions(String(e?.extra_location_ids || '').split(',')),
       hint: 'Every branch is listed except the employee’s own branch selected above. Staff can also punch at branches linked to their own branch (Branches → Edit).' },
     { name: 'allow_offsite', label: 'Can punch in from other places (bank, GST office, client office…) even if their branch blocks outside punches — they must write where they are, and you approve it', type: 'checkbox', value: !!e?.allow_offsite },
-    { type: 'heading', label: 'Manager' },
-    { name: 'is_manager', label: 'Manager — can check what the app flags for their team (no power to change anything)', type: 'checkbox', value: !!e?.is_manager },
-    { name: 'manager_scope', label: 'Manager covers', type: 'select', value: e?.manager_scope || 'branch',
-      options: [{ value: 'branch', label: 'Staff of their own branch' }, { value: 'all', label: 'Staff of all branches' }] },
     isNew
       ? { name: 'pin', label: 'Login PIN (4–6 digits)', type: 'text', inputmode: 'numeric', required: true, maxlength: 6, value: String(Math.floor(1000 + Math.random() * 9000)), hint: 'Share this with the employee. They can change it later.' }
       : { name: 'active', label: 'Active (can log in and is included in payroll)', type: 'checkbox', value: !!e.active },

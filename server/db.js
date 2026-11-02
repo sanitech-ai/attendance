@@ -343,6 +343,8 @@ function migrate(db) {
     db.exec('ALTER TABLE employees ADD COLUMN is_manager INTEGER NOT NULL DEFAULT 0');
     db.exec("ALTER TABLE employees ADD COLUMN manager_scope TEXT NOT NULL DEFAULT 'branch'");
   }
+  // The manager "Team" view was removed (staff could see colleagues' details): nobody is a manager.
+  db.exec('UPDATE employees SET is_manager = 0 WHERE is_manager != 0');
 }
 
 function tx(db, fn) {
