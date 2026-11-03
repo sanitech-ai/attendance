@@ -897,15 +897,19 @@ module.exports = function adminRoutes(ctx) {
     ).all(...(branchId ? [branchId] : []));
   }
 
-  r.get('/attendance', (req, res) => {
-    const month = requireMonth(req.query.month);
+  /** Register rows, the person who worked the most hours first (then by name). */
+  function registerRows(month, branchId, type) {
     const [from, to] = monthRange(month);
     const settings = getSettings(db);
-    const emps = registerEmployees(req.query.branch_id ? id(req.query.branch_id) : null, typeOf(req));
-    const rows = emps.map((e) => {
+    return registerEmployees(branchId, type).map((e) => {
       const days = computeRange(db, e, from, to, settings, ctx.now());
       return { employee_id: e.id, code: e.code, name: e.name, branch_name: e.branch_name, days, summary: summarize(days) };
-    });
+    }).sort((x, y) => y.summary.worked_minutes - x.summary.worked_minutes || x.name.localeCompare(y.name));
+  }
+
+  r.get('/attendance', (req, res) => {
+    const month = requireMonth(req.query.month);
+    const rows = registerRows(month, req.query.branch_id ? id(req.query.branch_id) : null, typeOf(req));
     const finalized = !!db.prepare('SELECT 1 FROM payroll_runs WHERE month = ?').get(month);
     res.json({ month, finalized, rows });
   });
@@ -949,21 +953,17 @@ module.exports = function adminRoutes(ctx) {
   r.get('/attendance.csv', (req, res) => {
     const month = requireMonth(req.query.month);
     const [from, to] = monthRange(month);
-    const settings = getSettings(db);
     const codes = { present: 'P', half_day: 'HD', absent: 'A', paid_leave: 'PL', unpaid_leave: 'UL', week_off: 'WO', holiday: 'H', not_marked: '-', upcoming: '', not_joined: '', working: 'W' };
-    const emps = registerEmployees(req.query.branch_id ? id(req.query.branch_id) : null, typeOf(req));
-    const header = ['Employee ID', 'Name', 'Branch'];
+    const header = ['Rank', 'Employee ID', 'Name', 'Branch', 'Hours worked'];
     const dates = [];
     for (let d = from; d <= to; d = new Date(Date.parse(d) + 86400000).toISOString().slice(0, 10)) dates.push(d);
-    header.push(...dates.map((d) => d.slice(8)), 'Present', 'Half days', 'Absent', 'Paid leave', 'Unpaid leave', 'Week off', 'Holiday', 'Late days', 'Hours worked', 'Comp-off earned');
+    header.push(...dates.map((d) => d.slice(8)), 'Present', 'Half days', 'Absent', 'Paid leave', 'Unpaid leave', 'Week off', 'Holiday', 'Late days', 'Late time (hours)', 'Comp-off earned');
     const rows = [header];
-    for (const e of emps) {
-      const days = computeRange(db, e, from, to, settings, ctx.now());
-      const s = summarize(days);
+    for (const { code, name, branch_name: branch, days, summary: s } of registerRows(month, req.query.branch_id ? id(req.query.branch_id) : null, typeOf(req))) {
       rows.push([
-        e.code, e.name, e.branch_name, ...days.map((d) => codes[d.status] ?? d.status),
-        s.present, s.half_day, s.absent + s.not_marked, s.paid_leave, s.unpaid_leave, s.week_off, s.holiday, s.late_days,
-        (s.worked_minutes / 60).toFixed(2), s.comp_off_earned,
+        s.worked_minutes ? rows.length : '', code, name, branch, (s.worked_minutes / 60).toFixed(2), ...days.map((d) => codes[d.status] ?? d.status),
+        s.present, s.half_day, s.absent + s.not_marked, s.paid_leave, s.unpaid_leave, s.week_off, s.holiday,
+        s.late_days, (s.late_minutes / 60).toFixed(2), s.comp_off_earned,
       ]);
     }
     sendCsv(res, `attendance-${month}.csv`, rows);

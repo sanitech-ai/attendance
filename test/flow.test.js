@@ -149,7 +149,7 @@ test('end-to-end: punches, leaves, documents and payroll', async (t) => {
   r = await admin('GET', '/api/admin/payroll.csv?month=2026-09');
   assert.match(r.data.toString(), /E001,Ravi,Andheri,30000.00,/);
   r = await admin('GET', '/api/admin/attendance.csv?month=2026-09');
-  assert.match(r.data.toString(), /E001,Ravi,Andheri,P,HD,H,PL,P/);
+  assert.match(r.data.toString(), /1,E001,Ravi,Andheri,14\.03,P,HD,H,PL,P/);
 
   // Documents: Aadhaar masked, file encrypted at rest and readable by admin
   r = await staff('POST', '/api/employee/documents', { doc_type: 'aadhaar', doc_number: '1234-5678-9012', file: PDF });

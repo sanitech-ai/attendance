@@ -120,3 +120,29 @@ test('late report is sorted by total late time, most first', async (t) => {
   assert.match(csv[2], /^2,Anil,Anil,HO,1\.00,60,3,/);
   assert.match(csv[4], /^,Chetan,Chetan,HO,0\.00,0,0,/);
 });
+
+test('attendance register is sorted by hours worked, most first', async (t) => {
+  const s = await startServer(ist('2026-10-01', '08:00'));
+  t.after(() => s.close());
+  const admin = s.client();
+  await admin('POST', '/api/admin/setup', { username: 'firefueled', password: 'password123', name: 'Owner' });
+  const b = (await admin('POST', '/api/admin/branches', { name: 'HO', ...HQ, radius_m: 150, geofence_mode: 'flag' })).data.id;
+  const outs = { Anil: ['18:00'], Bina: ['18:00', '18:00'], Chetan: [], Deepa: ['20:00'] }; // 9h, 18h, 0h, 11h
+  for (const [name, times] of Object.entries(outs)) {
+    await admin('POST', '/api/admin/employees', { branch_id: b, salary: 30000, weekly_offs: [], pin: '1234', code: name, name, joined_on: '' });
+    const a = s.client(); await a('POST', '/api/employee/login', { code: name, pin: '1234' });
+    for (const [i, outAt] of times.entries()) {
+      const date = `2026-10-0${i + 1}`;
+      s.clock.now = ist(date, '09:00'); await a('POST', '/api/employee/punch', { kind: 'IN', ...HQ, accuracy: 10, selfie: JPEG });
+      s.clock.now = ist(date, outAt); await a('POST', '/api/employee/punch', { kind: 'OUT', ...HQ, accuracy: 10, selfie: JPEG });
+    }
+  }
+  s.clock.now = ist('2026-10-05', '08:00');
+  await admin('POST', '/api/admin/login', { username: 'firefueled', password: 'password123' });
+  const rows = (await admin('GET', '/api/admin/attendance?month=2026-10')).data.rows;
+  assert.deepEqual(rows.map((r) => [r.name, r.summary.worked_minutes / 60]), [['Bina', 18], ['Deepa', 11], ['Anil', 9], ['Chetan', 0]]);
+  const csv = String((await admin('GET', '/api/admin/attendance.csv?month=2026-10')).data).split('\r\n');
+  assert.match(csv[0], /^﻿?Rank,Employee ID,Name,Branch,Hours worked,01,/);
+  assert.match(csv[1], /^1,Bina,Bina,HO,18\.00,/);
+  assert.match(csv[4], /^,Chetan,Chetan,HO,0\.00,/);
+});

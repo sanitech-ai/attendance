@@ -453,9 +453,10 @@ async function pageAttendance(el, params) {
   const grid = data.rows.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'register' },
     h('thead', {}, h('tr', {}, h('th', {}, 'Employee'),
       dates.map((d) => h('th', { title: fmtDate(d), style: d === today ? { color: 'var(--primary)' } : null }, h('div', {}, d.slice(8)), h('div', { class: 'small' }, WEEKDAYS[new Date(`${d}T00:00:00Z`).getUTCDay()][0]))),
-      ['P', 'HD', 'A', 'PL', 'UL', 'Late', 'Hours', 'Comp-off'].map((x) => h('th', {}, x)))),
-    h('tbody', {}, data.rows.map((r) => h('tr', {},
-      h('td', {}, h('strong', {}, r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`)),
+      ['P', 'HD', 'A', 'PL', 'UL', 'Late', 'Late time', 'Hours', 'Comp-off'].map((x) => h('th', {}, x)))),
+    h('tbody', {}, data.rows.map((r, i) => h('tr', {},
+      h('td', {}, h('strong', {}, r.summary.worked_minutes ? `${i + 1}. ` : '', r.name), h('div', { class: 'small muted' }, `${r.code} · ${r.branch_name}`),
+        r.summary.worked_minutes ? h('div', { class: 'small', style: { color: 'var(--ok)', fontWeight: 600 } }, `Worked ${fmtMinutes(r.summary.worked_minutes)}`) : ''),
       r.days.map((d) => h('td', {}, STATUS_SHORT[d.status] !== '' || d.override ? h('span', {
         class: `c ${d.status}${d.override ? ' ovr' : ''}${d.flags.some((x) => x !== 'first_day') ? ' flag' : ''}`,
         title: `${fmtDate(d.date)}: ${STATUS_LABEL[d.status] || d.status}${d.first_in ? ` · ${d.first_in}–${d.last_out || '?'}` : ''}${d.half_day_reasons?.length ? ` · Half day: ${d.half_day_reasons.map((x) => x.text).join('; ')}` : d.flags.length ? ` · ${d.flags.map((x) => FLAG_LABEL[x]).join(', ')}` : ''}`,
@@ -463,6 +464,7 @@ async function pageAttendance(el, params) {
       }, STATUS_SHORT[d.status] || '·') : h('span', { class: 'c', onclick: () => editDay(r, d, data.finalized) }, '·'))),
       h('td', {}, r.summary.present), h('td', {}, r.summary.half_day), h('td', {}, r.summary.absent + r.summary.not_marked),
       h('td', {}, r.summary.paid_leave), h('td', {}, r.summary.unpaid_leave), h('td', { title: r.summary.late_penalties ? `${r.summary.late_penalties} counted as half day` : null }, r.summary.late_penalties ? `${r.summary.late_days} (${r.summary.late_penalties} HD)` : r.summary.late_days),
+      h('td', {}, r.summary.late_minutes ? fmtMinutes(r.summary.late_minutes) : ''),
       h('td', {}, (r.summary.worked_minutes / 60).toFixed(1)), h('td', { title: 'Comp-off earned by working on weekly offs' }, r.summary.comp_off_earned || '')))))) : h('div', { class: 'empty' }, 'No employees.');
 
   el.replaceChildren(
@@ -475,7 +477,7 @@ async function pageAttendance(el, params) {
       typeSelect(type, (v) => go('attendance', { month, branch_id: branchId, type: v }))),
     data.finalized ? h('div', { class: 'card', style: { marginBottom: '12px' } }, '🔒 Payroll for this month is finalized. Reopen it on the Payroll page to make corrections.') : '',
     grid,
-    h('p', { class: 'small muted' }, 'P present · HD half day · A absent · PL/UL paid/unpaid leave · WO week off · H holiday · W working now · – not marked. Dashed border = corrected by admin, red dot = needs attention. Click any cell to correct it.'));
+    h('p', { class: 'small muted' }, 'Sorted by hours worked — the person who worked the most hours is at the top. P present · HD half day · A absent · PL/UL paid/unpaid leave · WO week off · H holiday · W working now · – not marked. Dashed border = corrected by admin, red dot = needs attention. Click any cell to correct it.'));
 }
 
 function bulkMark() {
