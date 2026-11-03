@@ -308,3 +308,4 @@ a.stat.active .l { color: var(--primary); font-weight: 600; }
 .reason-list { list-style: none; margin: 0; padding: 0; }
 .reason-list li { padding: 8px 0; border-bottom: 1px solid var(--border, #e5e7eb); }
 .reason-list li:last-child { border-bottom: 0; }
+td.col-name, th.col-name { min-width: 200px; }

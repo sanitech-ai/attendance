@@ -94,3 +94,29 @@ test('over 1 hour late goes to the admin: shown and totalled, not a late mark, a
   assert.deepEqual(row.late.map((l) => l.cumulative), [90, 120]);
 });
 
+
+test('late report is sorted by total late time, most first', async (t) => {
+  const s = await startServer(ist('2026-10-01', '08:00'));
+  t.after(() => s.close());
+  const admin = s.client();
+  await admin('POST', '/api/admin/setup', { username: 'firefueled', password: 'password123', name: 'Owner' });
+  const b = (await admin('POST', '/api/admin/branches', { name: 'HO', ...HQ, radius_m: 150, geofence_mode: 'flag' })).data.id;
+  const late = { Anil: ['09:20', '09:20', '09:20'], Bina: ['10:30'], Chetan: ['09:00'], Deepa: ['09:40'] }; // 60, 90, 0, 40 minutes
+  for (const [name, times] of Object.entries(late)) {
+    await admin('POST', '/api/admin/employees', { branch_id: b, salary: 30000, weekly_offs: [], pin: '1234', code: name, name, joined_on: '' });
+    const a = s.client(); await a('POST', '/api/employee/login', { code: name, pin: '1234' });
+    for (const [i, inAt] of ['09:00', ...times].entries()) { // first day on the app is never late
+      const date = `2026-10-0${i + 1}`;
+      s.clock.now = ist(date, inAt); await a('POST', '/api/employee/punch', { kind: 'IN', ...HQ, accuracy: 10, selfie: JPEG });
+      s.clock.now = ist(date, '18:00'); await a('POST', '/api/employee/punch', { kind: 'OUT', ...HQ, accuracy: 10, selfie: JPEG });
+    }
+  }
+  s.clock.now = ist('2026-10-06', '08:00');
+  await admin('POST', '/api/admin/login', { username: 'firefueled', password: 'password123' });
+  const rows = (await admin('GET', '/api/admin/late-ot?month=2026-10')).data.rows;
+  assert.deepEqual(rows.map((r) => [r.name, r.late_minutes]), [['Bina', 90], ['Anil', 60], ['Deepa', 40], ['Chetan', 0]]);
+  const csv = String((await admin('GET', '/api/admin/late-ot.csv?month=2026-10')).data).split('\r\n');
+  assert.match(csv[1], /^1,Bina,Bina,HO,1\.50,90,1,/);
+  assert.match(csv[2], /^2,Anil,Anil,HO,1\.00,60,3,/);
+  assert.match(csv[4], /^,Chetan,Chetan,HO,0\.00,0,0,/);
+});
