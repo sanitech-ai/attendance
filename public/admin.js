@@ -87,6 +87,7 @@ const PAGES = [
   ['halfdays', 'Half-day review'],
   ['leaves', 'Leave requests', 'leaves'],
   ['payroll', 'Payroll'],
+  ['salaries', 'Salaries'],
   ['employees', 'Employees', 'incomplete_profiles'],
   ['labour', 'Labour', 'labour_missing'],
   ['preview', 'Staff preview'],
@@ -95,6 +96,18 @@ const PAGES = [
   ['holidays', 'Holidays'],
   ['settings', 'Settings'],
 ];
+
+// A "Payroll" login changes pay and views attendance and leaves; it sees only these pages.
+const isPayrollLogin = () => A.me?.admin.role === 'salary';
+const PAYROLL_PAGES = [
+  ['salaries', 'Salaries'],
+  ['payroll', 'Payroll'],
+  ['attendance', 'Attendance register'],
+  ['lateot', 'Late report'],
+  ['halfdays', 'Half-day review'],
+  ['leaves', 'Leave requests'],
+];
+const menuPages = () => (isPayrollLogin() ? PAYROLL_PAGES : PAGES);
 
 function parseHash() {
   const [path, qs] = location.hash.replace(/^#\/?/, '').split('?');
@@ -109,12 +122,13 @@ function go(page, params = {}) {
 }
 
 async function route() {
-  const { page, params } = parseHash();
+  let { page, params } = parseHash();
+  if (isPayrollLogin() && !PAYROLL_PAGES.some(([k]) => k === page)) page = 'salaries';
   const content = h('main', { class: 'content' });
   const sidebar = h('aside', { class: 'sidebar' },
     h('img', { src: '/logo.svg', alt: '', class: 'brand-logo' }),
     h('div', { class: 'brand' }, A.me.settings.company_name),
-    h('nav', {}, PAGES.map(([key, label, countKey]) =>
+    h('nav', {}, menuPages().map(([key, label, countKey]) =>
       h('a', { href: `#/${key}`, class: key === page ? 'active' : '', onclick: () => sidebar.classList.remove('open') },
         label, countKey ? h('span', { class: 'count hidden', 'data-count': countKey }) : ''))),
     h('div', { class: 'foot' },
@@ -127,8 +141,10 @@ async function route() {
     h('div', {},
       h('div', { class: 'mobile-bar' }, h('button', { class: 'icon-btn', 'aria-label': 'Menu', onclick: () => sidebar.classList.toggle('open') }, '☰'), A.me.settings.company_name),
       content)));
-  refreshCounts();
-  remindMissingDetails();
+  if (!isPayrollLogin()) {
+    refreshCounts();
+    remindMissingDetails();
+  }
   const fn = PAGE_FNS[page] || PAGE_FNS.dashboard;
   content.append(h('div', { class: 'empty' }, 'Loading…'));
   try {
@@ -596,7 +612,7 @@ async function pageHalfDays(el, params) {
       { label: 'Why half day', render: (r) => r.reasons.map((x) => h('div', { class: 'small' }, h('strong', {}, `${REASON_TITLE[x.code] || x.code}: `), x.text)) },
       { label: '', render: (r) => h('div', { class: 'row' },
         canEdit ? h('button', { class: 'btn btn-sm btn-ok', onclick: () => setDay(r, 'present', `${d.review_note} — was: ${r.reasons.map((x) => x.text).join('; ')}`.slice(0, 300)) }, 'Give full day') : '',
-        h('a', { class: 'btn btn-sm', href: `#/punches?date=${r.date}&employee_id=${r.employee_id}` }, 'Selfies')) },
+        isPayrollLogin() ? '' : h('a', { class: 'btn btn-sm', href: `#/punches?date=${r.date}&employee_id=${r.employee_id}` }, 'Selfies')) },
     ], rows, { empty: reason ? 'None for this reason.' : 'No half days this month.' }),
     d.given.length ? [
       h('h2', { style: { margin: '22px 0 10px' } }, `Full days given at review (${d.given.length})`),
@@ -672,7 +688,7 @@ function lateOtDetail(r) {
       { label: 'Date', render: (l) => fmtDate(l.date) },
       { label: 'Punched in', render: (l) => l.at },
       { label: 'Where', render: (l) => [l.distance_m != null ? fmtDistance(l.distance_m) + ' from site' : '', l.note ? h('div', { class: 'small muted' }, `“${l.note}”`) : ''] },
-      { label: 'Result', render: (l) => h('span', {}, 'half day · ', h('a', { href: `#/punches?date=${l.date}&employee_id=${r.employee_id}` }, 'approve if genuine')) },
+      { label: 'Result', render: (l) => h('span', {}, 'half day', isPayrollLogin() ? '' : [' · ', h('a', { href: `#/punches?date=${l.date}&employee_id=${r.employee_id}` }, 'approve if genuine')]) },
     ], r.offsite_in) : h('p', { class: 'muted' }, 'None'),
     h('h3', {}, `Weekly offs worked (${r.week_off_worked.length})`),
     r.week_off_worked.length ? table([
@@ -711,7 +727,7 @@ async function pageLeaves(el, params) {
       { label: 'Type', render: (l) => (l.comp_off ? badge('Comp-off', 'info') : l.leave_type === 'paid' ? 'Paid' : 'Unpaid') },
       { label: 'Reason', render: (l) => l.reason || '—' },
       { label: 'Status', render: (l) => badge(l.status, statusKind[l.status]) },
-      { label: '', render: (l) => (l.status === 'cancelled' ? '' : h('div', { class: 'row' },
+      { label: '', render: (l) => (l.status === 'cancelled' || isPayrollLogin() ? '' : h('div', { class: 'row' },
         l.status !== 'approved' ? h('button', { class: 'btn btn-sm btn-ok', onclick: decide(l, 'approved') }, 'Approve') : '',
         l.status !== 'rejected' ? h('button', { class: 'btn btn-sm', onclick: decide(l, 'rejected') }, 'Reject') : '')) },
     ], rows, { empty: 'No leave requests.' }),
@@ -1381,7 +1397,7 @@ async function pagePayroll(el, params) {
   const isPast = month < thisMonth();
   const sum = (xs) => xs.reduce((t, x) => t + x.amount_paise, 0);
 
-  const finalizeBtn = p.finalized
+  const finalizeBtn = isPayrollLogin() ? '' : p.finalized
     ? h('button', { class: 'btn', onclick: async (e) => {
       if (!(await confirmDialog('Reopen payroll?', 'Reopening unlocks attendance edits for this month. Payslips disappear from the staff app until you finalize again.', 'Reopen'))) return;
       if (await run(() => api('DELETE', `/api/admin/payroll/${month}/finalize`), e.currentTarget)) route();
@@ -1496,6 +1512,64 @@ async function pagePreview(el, params) {
       : h('div', { class: 'empty' }, 'Add employees first.'));
 }
 
+// ---------------------------------------------------------------- salaries
+
+/** Everyone's pay in one place, site by site: change a salary / daily wage, PF and allowances. */
+async function pageSalaries(el, params) {
+  await Promise.all([loadBranches(), loadEmployees()]);
+  const branchId = params.get('branch_id') || '';
+  const type = pageType(params);
+  const keep = { branch_id: branchId, type };
+  const all = A.employees.filter((e) => e.active
+    && (!branchId || String(e.branch_id) === branchId)
+    && (!type || (e.category === 'labour') === (type === 'labour')));
+  const list = h('div', {});
+  const payTo = (e) => (e.upi_id ? `UPI ${e.upi_id}` : e.bank_account ? `A/c ${e.bank_account}${e.bank_ifsc ? ` · ${e.bank_ifsc}` : ''}` : '');
+  const editSalary = (e) => formDialog({
+    title: `${e.category === 'labour' ? 'Daily wage' : 'Monthly salary'} · ${e.name}`,
+    fields: [{ name: 'salary', label: e.category === 'labour' ? 'Daily wage (₹ per day)' : 'Monthly salary (₹)', type: 'number', step: '0.01', min: 1, required: true,
+      value: e.salary_paise ? e.salary_paise / 100 : '', hint: e.category === 'labour' ? 'Paid for each day worked.' : 'Per-day pay = salary ÷ days in the month.' }],
+    submitLabel: 'Save',
+    async onSubmit(v) {
+      await api('PUT', `/api/admin/employees/${e.id}/salary`, { salary: Number(v.salary) });
+      toast(`${e.name}: ${e.category === 'labour' ? 'daily wage' : 'salary'} is now ${money(Math.round(Number(v.salary) * 100))}`);
+      route();
+      return true;
+    },
+  });
+  const render = (q) => {
+    const want = q.trim().toLowerCase();
+    const rows = all.filter((e) => !want || e.name.toLowerCase().includes(want) || e.code.toLowerCase().includes(want));
+    const sites = new Map();
+    for (const e of bySite(rows)) (sites.get(e.branch_name) || sites.set(e.branch_name, []).get(e.branch_name)).push(e);
+    list.replaceChildren(
+      rows.length ? '' : h('div', { class: 'empty' }, 'Nobody found.'),
+      ...[...sites].map(([site, people]) => h('section', { class: 'site-group' },
+        h('h2', { class: 'site-head' }, site, h('span', { class: 'muted small' }, ` · ${people.length}`)),
+        table([
+          { label: 'Employee', class: 'col-name', render: (e) => h('div', {}, h('strong', {}, e.name), e.category === 'labour' ? [' ', badge('Labour', 'neutral')] : '',
+            h('div', { class: 'small muted' }, `${e.code}${e.designation ? ` · ${e.designation}` : ''}`)) },
+          { label: 'Pay', class: 'num', render: (e) => (e.salary_paise
+            ? h('div', {}, h('strong', {}, money(e.salary_paise)), h('div', { class: 'small muted' }, e.category === 'labour' ? 'per day' : 'per month'))
+            : h('span', { style: { color: 'var(--warn)' } }, 'not set')) },
+          { label: 'Paid to', render: (e) => payTo(e) || h('span', { class: 'small', style: { color: 'var(--warn)' } }, 'No bank / UPI yet') },
+          { label: '', render: (e) => h('div', { class: 'row' },
+            h('button', { class: 'btn btn-sm btn-primary', onclick: () => editSalary(e) }, e.category === 'labour' ? 'Change wage' : 'Change salary'),
+            h('button', { class: 'btn btn-sm', onclick: () => payItems(e) }, 'PF / allowances')) },
+        ], people))));
+  };
+  const search = h('input', { type: 'search', placeholder: 'Search name or ID', 'aria-label': 'Search', oninput: (ev) => render(ev.target.value) });
+  el.replaceChildren(
+    pageHead('Salaries'),
+    h('div', { class: 'toolbar' },
+      search,
+      branchSelect(branchId, (v) => go('salaries', { ...keep, branch_id: v }), 'All sites'),
+      typeSelect(type, (v) => go('salaries', { ...keep, type: v }))),
+    h('p', { class: 'small muted' }, 'Staff are paid a monthly salary, labour a daily wage. Changes apply to months that are not finalized yet. One-off bonuses, fines and advances: Payroll → Bonus & deductions / Advances.'),
+    list);
+  render('');
+}
+
 // ---------------------------------------------------------------- settings
 
 async function pageSettings(el, params) {
@@ -1513,6 +1587,9 @@ async function pageSettings(el, params) {
             { name: 'name', label: 'Name', required: true },
             { name: 'username', label: 'Username', required: true },
             { name: 'password', label: 'Password (min 8 chars)', type: 'password', required: true, autocomplete: 'new-password' },
+            { name: 'role', label: 'Access', type: 'select', value: 'full', options: [
+              { value: 'full', label: 'Full admin — everything' },
+              { value: 'salary', label: 'Payroll — change salaries, wages, PF, advances, bonus/deductions; view attendance and leaves' }] },
           ],
           async onSubmit(v) { await api('POST', '/api/admin/admins', v); route(); return true; },
         }) }, '+ Add admin'),
@@ -1527,7 +1604,15 @@ async function pageSettings(el, params) {
       table([
         { label: 'Name', render: (a) => h('span', {}, a.name, a.id === A.me.admin.id ? h('span', { class: 'muted' }, ' (you)') : '') },
         { label: 'Username', render: (a) => a.username },
-        { label: 'Can change attendance register', render: (a) => (A.me.admin.can_edit_attendance
+        { label: 'Access', render: (a) => (A.me.admin.can_edit_attendance && a.id !== A.me.admin.id
+          ? h('select', { 'aria-label': 'Access', onchange: async (ev) => {
+            const role = ev.target.value;
+            if (!(await run(() => api('PUT', `/api/admin/admins/${a.id}/permissions`, { role })))) { ev.target.value = a.role; return; }
+            toast(`${a.name} is now ${role === 'salary' ? 'a payroll login' : 'a full admin'}`);
+            route();
+          } }, [['full', 'Full admin'], ['salary', 'Payroll']].map(([v, l]) => h('option', { value: v, selected: a.role === v }, l)))
+          : (a.role === 'salary' ? badge('Payroll', 'info') : badge('Full admin', 'neutral'))) },
+        { label: 'Can change attendance register', render: (a) => (a.role === 'salary' ? h('span', { class: 'muted' }, '—') : A.me.admin.can_edit_attendance
           ? h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!a.can_edit_attendance, onchange: async (ev) => {
             const want = ev.target.checked;
             const ok = await run(() => api('PUT', `/api/admin/admins/${a.id}/permissions`, { can_edit_attendance: want }));
@@ -1641,6 +1726,7 @@ async function pageSettings(el, params) {
 
 const PAGE_FNS = {
   dashboard: pageDashboard,
+  salaries: pageSalaries,
   punches: pagePunches,
   visits: pageVisits,
   attendance: pageAttendance,

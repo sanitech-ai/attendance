@@ -62,3 +62,55 @@ test('staff only ever see their own records: no team view, no other people\'s se
   // No admin powers either
   assert.equal((await mgr('GET', '/api/admin/employees')).status, 401);
 });
+
+test('payroll login: changes pay, views attendance and leaves, nothing else', async (t) => {
+  const s = await startServer(ist('2026-10-05', '08:00'));
+  t.after(() => s.close());
+  const owner = s.client();
+  await owner('POST', '/api/admin/setup', { username: 'firefueled', password: 'password123', name: 'Owner' });
+  const b = (await owner('POST', '/api/admin/branches', { name: 'HO', lat: 17.41, lng: 78.44, radius_m: 150, geofence_mode: 'flag' })).data.id;
+  const emp = (await owner('POST', '/api/admin/employees', { code: 'E1', name: 'Ravi', branch_id: b, salary: 30000, weekly_offs: ['0'], joined_on: '', pin: '1234' })).data.id;
+  assert.equal((await owner('POST', '/api/admin/admins', { username: 'accounts', password: 'password123', name: 'Suresh', role: 'salary' })).status, 200);
+  const acc = s.client();
+  assert.equal((await acc('POST', '/api/admin/login', { username: 'accounts', password: 'password123' })).status, 200);
+  assert.equal((await acc('GET', '/api/admin/me')).data.admin.role, 'salary');
+
+  // Pay: salary, PF / allowances, advances, bonus & deductions, the salary sheet
+  assert.equal((await acc('PUT', `/api/admin/employees/${emp}/salary`, { salary: 32000 })).status, 200);
+  assert.equal((await acc('GET', '/api/admin/employees')).data[0].salary_paise, 3200000);
+  assert.equal((await acc('PUT', `/api/admin/employees/${emp}/salary`, { salary: 0 })).status, 400);
+  assert.equal((await acc('POST', `/api/admin/employees/${emp}/pay-items`, { kind: 'deduction', label: 'PF', amount: 1800 })).status, 200);
+  assert.equal((await acc('POST', '/api/admin/adjustments', { employee_id: emp, month: '2026-10', kind: 'addition', label: 'Bonus', amount: 500 })).status, 200);
+  for (const url of ['/api/admin/payroll?month=2026-10', '/api/admin/payroll.csv?month=2026-10', '/api/admin/advances?month=2026-10', '/api/admin/adjustments?month=2026-10']) {
+    assert.equal((await acc('GET', url)).status, 200, url);
+  }
+  // View: attendance and leaves
+  for (const url of ['/api/admin/attendance?month=2026-10', `/api/admin/attendance/${emp}?month=2026-10`, '/api/admin/attendance.csv?month=2026-10',
+    '/api/admin/half-days?month=2026-10', '/api/admin/late-ot?month=2026-10', '/api/admin/leaves', '/api/admin/leave-summary']) {
+    assert.equal((await acc('GET', url)).status, 200, url);
+  }
+  // Nothing else: other changes to employees, attendance, leaves, finalizing, selfies, documents, settings, admins
+  const denied = [
+    ['PUT', `/api/admin/employees/${emp}`, { code: 'E1', name: 'Changed', branch_id: b, salary: 99999 }],
+    ['POST', '/api/admin/employees', { code: 'E2', name: 'New', branch_id: b, salary: 1, pin: '1234' }],
+    ['DELETE', `/api/admin/employees/${emp}`],
+    ['POST', `/api/admin/employees/${emp}/reset-pin`, {}],
+    ['PUT', '/api/admin/attendance/override', { employee_id: emp, date: '2026-10-05', status: 'present' }],
+    ['POST', '/api/admin/leaves/1/decision', { status: 'approved' }],
+    ['POST', '/api/admin/payroll/2026-09/finalize', {}],
+    ['GET', '/api/admin/punches'], ['GET', '/api/admin/documents'], ['GET', '/api/admin/visits'], ['GET', '/api/admin/dashboard'],
+    ['GET', '/api/admin/settings'], ['PUT', '/api/admin/settings', { company_name: 'X' }], ['GET', '/api/admin/admins'],
+    ['POST', '/api/admin/admins', { username: 'sneaky', password: 'password123', name: 'S' }], ['GET', '/api/admin/audit'],
+  ];
+  for (const [m, url, body] of denied) assert.equal((await acc(m, url, body)).status, 403, `${m} ${url}`);
+  assert.equal((await owner('GET', '/api/admin/employees')).data[0].name, 'Ravi');
+
+  // The owner can switch the login between full and payroll; a payroll login never edits attendance
+  const id = (await owner('GET', '/api/admin/admins')).data.find((a) => a.username === 'accounts').id;
+  assert.equal((await owner('PUT', `/api/admin/admins/${id}/permissions`, { can_edit_attendance: true })).status, 400);
+  assert.equal((await owner('PUT', `/api/admin/admins/${id}/permissions`, { role: 'full' })).status, 200);
+  assert.equal((await acc('GET', '/api/admin/settings')).status, 200);
+  // ...and the last full admin can't be limited
+  const me = (await owner('GET', '/api/admin/admins')).data.find((a) => a.username === 'firefueled').id;
+  assert.equal((await owner('PUT', `/api/admin/admins/${me}/permissions`, { role: 'salary' })).status, 400);
+});

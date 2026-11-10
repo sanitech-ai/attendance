@@ -296,6 +296,10 @@ function migrate(db) {
     ).run().changes;
     if (!granted) db.exec('UPDATE admins SET can_edit_attendance = 1 WHERE id = (SELECT MIN(id) FROM admins)');
   }
+  if (!adminCols.includes('role')) {
+    // 'full' = everything; 'salary' = salaries, pay items, advances, bonus/deductions and the salary sheet only.
+    db.exec("ALTER TABLE admins ADD COLUMN role TEXT NOT NULL DEFAULT 'full'");
+  }
 
   const empCols = db.prepare('PRAGMA table_info(employees)').all().map((c) => c.name);
   if (!empCols.includes('upi_id')) {
