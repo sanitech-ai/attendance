@@ -24,15 +24,21 @@ async function startServer(startAt, opts = {}) {
   const base = `http://127.0.0.1:${server.address().port}`;
 
   function client() {
-    let cookie = '';
+    const jar = new Map(); // like a browser: each cookie (admin and staff login) kept separately
     return async function call(method, url, body) {
+      const cookie = [...jar].map(([k, v]) => `${k}=${v}`).join('; ');
       const res = await fetch(base + url, {
         method,
         headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}) },
         body: body ? JSON.stringify(body) : undefined,
       });
-      const set = res.headers.get('set-cookie');
-      if (set) cookie = set.split(';')[0];
+      for (const set of res.headers.getSetCookie()) {
+        const [pair] = set.split(';');
+        const i = pair.indexOf('=');
+        const [k, v] = [pair.slice(0, i), pair.slice(i + 1)];
+        if (v && !/Expires=Thu, 01 Jan 1970/i.test(set)) jar.set(k, v);
+        else jar.delete(k);
+      }
       const type = res.headers.get('content-type') || '';
       const data = type.includes('json') ? await res.json() : Buffer.from(await res.arrayBuffer());
       return { status: res.status, data, headers: res.headers };

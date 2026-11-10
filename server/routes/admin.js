@@ -6,7 +6,7 @@ const { computePayroll } = require('../payroll');
 const { planImport, randomPin } = require('../importer');
 const { resolveMapsLink, placeName } = require('../maps');
 const {
-  bad, HttpError, istDate, istTime, istMs, addDays, requireDate, requireMonth, daysInMonth, hashSecret, toPaise, isTime, isDate, haversineMeters, fmtKm, isWeeklyOff, WEEKLY_OFF_RE,
+  bad, HttpError, istDate, istTime, istMs, addDays, requireDate, requireMonth, daysInMonth, hashSecret, randomToken, toPaise, isTime, isDate, haversineMeters, fmtKm, isWeeklyOff, WEEKLY_OFF_RE,
 } = require('../util');
 const {
   profileMissing, paymentDetails, publicEmployee, validPin, createDocument, sendStoredFile, notFound, assertMonthOpen, DOC_COLUMNS,
@@ -124,7 +124,24 @@ module.exports = function adminRoutes(ctx) {
     res.json(getSettings(db));
   });
 
-  r.get('/admins', (req, res) => res.json(db.prepare('SELECT id, username, name, can_edit_attendance, role, created_at FROM admins ORDER BY id').all()));
+  r.get('/admins', (req, res) => res.json(db.prepare(
+    `SELECT a.id, a.username, a.name, a.can_edit_attendance, a.role, a.employee_id, a.created_at, e.code AS employee_code
+     FROM admins a LEFT JOIN employees e ON e.id = a.employee_id ORDER BY a.id`,
+  ).all()));
+
+  // Give an existing employee payroll access for a while: they keep using their own staff login.
+  r.post('/admins/employee', (req, res) => {
+    const emp = db.prepare('SELECT id, code, name FROM employees WHERE id = ? AND active = 1').get(id(req.body?.employee_id));
+    if (!emp) throw notFound('Choose an active employee');
+    if (db.prepare('SELECT 1 FROM admins WHERE employee_id = ?').get(emp.id)) throw new HttpError(409, `${emp.name} already has payroll access`);
+    let username = `staff-${emp.code.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+    while (db.prepare('SELECT 1 FROM admins WHERE username = ?').get(username)) username += 'x';
+    const newId = db.prepare(
+      "INSERT INTO admins (username, name, password_hash, role, employee_id, created_at) VALUES (?, ?, ?, 'salary', ?, ?)",
+    ).run(username, emp.name, hashSecret(randomToken()), emp.id, ctx.now()).lastInsertRowid; // no password: they use their PIN
+    ctx.audit(req, 'admin.payroll_access_given', { employee: emp.code, name: emp.name });
+    res.json({ ok: true, id: Number(newId) });
+  });
   const ADMIN_ROLES = ['full', 'salary'];
 
   /** Changing attendance markings (corrections, bulk marking) is limited to admins with this permission. */
@@ -136,11 +153,12 @@ module.exports = function adminRoutes(ctx) {
 
   r.put('/admins/:id/permissions', (req, res) => {
     requireAttendanceEditor(req);
-    const target = db.prepare('SELECT id, username, can_edit_attendance, role FROM admins WHERE id = ?').get(id(req.params.id));
+    const target = db.prepare('SELECT id, username, can_edit_attendance, role, employee_id FROM admins WHERE id = ?').get(id(req.params.id));
     if (!target) throw notFound();
     if (req.body?.role !== undefined) {
       const role = req.body.role;
       if (!ADMIN_ROLES.includes(role)) throw bad('Unknown access level');
+      if (target.employee_id && role !== 'salary') throw bad('An employee login can only have payroll access. Add a separate admin for more.');
       if (role === 'salary' && target.id === req.admin.id) throw bad('You cannot limit your own login');
       if (role === 'salary' && target.role !== 'salary'
         && db.prepare("SELECT COUNT(*) AS n FROM admins WHERE role != 'salary' AND can_edit_attendance = 1 AND id != ?").get(target.id).n < 1) {
@@ -174,8 +192,9 @@ module.exports = function adminRoutes(ctx) {
   });
 
   r.put('/admins/:id', (req, res) => {
-    const target = db.prepare('SELECT id, username, name FROM admins WHERE id = ?').get(id(req.params.id));
+    const target = db.prepare('SELECT id, username, name, employee_id FROM admins WHERE id = ?').get(id(req.params.id));
     if (!target) throw notFound();
+    if (target.employee_id) throw bad('This is an employee’s own login — change their details under Employees.');
     const name = String(req.body?.name ?? '').trim();
     const username = String(req.body?.username ?? '').trim();
     if (!name) throw bad('Name is required');
@@ -187,8 +206,9 @@ module.exports = function adminRoutes(ctx) {
 
   // Another admin's password: needs the acting admin's own password; that admin is logged out everywhere.
   r.post('/admins/:id/password', (req, res) => {
-    const target = db.prepare('SELECT id, username FROM admins WHERE id = ?').get(id(req.params.id));
+    const target = db.prepare('SELECT id, username, employee_id FROM admins WHERE id = ?').get(id(req.params.id));
     if (!target) throw notFound();
+    if (target.employee_id) throw bad('This employee logs in with their own PIN — reset it under Employees.');
     checkPassword(req);
     const pw = req.body?.new_password;
     if (typeof pw !== 'string' || pw.length < 8) throw bad('New password must be at least 8 characters');
@@ -199,23 +219,28 @@ module.exports = function adminRoutes(ctx) {
   });
 
   r.delete('/admins/:id', (req, res) => {
-    const target = db.prepare('SELECT id, username, name FROM admins WHERE id = ?').get(id(req.params.id));
+    const target = db.prepare('SELECT id, username, name, employee_id FROM admins WHERE id = ?').get(id(req.params.id));
     if (!target) throw notFound();
     if (target.id === req.admin.id) throw bad('You cannot remove your own account');
     if (db.prepare('SELECT COUNT(*) AS n FROM admins').get().n <= 1) throw bad('At least one admin must remain');
-    checkPassword(req);
+    // Revoking an employee's payroll access is one click; removing a real admin needs your password.
+    if (!target.employee_id) checkPassword(req);
+    removeAdmin(target.id);
+    ctx.audit(req, target.employee_id ? 'admin.payroll_access_revoked' : 'admin.removed', { username: target.username, name: target.name });
+    res.json({ ok: true });
+  });
+
+  function removeAdmin(adminId) {
     tx(db, () => {
       // Keep the records this admin approved; just drop the link to the deleted account.
       for (const [table, col] of [['punches', 'reviewed_by'], ['ot_decisions', 'decided_by'], ['late_decisions', 'decided_by'], ['visits', 'reviewed_by'], ['day_overrides', 'set_by'],
         ['leave_requests', 'decided_by'], ['documents', 'reviewed_by'], ['payroll_runs', 'finalized_by']]) {
-        db.prepare(`UPDATE ${table} SET ${col} = NULL WHERE ${col} = ?`).run(target.id);
+        db.prepare(`UPDATE ${table} SET ${col} = NULL WHERE ${col} = ?`).run(adminId);
       }
-      db.prepare("DELETE FROM sessions WHERE kind = 'admin' AND user_id = ?").run(target.id);
-      db.prepare('DELETE FROM admins WHERE id = ?').run(target.id);
+      db.prepare("DELETE FROM sessions WHERE kind = 'admin' AND user_id = ?").run(adminId);
+      db.prepare('DELETE FROM admins WHERE id = ?').run(adminId);
     });
-    ctx.audit(req, 'admin.removed', { username: target.username, name: target.name });
-    res.json({ ok: true });
-  });
+  }
 
   r.post('/password', (req, res) => {
     const { current_password, new_password } = req.body || {};
@@ -229,7 +254,7 @@ module.exports = function adminRoutes(ctx) {
 
   r.get('/audit', (req, res) => {
     res.json(db.prepare(
-      `SELECT l.*, COALESCE(a.name, e.name) AS actor_name FROM audit_log l
+      `SELECT l.*, COALESCE(l.actor_name, a.name, e.name) AS actor_name FROM audit_log l
        LEFT JOIN admins a ON l.actor_kind = 'admin' AND a.id = l.actor_id
        LEFT JOIN employees e ON l.actor_kind = 'employee' AND e.id = l.actor_id
        ORDER BY l.id DESC LIMIT 300`,
@@ -587,6 +612,7 @@ module.exports = function adminRoutes(ctx) {
   function deleteEmployees(ids) {
     if (!ids.length) return 0;
     const marks = ids.map(() => '?').join(',');
+    for (const a of db.prepare(`SELECT id FROM admins WHERE employee_id IN (${marks})`).all(...ids)) removeAdmin(a.id);
     const files = [
       ...db.prepare(`SELECT selfie_file AS f FROM punches WHERE employee_id IN (${marks})`).all(...ids),
       ...db.prepare(`SELECT stored_file AS f FROM documents WHERE employee_id IN (${marks})`).all(...ids),

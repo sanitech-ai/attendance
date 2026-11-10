@@ -59,7 +59,10 @@ function showLogin() {
       if (err.status === 401) throw new Error('Wrong username or password');
       throw err;
     }
-    location.href = '/';
+    // ...unless the admin gave them payroll access: then open the payroll pages.
+    const payroll = await api('POST', '/api/employee/payroll-session').catch(() => null);
+    if (payroll) location.reload();
+    else location.href = '/';
   });
 }
 
@@ -1593,6 +1596,25 @@ async function pageSettings(el, params) {
           ],
           async onSubmit(v) { await api('POST', '/api/admin/admins', v); route(); return true; },
         }) }, '+ Add admin'),
+        h('button', { class: 'btn', onclick: async () => {
+          await loadEmployees();
+          const taken = new Set(admins.map((a) => a.employee_id).filter(Boolean));
+          formDialog({
+            title: 'Give an employee payroll access',
+            fields: [
+              { type: 'heading', label: 'They use their own staff login (Employee ID + PIN) — no new password. They can change salaries, wages, PF, advances and bonus/deductions, and view attendance and leaves. Revoke it here when the work is done.' },
+              { name: 'employee_id', label: 'Employee', type: 'select', required: true,
+                options: bySite(A.employees.filter((e) => e.active && !taken.has(e.id))).map((e) => ({ value: e.id, label: `${e.name} (${e.code}) — ${e.branch_name}` })) },
+            ],
+            submitLabel: 'Give payroll access',
+            async onSubmit(v) {
+              await api('POST', '/api/admin/admins/employee', { employee_id: Number(v.employee_id) });
+              toast('Payroll access given. They’ll find “Open payroll” in the More tab of their staff app.');
+              route();
+              return true;
+            },
+          });
+        } }, '+ Give an employee payroll access'),
         h('button', { class: 'btn', onclick: () => formDialog({
           title: 'Change my password',
           fields: [
@@ -1603,8 +1625,8 @@ async function pageSettings(el, params) {
         }) }, 'Change my password')),
       table([
         { label: 'Name', render: (a) => h('span', {}, a.name, a.id === A.me.admin.id ? h('span', { class: 'muted' }, ' (you)') : '') },
-        { label: 'Username', render: (a) => a.username },
-        { label: 'Access', render: (a) => (A.me.admin.can_edit_attendance && a.id !== A.me.admin.id
+        { label: 'Username', render: (a) => (a.employee_id ? h('span', {}, 'Staff login ', h('span', { class: 'muted' }, `(Employee ID ${a.employee_code} + PIN)`)) : a.username) },
+        { label: 'Access', render: (a) => (a.employee_id ? badge('Payroll · employee', 'info') : A.me.admin.can_edit_attendance && a.id !== A.me.admin.id
           ? h('select', { 'aria-label': 'Access', onchange: async (ev) => {
             const role = ev.target.value;
             if (!(await run(() => api('PUT', `/api/admin/admins/${a.id}/permissions`, { role })))) { ev.target.value = a.role; return; }
@@ -1622,7 +1644,10 @@ async function pageSettings(el, params) {
           } }), a.can_edit_attendance ? 'Yes' : 'No')
           : (a.can_edit_attendance ? badge('Yes', 'ok') : badge('No', 'neutral'))) },
         { label: 'Added', render: (a) => fmtDateTime(a.created_at) },
-        { label: '', render: (a) => h('div', { class: 'row' },
+        { label: '', render: (a) => (a.employee_id ? h('button', { class: 'btn btn-sm', onclick: async (ev) => {
+          if (!(await confirmDialog(`Revoke ${a.name}’s payroll access?`, `${a.name} is logged out of the payroll pages straight away. Their staff app keeps working as before.`, 'Revoke access'))) return;
+          if (await run(() => api('DELETE', `/api/admin/admins/${a.id}`), ev.currentTarget)) { toast(`${a.name} no longer has payroll access`); route(); }
+        } }, 'Revoke access') : h('div', { class: 'row' },
           h('button', { class: 'btn btn-sm', onclick: () => formDialog({
             title: `Edit ${a.name}`,
             fields: [
@@ -1663,8 +1688,9 @@ async function pageSettings(el, params) {
               route();
               return true;
             },
-          }) }, 'Remove')) },
-      ], admins));
+          }) }, 'Remove'))) },
+      ], admins),
+      h('p', { class: 'small muted' }, 'Payroll access given to an employee: they open it from the More tab of their staff app (or log in here with their Employee ID and PIN). Revoke it when the work is done.'));
     return;
   }
 

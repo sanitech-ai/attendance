@@ -54,9 +54,10 @@ function createApp({ dataDir, secret, secureCookies = false, now = () => Date.no
       fs.rmSync(path.join(filesDir, path.basename(name)), { force: true });
     },
     audit(req, action, detail = '') {
-      const actor = req.admin ? ['admin', req.admin.id] : req.employee ? ['employee', req.employee.id] : ['system', null];
-      db.prepare('INSERT INTO audit_log (at, actor_kind, actor_id, action, detail) VALUES (?, ?, ?, ?, ?)').run(
-        now(), actor[0], actor[1], action, typeof detail === 'string' ? detail : JSON.stringify(detail),
+      // The name is kept with the entry, so it still shows after that login is removed.
+      const actor = req.admin ? ['admin', req.admin.id, req.admin.name] : req.employee ? ['employee', req.employee.id, req.employee.name] : ['system', null, null];
+      db.prepare('INSERT INTO audit_log (at, actor_kind, actor_id, actor_name, action, detail) VALUES (?, ?, ?, ?, ?, ?)').run(
+        now(), actor[0], actor[1], actor[2], action, typeof detail === 'string' ? detail : JSON.stringify(detail),
       );
     },
     startSession(res, kind, userId) {
@@ -102,8 +103,12 @@ function createApp({ dataDir, secret, secureCookies = false, now = () => Date.no
         && db.prepare('SELECT * FROM sessions WHERE token_hash = ? AND kind = ? AND expires_at > ?').get(sha256(token), kind, now());
       if (!sess) throw new HttpError(401, 'Please log in');
       if (kind === 'admin') {
-        const admin = db.prepare('SELECT id, username, name, can_edit_attendance, role FROM admins WHERE id = ?').get(sess.user_id);
+        const admin = db.prepare('SELECT id, username, name, can_edit_attendance, role, employee_id FROM admins WHERE id = ?').get(sess.user_id);
         if (!admin) throw new HttpError(401, 'Please log in');
+        // Payroll access lent to an employee ends if they are deactivated.
+        if (admin.employee_id && !db.prepare('SELECT 1 FROM employees WHERE id = ? AND active = 1').get(admin.employee_id)) {
+          throw new HttpError(401, 'Please log in');
+        }
         req.admin = admin;
       } else {
         const emp = db.prepare('SELECT * FROM employees WHERE id = ? AND active = 1').get(sess.user_id);

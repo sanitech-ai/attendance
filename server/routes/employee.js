@@ -46,6 +46,15 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
     });
 
     r.use(ctx.requireSession('employee'));
+
+    // Payroll access lent by the admin: opens the payroll pages with this staff login, no extra password.
+    r.post('/payroll-session', (req, res) => {
+      const access = db.prepare('SELECT id FROM admins WHERE employee_id = ?').get(req.employee.id);
+      if (!access) throw new HttpError(403, 'You don’t have payroll access. Ask the admin.');
+      ctx.startSession(res, 'admin', access.id);
+      ctx.audit({ employee: req.employee }, 'admin.payroll_opened', { employee: req.employee.code });
+      res.json({ ok: true });
+    });
   }
 
   r.get('/me', (req, res) => {
@@ -59,6 +68,8 @@ module.exports = function employeeRoutes(ctx, { preview = false } = {}) {
       profile_missing: req.employee.category === 'labour' ? [] : profileMissing(db, req.employee).filter((m) => m !== 'wage'),
       profile_deadline: profileDeadline(db, req.employee, istDate(ctx.now()), settings.profile_grace_days),
       company_name: settings.company_name,
+      // The admin lent them payroll access: they open it from the More tab with this same login.
+      payroll_access: !preview && !!db.prepare('SELECT 1 FROM admins WHERE employee_id = ?').get(req.employee.id),
       late_warnings: settings.late_warnings,
       late_max_minutes: settings.late_max_minutes,
       late_out_minutes: settings.late_out_minutes,

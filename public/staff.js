@@ -606,6 +606,12 @@ async function renderMore(main) {
         h('dt', {}, 'Branch'), h('dd', {}, S.me.branch?.name || '—'),
         h('dt', {}, 'Shift'), h('dd', {}, `${e.shift_start} – ${e.shift_end}`),
         h('dt', {}, 'Joined'), h('dd', {}, e.joined_on ? fmtDate(e.joined_on) : '—'))),
+    S.me.payroll_access ? h('div', { class: 'card', style: { borderColor: 'var(--primary)' } },
+      h('h2', {}, '💼 Payroll access'),
+      h('p', { class: 'small' }, 'The admin has given you access to salaries and payroll (and to view attendance and leaves).'),
+      h('button', { class: 'btn btn-primary btn-block', onclick: async (ev) => {
+        if (await run(() => api('POST', `${EMP}/payroll-session`), ev.currentTarget)) location.href = '/admin';
+      } }, 'Open payroll')) : '',
     paymentCard(e),
     h('div', { class: 'card' },
       h('div', { class: 'spread' }, h('h2', {}, 'My documents'), h('button', { class: 'btn btn-primary btn-sm', onclick: uploadDocument }, '+ Upload')),

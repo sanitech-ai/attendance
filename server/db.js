@@ -300,6 +300,14 @@ function migrate(db) {
     // 'full' = everything; 'salary' = salaries, pay items, advances, bonus/deductions and the salary sheet only.
     db.exec("ALTER TABLE admins ADD COLUMN role TEXT NOT NULL DEFAULT 'full'");
   }
+  if (!db.prepare('PRAGMA table_info(audit_log)').all().some((c) => c.name === 'actor_name')) {
+    db.exec('ALTER TABLE audit_log ADD COLUMN actor_name TEXT');
+  }
+  if (!adminCols.includes('employee_id')) {
+    // Payroll access given to an existing employee: they use their own staff login (ID + PIN).
+    db.exec('ALTER TABLE admins ADD COLUMN employee_id INTEGER REFERENCES employees(id)');
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS admins_employee ON admins(employee_id) WHERE employee_id IS NOT NULL');
 
   const empCols = db.prepare('PRAGMA table_info(employees)').all().map((c) => c.name);
   if (!empCols.includes('upi_id')) {

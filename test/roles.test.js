@@ -114,3 +114,56 @@ test('payroll login: changes pay, views attendance and leaves, nothing else', as
   const me = (await owner('GET', '/api/admin/admins')).data.find((a) => a.username === 'firefueled').id;
   assert.equal((await owner('PUT', `/api/admin/admins/${me}/permissions`, { role: 'salary' })).status, 400);
 });
+
+test('payroll access lent to an existing employee: own staff login, revoked in one click', async (t) => {
+  const s = await startServer(ist('2026-11-10', '08:00'));
+  t.after(() => s.close());
+  const owner = s.client();
+  await owner('POST', '/api/admin/setup', { username: 'firefueled', password: 'password123', name: 'Owner' });
+  const b = (await owner('POST', '/api/admin/branches', { name: 'HO', lat: 17.41, lng: 78.44, radius_m: 150, geofence_mode: 'flag' })).data.id;
+  const suresh = (await owner('POST', '/api/admin/employees', { code: 'SECPL0031', name: 'Suresh', branch_id: b, salary: 25000, weekly_offs: ['0'], joined_on: '', pin: '4321' })).data.id;
+  const ravi = (await owner('POST', '/api/admin/employees', { code: 'SECPL0032', name: 'Ravi', branch_id: b, salary: 30000, weekly_offs: ['0'], joined_on: '', pin: '1234' })).data.id;
+
+  const staff = s.client();
+  await staff('POST', '/api/employee/login', { code: 'SECPL0031', pin: '4321' });
+  assert.equal((await staff('GET', '/api/employee/me')).data.payroll_access, false);
+  assert.equal((await staff('POST', '/api/employee/payroll-session')).status, 403, 'not before access is given');
+  assert.equal((await staff('GET', '/api/admin/employees')).status, 401);
+
+  // The owner gives Suresh payroll access
+  assert.equal((await owner('POST', '/api/admin/admins/employee', { employee_id: suresh })).status, 200);
+  assert.equal((await owner('POST', '/api/admin/admins/employee', { employee_id: suresh })).status, 409);
+  const row = (await owner('GET', '/api/admin/admins')).data.find((a) => a.employee_id === suresh);
+  assert.deepEqual([row.role, row.employee_code, row.name], ['salary', 'SECPL0031', 'Suresh']);
+
+  // He opens it from his staff app with his existing login — no new password
+  assert.equal((await staff('GET', '/api/employee/me')).data.payroll_access, true);
+  assert.equal((await staff('POST', '/api/employee/payroll-session')).status, 200);
+  assert.equal((await staff('GET', '/api/admin/me')).data.admin.name, 'Suresh');
+  assert.equal((await staff('PUT', `/api/admin/employees/${ravi}/salary`, { salary: 31000 })).status, 200);
+  assert.equal((await staff('GET', '/api/admin/attendance?month=2026-11')).status, 200);
+  assert.equal((await staff('GET', '/api/admin/punches')).status, 403, 'payroll only');
+  assert.equal((await staff('GET', '/api/employee/today')).status, 200, 'his staff app still works');
+  // It stays payroll-only, and has no password of its own
+  assert.equal((await owner('PUT', `/api/admin/admins/${row.id}/permissions`, { role: 'full' })).status, 400);
+  assert.equal((await owner('POST', `/api/admin/admins/${row.id}/password`, { new_password: 'password123', password: 'password123' })).status, 400);
+
+  // Revoked in one click: logged out of payroll at once, staff app unaffected
+  assert.equal((await owner('DELETE', `/api/admin/admins/${row.id}`)).status, 200);
+  assert.equal((await staff('GET', '/api/admin/employees')).status, 401);
+  assert.equal((await staff('POST', '/api/employee/payroll-session')).status, 403);
+  assert.equal((await staff('GET', '/api/employee/me')).data.payroll_access, false);
+  assert.equal((await staff('GET', '/api/employee/today')).status, 200);
+  // The salary change he made stays, and is in the audit log
+  assert.equal((await owner('GET', '/api/admin/employees')).data.find((e) => e.id === ravi).salary_paise, 3100000);
+  const log = (await owner('GET', '/api/admin/audit')).data;
+  assert.ok(log.some((l) => l.action === 'employee.salary_changed' && l.actor_name === 'Suresh'));
+  assert.ok(log.some((l) => l.action === 'admin.payroll_access_revoked'));
+
+  // Deactivating the employee also ends payroll access
+  await owner('POST', '/api/admin/admins/employee', { employee_id: suresh });
+  await staff('POST', '/api/employee/payroll-session');
+  assert.equal((await staff('GET', '/api/admin/me')).status, 200);
+  s.db.prepare('UPDATE employees SET active = 0 WHERE id = ?').run(suresh);
+  assert.equal((await staff('GET', '/api/admin/me')).status, 401);
+});
