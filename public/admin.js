@@ -568,7 +568,7 @@ function editDay(r, d, finalized) {
     toast(res.changed.length ? `Fixed ${res.changed.length} punch(es): ${res.changed.map((x) => `${fmtDate(x.date)} ${x.time} → ${x.to === 'IN' ? 'In' : 'Out'}`).join(', ')}` : 'Punches were already in order.');
     route();
   } }, '⇅ Fix In / Out order for this month');
-  document.querySelector('.modal .form').prepend(info, h('p', { class: 'small row' }, h('a', { href: `#/punches?date=${d.date}&employee_id=${r.employee_id}`, onclick: () => dlg.close() }, 'See selfies for this day →'), fixOrder));
+  document.querySelector('.modal .form').prepend(info, h('p', { class: 'small row' }, isPayrollLogin() ? '' : h('a', { href: `#/punches?date=${d.date}&employee_id=${r.employee_id}`, onclick: () => dlg.close() }, 'See selfies for this day →'), fixOrder));
 }
 
 // ---------------------------------------------------------------- month-end half-day review
@@ -730,7 +730,7 @@ async function pageLeaves(el, params) {
       { label: 'Type', render: (l) => (l.comp_off ? badge('Comp-off', 'info') : l.leave_type === 'paid' ? 'Paid' : 'Unpaid') },
       { label: 'Reason', render: (l) => l.reason || '—' },
       { label: 'Status', render: (l) => badge(l.status, statusKind[l.status]) },
-      { label: '', render: (l) => (l.status === 'cancelled' || isPayrollLogin() ? '' : h('div', { class: 'row' },
+      { label: '', render: (l) => (l.status === 'cancelled' ? '' : h('div', { class: 'row' },
         l.status !== 'approved' ? h('button', { class: 'btn btn-sm btn-ok', onclick: decide(l, 'approved') }, 'Approve') : '',
         l.status !== 'rejected' ? h('button', { class: 'btn btn-sm', onclick: decide(l, 'rejected') }, 'Reject') : '')) },
     ], rows, { empty: 'No leave requests.' }),
@@ -1592,7 +1592,7 @@ async function pageSettings(el, params) {
             { name: 'password', label: 'Password (min 8 chars)', type: 'password', required: true, autocomplete: 'new-password' },
             { name: 'role', label: 'Access', type: 'select', value: 'full', options: [
               { value: 'full', label: 'Full admin — everything' },
-              { value: 'salary', label: 'Payroll — change salaries, wages, PF, advances, bonus/deductions; view attendance and leaves' }] },
+              { value: 'salary', label: 'Payroll — salaries, wages, PF, advances, bonus/deductions; correct attendance; approve leaves' }] },
           ],
           async onSubmit(v) { await api('POST', '/api/admin/admins', v); route(); return true; },
         }) }, '+ Add admin'),
@@ -1602,7 +1602,7 @@ async function pageSettings(el, params) {
           formDialog({
             title: 'Give an employee payroll access',
             fields: [
-              { type: 'heading', label: 'They use their own staff login (Employee ID + PIN) — no new password. They can change salaries, wages, PF, advances and bonus/deductions, and view attendance and leaves. Revoke it here when the work is done.' },
+              { type: 'heading', label: 'They use their own staff login (Employee ID + PIN) — no new password. They can change salaries, wages, PF, advances and bonus/deductions, correct attendance and approve or reject leaves. Revoke it here when the work is done.' },
               { name: 'employee_id', label: 'Employee', type: 'select', required: true,
                 options: bySite(A.employees.filter((e) => e.active && !taken.has(e.id))).map((e) => ({ value: e.id, label: `${e.name} (${e.code}) — ${e.branch_name}` })) },
             ],
@@ -1634,7 +1634,7 @@ async function pageSettings(el, params) {
             route();
           } }, [['full', 'Full admin'], ['salary', 'Payroll']].map(([v, l]) => h('option', { value: v, selected: a.role === v }, l)))
           : (a.role === 'salary' ? badge('Payroll', 'info') : badge('Full admin', 'neutral'))) },
-        { label: 'Can change attendance register', render: (a) => (a.role === 'salary' ? h('span', { class: 'muted' }, '—') : A.me.admin.can_edit_attendance
+        { label: 'Can change attendance register', render: (a) => (a.role === 'salary' ? badge('Yes', 'ok') : A.me.admin.can_edit_attendance
           ? h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: !!a.can_edit_attendance, onchange: async (ev) => {
             const want = ev.target.checked;
             const ok = await run(() => api('PUT', `/api/admin/admins/${a.id}/permissions`, { can_edit_attendance: want }));

@@ -63,7 +63,7 @@ test('staff only ever see their own records: no team view, no other people\'s se
   assert.equal((await mgr('GET', '/api/admin/employees')).status, 401);
 });
 
-test('payroll login: changes pay, views attendance and leaves, nothing else', async (t) => {
+test('payroll login: changes pay, corrects attendance, decides leaves, nothing else', async (t) => {
   const s = await startServer(ist('2026-10-05', '08:00'));
   t.after(() => s.close());
   const owner = s.client();
@@ -89,14 +89,19 @@ test('payroll login: changes pay, views attendance and leaves, nothing else', as
     '/api/admin/half-days?month=2026-10', '/api/admin/late-ot?month=2026-10', '/api/admin/leaves', '/api/admin/leave-summary']) {
     assert.equal((await acc('GET', url)).status, 200, url);
   }
-  // Nothing else: other changes to employees, attendance, leaves, finalizing, selfies, documents, settings, admins
+  // Attendance corrections and leave decisions
+  assert.equal((await acc('PUT', '/api/admin/attendance/override', { employee_id: emp, date: '2026-10-05', status: 'present', note: 'checked' })).status, 200);
+  assert.equal((await acc('POST', '/api/admin/punches/fix-order', { employee_id: emp, month: '2026-10' })).status, 200);
+  const ravi = s.client(); await ravi('POST', '/api/employee/login', { code: 'E1', pin: '1234' });
+  const leave = (await ravi('POST', '/api/employee/leaves', { from_date: '2026-10-07', to_date: '2026-10-07', leave_type: 'paid', reason: 'family' })).data;
+  assert.equal((await acc('POST', `/api/admin/leaves/${leave.id}/decision`, { status: 'approved' })).status, 200);
+  assert.equal((await owner('GET', '/api/admin/leaves')).data[0].status, 'approved');
+  // Nothing else: other changes to employees, finalizing, selfies, documents, settings, admins
   const denied = [
     ['PUT', `/api/admin/employees/${emp}`, { code: 'E1', name: 'Changed', branch_id: b, salary: 99999 }],
     ['POST', '/api/admin/employees', { code: 'E2', name: 'New', branch_id: b, salary: 1, pin: '1234' }],
     ['DELETE', `/api/admin/employees/${emp}`],
     ['POST', `/api/admin/employees/${emp}/reset-pin`, {}],
-    ['PUT', '/api/admin/attendance/override', { employee_id: emp, date: '2026-10-05', status: 'present' }],
-    ['POST', '/api/admin/leaves/1/decision', { status: 'approved' }],
     ['POST', '/api/admin/payroll/2026-09/finalize', {}],
     ['GET', '/api/admin/punches'], ['GET', '/api/admin/documents'], ['GET', '/api/admin/visits'], ['GET', '/api/admin/dashboard'],
     ['GET', '/api/admin/settings'], ['PUT', '/api/admin/settings', { company_name: 'X' }], ['GET', '/api/admin/admins'],
@@ -105,9 +110,10 @@ test('payroll login: changes pay, views attendance and leaves, nothing else', as
   for (const [m, url, body] of denied) assert.equal((await acc(m, url, body)).status, 403, `${m} ${url}`);
   assert.equal((await owner('GET', '/api/admin/employees')).data[0].name, 'Ravi');
 
-  // The owner can switch the login between full and payroll; a payroll login never edits attendance
+  // The owner can switch the login between full and payroll; a payroll login always includes attendance
   const id = (await owner('GET', '/api/admin/admins')).data.find((a) => a.username === 'accounts').id;
-  assert.equal((await owner('PUT', `/api/admin/admins/${id}/permissions`, { can_edit_attendance: true })).status, 400);
+  assert.equal((await owner('GET', '/api/admin/admins')).data.find((a) => a.id === id).can_edit_attendance, 1);
+  assert.equal((await owner('PUT', `/api/admin/admins/${id}/permissions`, { can_edit_attendance: false })).status, 400);
   assert.equal((await owner('PUT', `/api/admin/admins/${id}/permissions`, { role: 'full' })).status, 200);
   assert.equal((await acc('GET', '/api/admin/settings')).status, 200);
   // ...and the last full admin can't be limited

@@ -608,7 +608,7 @@ async function renderMore(main) {
         h('dt', {}, 'Joined'), h('dd', {}, e.joined_on ? fmtDate(e.joined_on) : '—'))),
     S.me.payroll_access ? h('div', { class: 'card', style: { borderColor: 'var(--primary)' } },
       h('h2', {}, '💼 Payroll access'),
-      h('p', { class: 'small' }, 'The admin has given you access to salaries and payroll (and to view attendance and leaves).'),
+      h('p', { class: 'small' }, 'The admin has given you access to salaries, payroll, attendance corrections and leave approvals.'),
       h('button', { class: 'btn btn-primary btn-block', onclick: async (ev) => {
         if (await run(() => api('POST', `${EMP}/payroll-session`), ev.currentTarget)) location.href = '/admin';
       } }, 'Open payroll')) : '',

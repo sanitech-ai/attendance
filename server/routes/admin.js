@@ -74,9 +74,8 @@ module.exports = function adminRoutes(ctx) {
 
   r.use(ctx.requireSession('admin'));
 
-  // "Payroll" logins (e.g. someone in accounts): change pay, and view attendance and leaves — no
-  // selfies, documents, attendance changes, leave decisions, settings or other logins, and they
-  // can't finalize payroll.
+  // "Payroll" logins (e.g. someone in accounts): pay, attendance corrections and leave decisions — no
+  // selfies, documents, employee details, settings or other logins, and they can't finalize payroll.
   const SALARY_ROUTES = [
     ['GET', /^\/me$/], ['POST', /^\/password$/], ['GET', /^\/branches$/], ['GET', /^\/employees$/],
     ['PUT', /^\/employees\/\d+\/salary$/],
@@ -84,14 +83,16 @@ module.exports = function adminRoutes(ctx) {
     ['GET', /^\/advances$/], ['POST', /^\/advances$/], ['DELETE', /^\/advances\/\d+$/],
     ['GET', /^\/adjustments$/], ['POST', /^\/adjustments$/], ['DELETE', /^\/adjustments\/\d+$/],
     ['GET', /^\/payroll$/], ['GET', /^\/payroll\.csv$/],
-    // view only
+    // attendance: view and correct (register, half-day review, mark days, fix In / Out order)
     ['GET', /^\/attendance$/], ['GET', /^\/attendance\.csv$/], ['GET', /^\/attendance\/\d+$/],
+    ['PUT', /^\/attendance\/override$/], ['POST', /^\/attendance\/bulk-override$/], ['POST', /^\/punches\/fix-order$/],
     ['GET', /^\/half-days$/], ['GET', /^\/half-days\.csv$/], ['GET', /^\/late-ot$/], ['GET', /^\/late-ot\.csv$/],
-    ['GET', /^\/leaves$/], ['GET', /^\/leave-summary$/], ['GET', /^\/holidays$/],
+    // leaves: view and approve / reject
+    ['GET', /^\/leaves$/], ['GET', /^\/leave-summary$/], ['POST', /^\/leaves\/\d+\/decision$/], ['GET', /^\/holidays$/],
   ];
   r.use((req, res, next) => {
     if (req.admin.role !== 'salary' || SALARY_ROUTES.some(([m, re]) => m === req.method && re.test(req.path))) return next();
-    throw new HttpError(403, 'Your login can change salaries and payroll items, and view attendance and leaves — not this.');
+    throw new HttpError(403, 'Your login covers salaries, payroll items, attendance and leaves — not this.');
   });
 
   r.get('/me', (req, res) => res.json({ admin: req.admin, settings: getSettings(db) }));
@@ -137,7 +138,7 @@ module.exports = function adminRoutes(ctx) {
     let username = `staff-${emp.code.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
     while (db.prepare('SELECT 1 FROM admins WHERE username = ?').get(username)) username += 'x';
     const newId = db.prepare(
-      "INSERT INTO admins (username, name, password_hash, role, employee_id, created_at) VALUES (?, ?, ?, 'salary', ?, ?)",
+      "INSERT INTO admins (username, name, password_hash, role, can_edit_attendance, employee_id, created_at) VALUES (?, ?, ?, 'salary', 1, ?, ?)",
     ).run(username, emp.name, hashSecret(randomToken()), emp.id, ctx.now()).lastInsertRowid; // no password: they use their PIN
     ctx.audit(req, 'admin.payroll_access_given', { employee: emp.code, name: emp.name });
     res.json({ ok: true, id: Number(newId) });
@@ -164,12 +165,13 @@ module.exports = function adminRoutes(ctx) {
         && db.prepare("SELECT COUNT(*) AS n FROM admins WHERE role != 'salary' AND can_edit_attendance = 1 AND id != ?").get(target.id).n < 1) {
         throw bad('At least one full admin who can change the attendance register must remain');
       }
-      db.prepare('UPDATE admins SET role = ?, can_edit_attendance = CASE WHEN ? = \'salary\' THEN 0 ELSE can_edit_attendance END WHERE id = ?').run(role, role, target.id);
+      // A payroll login always includes correcting attendance.
+      db.prepare('UPDATE admins SET role = ?, can_edit_attendance = CASE WHEN ? = \'salary\' THEN 1 ELSE can_edit_attendance END WHERE id = ?').run(role, role, target.id);
       ctx.audit(req, 'admin.role_changed', { username: target.username, role });
       return res.json({ ok: true });
     }
     const allow = req.body?.can_edit_attendance ? 1 : 0;
-    if (allow && target.role === 'salary') throw bad('A payroll login cannot change the attendance register');
+    if (!allow && target.role === 'salary') throw bad('A payroll login always includes attendance corrections. Change its access, or revoke it, instead.');
     if (!allow && target.can_edit_attendance
       && db.prepare('SELECT COUNT(*) AS n FROM admins WHERE can_edit_attendance = 1').get().n <= 1) {
       throw bad('At least one admin must be able to change the attendance register');
@@ -185,8 +187,8 @@ module.exports = function adminRoutes(ctx) {
     if (!ADMIN_ROLES.includes(role)) throw bad('Unknown access level');
     validateAdminInput(username, password, name);
     const newId = db
-      .prepare('INSERT INTO admins (username, name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(username.trim(), name.trim(), hashSecret(password), role, ctx.now()).lastInsertRowid;
+      .prepare('INSERT INTO admins (username, name, password_hash, role, can_edit_attendance, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(username.trim(), name.trim(), hashSecret(password), role, role === 'salary' ? 1 : 0, ctx.now()).lastInsertRowid;
     ctx.audit(req, 'admin.created', { id: Number(newId), username, role });
     res.json({ ok: true, id: Number(newId) });
   });
