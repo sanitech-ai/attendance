@@ -921,11 +921,21 @@ async function payItems(e) {
   const items = await run(() => api('GET', `/api/admin/employees/${e.id}/pay-items`));
   if (!items) return;
   const body = h('div', { class: 'stack' },
-    h('p', { class: 'small muted' }, 'These are applied every month in full (not reduced for absent days) whenever the employee has at least one paid day. For one-off bonuses or fines, use Payroll → Bonus & deductions.'),
+    h('p', { class: 'small muted' }, 'Like the salary, these are in proportion to attendance: e.g. ₹9,000 room rent with 25 paid days in a 30-day month = ₹7,500. Untick “By attendance” for an amount that must stay the same every month. For one-off bonuses or fines, use Payroll → Bonus & deductions.'),
     table([
       { label: 'Type', render: (x) => (x.kind === 'addition' ? badge('earning', 'ok') : badge('deduction', 'bad')) },
       { label: 'Item', render: (x) => x.label },
-      { label: 'Monthly amount', class: 'num', render: (x) => money(x.amount_paise) },
+      { label: 'Full month', class: 'num', render: (x) => money(x.amount_paise) },
+      { label: 'By attendance', render: (x) => {
+        const text = h('span', {}, x.prorate !== 0 ? 'Yes' : 'No — full amount');
+        return h('label', { class: 'check' }, h('input', { type: 'checkbox', checked: x.prorate !== 0, onchange: async (ev) => {
+          const want = ev.target.checked;
+          if (!(await run(() => api('PUT', `/api/admin/pay-items/${x.id}`, { prorate: want })))) { ev.target.checked = !want; return; }
+          x.prorate = want ? 1 : 0;
+          text.textContent = want ? 'Yes' : 'No — full amount';
+          toast(`${x.label}: ${want ? 'in proportion to attendance' : 'full amount every month'}`);
+        } }), text);
+      } },
       { label: '', render: (x) => h('button', { class: 'btn btn-sm', onclick: async (ev) => {
         if (await run(() => api('DELETE', `/api/admin/pay-items/${x.id}`), ev.currentTarget)) { dlg.close(); payItems(e); }
       } }, 'Remove') },
@@ -937,7 +947,8 @@ async function payItems(e) {
         fields: [
           { name: 'kind', label: 'Type', type: 'select', options: [{ value: 'deduction', label: 'Deduction (PF, ESIC, PT, TDS…)' }, { value: 'addition', label: 'Earning (conveyance, room rent…)' }] },
           { name: 'label', label: 'Name', required: true, placeholder: 'e.g. PF' },
-          { name: 'amount', label: 'Monthly amount (₹)', type: 'number', step: '0.01', min: 1, required: true },
+          { name: 'amount', label: 'Amount for a full month (₹)', type: 'number', step: '0.01', min: 1, required: true },
+          { name: 'prorate', label: 'In proportion to attendance (e.g. 25 of 30 days → 25/30 of the amount)', type: 'checkbox', value: true },
         ],
         async onSubmit(v) {
           await api('POST', `/api/admin/employees/${e.id}/pay-items`, v);
@@ -1443,6 +1454,7 @@ async function pagePayroll(el, params) {
         h('li', {}, 'No overtime pay. Working on a weekly off is paid like any present day and also earns a comp-off: a paid day off to take on a weekday (shown on the Leave requests page).'),
         h('li', {}, `Full day = the employee’s shift length minus the ${A.me.settings.grace_minutes}-minute grace (9:00–18:00 → ${fmtMinutes(540 - A.me.settings.grace_minutes)} worked). Half day needs ${A.me.settings.half_day_hours} h. No punch-out by midnight counts as a half day (you can correct it).`),
         h('li', {}, `Late arrivals: every ${A.me.settings.late_warnings + 1}${A.me.settings.late_warnings + 1 === 3 ? 'rd' : 'th'} late in a month counts as a half day; the others are warnings. A late arrival who stays until shift end is otherwise a full day. More than ${A.me.settings.late_max_minutes} min late is not part of that count: it is a half day; you review it at month end in Half-day review. Punching out away from the site more than ${A.me.settings.late_out_minutes} min after shift end also counts as a half day, and so does a Punch In away from the site that you don’t approve. Every late day and the month’s total late time are shown to you and the employee.`),
+        h('li', {}, 'Fixed monthly items (room rent, conveyance, PF, PT…) are in proportion to attendance like the salary: amount × paid days ÷ days in the month (labour: ÷ their working days). Items marked as full amount, advances and one-off bonus/deductions are not reduced.'),
         h('li', {}, 'Net = base + additions − deductions − advances.'))));
 }
 

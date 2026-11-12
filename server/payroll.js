@@ -9,8 +9,14 @@ const { daysInMonth } = require('./util');
  *  Labour (daily wage): per-day = the wage. Paid days = present + ½·half-days + paid leave
  *    (weekly offs and holidays are not paid; a weekly off worked is paid as a present day).
  * There is no overtime pay: working on a weekly off earns a comp-off (a paid day off) instead.
- * Fixed monthly pay items (PF, PT, conveyance...) apply in full whenever there is at least one paid day.
+ * Fixed monthly pay items (room rent, conveyance, PF, PT...) are in proportion to attendance, like the
+ * salary: staff get amount × paid days ÷ days in month; labour amount × days paid ÷ their working days
+ * (the month without weekly offs and holidays), so full attendance gets the full amount. An item
+ * marked "fixed" (prorate = 0) applies in full whenever there is at least one paid day.
+ * Advances and one-off bonus/deductions are exact amounts and are never reduced.
  */
+const inr = (paise) => `₹${(paise / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+
 function salaryForEmployee(emp, days, month, extras) {
   const s = summarize(days);
   const dim = daysInMonth(month);
@@ -20,7 +26,14 @@ function salaryForEmployee(emp, days, month, extras) {
   const paidDays = s.present + 0.5 * s.half_day + s.paid_leave + (daily ? 0 : s.week_off + s.holiday);
   const basePaise = perDay * paidDays;
 
-  const fixed = paidDays > 0 ? extras.payItems || [] : [];
+  // Share of the month earned, for fixed monthly items.
+  const fullMonth = daily ? days.filter((d) => !['week_off', 'holiday', 'not_joined'].includes(d.status)).length : dim;
+  const share = fullMonth ? Math.min(1, paidDays / fullMonth) : 0;
+  const fixed = paidDays > 0 ? (extras.payItems || []).map((x) => (x.prorate === 0 || share >= 1 ? x : {
+    ...x,
+    amount_paise: Math.round(x.amount_paise * share),
+    label: `${x.label} (${inr(x.amount_paise)} × ${paidDays}/${fullMonth} days)`,
+  })) : [];
   const items = [...fixed, ...extras.adjustments];
   const additions = items.filter((a) => a.kind === 'addition');
   const deductions = items.filter((a) => a.kind === 'deduction');

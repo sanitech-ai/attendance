@@ -308,6 +308,10 @@ function migrate(db) {
     db.exec('ALTER TABLE admins ADD COLUMN employee_id INTEGER REFERENCES employees(id)');
   }
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS admins_employee ON admins(employee_id) WHERE employee_id IS NOT NULL');
+  if (!db.prepare('PRAGMA table_info(pay_items)').all().some((c) => c.name === 'prorate')) {
+    // Fixed monthly items are reduced in proportion to attendance (1), or charged in full (0).
+    db.exec('ALTER TABLE pay_items ADD COLUMN prorate INTEGER NOT NULL DEFAULT 1');
+  }
   // Payroll logins also correct attendance and decide leaves.
   db.exec("UPDATE admins SET can_edit_attendance = 1 WHERE role = 'salary' AND can_edit_attendance = 0");
 

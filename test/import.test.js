@@ -105,18 +105,20 @@ test('import: preview, create branches + employees + fixed pay items, PINs, payr
   r = await staff('POST', '/api/employee/punch', { note: 'Client office',  kind: 'OUT', lat: 17.41, lng: 78.44, accuracy: 10, selfie: JPEG });
   assert.equal(r.data.status, 'ok');
 
-  // Payroll: fixed items apply in full when there are paid days; not for someone with none
+  // Payroll: fixed items in proportion to paid days (like the salary)
   s.clock.now = ist('2026-11-02', '10:00');
   await admin('POST', '/api/admin/login', { username: 'owner', password: 'password123' });
   const pay = (await admin('GET', '/api/admin/payroll?month=2026-10')).data;
   const asifPay = pay.rows.find((x) => x.code === 'SECPL0008');
   assert.ok(asifPay.paid_days > 0);
-  assert.deepEqual(asifPay.deductions.map((d) => d.label), ['PF', 'ESIC', 'Professional Tax']);
-  assert.equal(asifPay.net_paise, asifPay.base_paise + 30000 - 360000 - 86000 - 20000);
+  const share = asifPay.paid_days / 31;
+  const part = (paise) => Math.round(paise * share);
+  assert.deepEqual(asifPay.deductions.map((d) => d.label), [`PF (₹3,600 × ${asifPay.paid_days}/31 days)`, `ESIC (₹860 × ${asifPay.paid_days}/31 days)`, `Professional Tax (₹200 × ${asifPay.paid_days}/31 days)`]);
+  assert.equal(asifPay.net_paise, asifPay.base_paise + part(30000) - part(360000) - part(86000) - part(20000));
   const sudhanshu = pay.rows.find((x) => x.code === 'SECPL0438');
   // Sundays are paid week-offs for monthly staff, so even with no punches there are paid days.
   assert.ok(sudhanshu.paid_days > 0);
-  assert.deepEqual(sudhanshu.additions.map((a) => a.label), ['Room Rent']);
+  assert.match(sudhanshu.additions[0].label, /^Room Rent \(₹[\d,]+ × [\d.]+\/31 days\)$/);
 
   // Manage pay items
   r = await admin('POST', `/api/admin/employees/${asif.id}/pay-items`, { kind: 'deduction', label: 'TDS', amount: 1500 });

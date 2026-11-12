@@ -79,7 +79,7 @@ module.exports = function adminRoutes(ctx) {
   const SALARY_ROUTES = [
     ['GET', /^\/me$/], ['POST', /^\/password$/], ['GET', /^\/branches$/], ['GET', /^\/employees$/],
     ['PUT', /^\/employees\/\d+\/salary$/],
-    ['GET', /^\/employees\/\d+\/pay-items$/], ['POST', /^\/employees\/\d+\/pay-items$/], ['DELETE', /^\/pay-items\/\d+$/],
+    ['GET', /^\/employees\/\d+\/pay-items$/], ['POST', /^\/employees\/\d+\/pay-items$/], ['PUT', /^\/pay-items\/\d+$/], ['DELETE', /^\/pay-items\/\d+$/],
     ['GET', /^\/advances$/], ['POST', /^\/advances$/], ['DELETE', /^\/advances\/\d+$/],
     ['GET', /^\/adjustments$/], ['POST', /^\/adjustments$/], ['DELETE', /^\/adjustments\/\d+$/],
     ['GET', /^\/payroll$/], ['GET', /^\/payroll\.csv$/],
@@ -801,10 +801,21 @@ module.exports = function adminRoutes(ctx) {
     if (!String(label || '').trim()) throw bad('Label is required (e.g. PF)');
     const amount = toPaise(req.body.amount);
     if (!amount) throw bad('Amount must be more than zero');
-    const newId = db.prepare('INSERT INTO pay_items (employee_id, kind, label, amount_paise, created_at) VALUES (?, ?, ?, ?, ?)')
-      .run(empId, kind, String(label).trim().slice(0, 60), amount, ctx.now()).lastInsertRowid;
-    ctx.audit(req, 'pay_item.created', { employee_id: empId, kind, label, amount: rupees(amount) });
+    const prorate = req.body.prorate === false || req.body.prorate === 0 ? 0 : 1;
+    const newId = db.prepare('INSERT INTO pay_items (employee_id, kind, label, amount_paise, prorate, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(empId, kind, String(label).trim().slice(0, 60), amount, prorate, ctx.now()).lastInsertRowid;
+    ctx.audit(req, 'pay_item.created', { employee_id: empId, kind, label, amount: rupees(amount), prorate: !!prorate });
     res.json({ ok: true, id: Number(newId) });
+  });
+
+  // In proportion to attendance (default) or always in full.
+  r.put('/pay-items/:id', (req, res) => {
+    const item = db.prepare('SELECT * FROM pay_items WHERE id = ?').get(id(req.params.id));
+    if (!item) throw notFound();
+    const prorate = req.body?.prorate ? 1 : 0;
+    db.prepare('UPDATE pay_items SET prorate = ? WHERE id = ?').run(prorate, item.id);
+    ctx.audit(req, 'pay_item.updated', { employee_id: item.employee_id, label: item.label, prorate: !!prorate });
+    res.json({ ok: true });
   });
 
   r.delete('/pay-items/:id', (req, res) => {

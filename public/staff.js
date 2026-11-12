@@ -673,7 +673,7 @@ async function renderSalary(main) {
       h('div', { class: 'clock' }, money(r.net_paise)),
       d.status === 'live'
         ? h('p', { class: 'small muted' }, `Calculated from your attendance up to today (${fmtDate(d.counted_until)}). Today counts once you punch out. It updates every time you open this page.`,
-          r.total_deductions_paise ? ' Monthly deductions (PF, ESIC, PT, advances) are taken in full, so early in the month this figure is low or even negative — it grows with every day you work.' : '')
+          r.total_deductions_paise ? ' Allowances and deductions such as room rent or PF grow with the days you are paid, like your salary. Advances are taken in full, so early in the month this figure can be low.' : '')
         : d.status === 'pending' ? h('p', { class: 'small muted' }, 'Your employer has not finalized this month yet, so these figures can still change.') : '',
       h('button', { class: 'btn btn-block', style: { marginTop: '8px' }, onclick: () => openPayslip(d.company_name, d.month, r, { provisional: d.status !== 'final', asOf: d.as_of }) },
         d.status === 'final' ? 'Download / print payslip' : 'Download / print statement')),
