@@ -10,7 +10,7 @@ const {
 } = require('../util');
 const {
   profileMissing, paymentDetails, publicEmployee, validPin, createDocument, sendStoredFile, notFound, assertMonthOpen, DOC_COLUMNS,
-  measurePunch, profileBlock, maskAadhaar, EMPLOYEE_CODE_RE,
+  measurePunch, profileBlock, maskAadhaar, EMPLOYEE_CODE_RE, normPan, PT_LABEL_RE,
 } = require('../common');
 
 const OVERRIDE_STATUSES = ['present', 'half_day', 'absent', 'paid_leave', 'unpaid_leave', 'week_off', 'holiday'];
@@ -78,7 +78,7 @@ module.exports = function adminRoutes(ctx) {
   // selfies, documents, employee details, settings or other logins, and they can't finalize payroll.
   const SALARY_ROUTES = [
     ['GET', /^\/me$/], ['POST', /^\/password$/], ['GET', /^\/branches$/], ['GET', /^\/employees$/],
-    ['PUT', /^\/employees\/\d+\/salary$/],
+    ['PUT', /^\/employees\/\d+\/salary$/], ['PUT', /^\/employees\/\d+\/details$/],
     ['GET', /^\/employees\/\d+\/pay-items$/], ['POST', /^\/employees\/\d+\/pay-items$/], ['PUT', /^\/pay-items\/\d+$/], ['DELETE', /^\/pay-items\/\d+$/],
     ['GET', /^\/advances$/], ['POST', /^\/advances$/], ['DELETE', /^\/advances\/\d+$/],
     ['GET', /^\/adjustments$/], ['POST', /^\/adjustments$/], ['DELETE', /^\/adjustments\/\d+$/],
@@ -506,13 +506,14 @@ module.exports = function adminRoutes(ctx) {
     b.salary_type = payType;
     const salary = toPaise(b.salary, category === 'labour' ? 'Daily wage' : 'Salary');
     const aadhaar = b.aadhaar_no !== undefined ? maskAadhaar(b.aadhaar_no) : before?.aadhaar_no || '';
+    const pan = b.pan_no !== undefined ? normPan(b.pan_no) : before?.pan_no || '';
     if (!isTime(b.shift_start) || !isTime(b.shift_end)) throw bad('Shift times must be HH:MM');
     const offs = Array.isArray(b.weekly_offs) ? b.weekly_offs : String(b.weekly_offs ?? '').split(',').filter((x) => x !== '');
     if (offs.some((d) => !WEEKLY_OFF_RE.test(String(d)))) throw bad('Weekly offs must be days 0 (Sun) to 6 (Sat), optionally with the week (0#2 = 2nd Sunday)');
     const joinedOn = String(b.joined_on ?? '').trim();
     if (joinedOn && !isDate(joinedOn)) throw bad('Joining date must be a valid date');
     return {
-      code, name, branch_id: branchId, salary_type: b.salary_type, salary_paise: salary, category, aadhaar_no: aadhaar,
+      code, name, branch_id: branchId, salary_type: b.salary_type, salary_paise: salary, category, aadhaar_no: aadhaar, pan_no: pan,
       designation: String(b.designation || '').slice(0, 60),
       shift_start: b.shift_start, shift_end: b.shift_end, weekly_offs: [...new Set(offs.map(String))].sort().join(','),
       joined_on: joinedOn, active: b.active === false ? 0 : 1,
@@ -536,12 +537,12 @@ module.exports = function adminRoutes(ctx) {
       .prepare(
         `INSERT INTO employees (code, name, phone, designation, branch_id, salary_type, salary_paise, shift_start, shift_end,
            weekly_offs, joined_on, active, is_manager, manager_scope, follow_branch_shift, upi_id, bank_account, bank_ifsc, allow_offsite,
-           category, aadhaar_no, pin_hash, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           category, aadhaar_no, pan_no, pin_hash, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(v.code, v.name, v.phone, v.designation, v.branch_id, v.salary_type, v.salary_paise, v.shift_start, v.shift_end,
         v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, v.follow_branch_shift, v.upi_id, v.bank_account, v.bank_ifsc,
-        v.allow_offsite, v.category, v.aadhaar_no, hashSecret(pin), ctx.now()).lastInsertRowid;
+        v.allow_offsite, v.category, v.aadhaar_no, v.pan_no, hashSecret(pin), ctx.now()).lastInsertRowid;
     setExtraLocations(Number(newId), v.extra_locations);
     ctx.audit(req, 'employee.created', { id: Number(newId), code: v.code });
     res.json({ ok: true, id: Number(newId) });
@@ -555,10 +556,10 @@ module.exports = function adminRoutes(ctx) {
     db.prepare(
       `UPDATE employees SET code = ?, name = ?, phone = ?, designation = ?, branch_id = ?, salary_type = ?, salary_paise = ?,
          shift_start = ?, shift_end = ?, weekly_offs = ?, joined_on = ?, active = ?, is_manager = ?, manager_scope = ?, follow_branch_shift = ?,
-         upi_id = ?, bank_account = ?, bank_ifsc = ?, allow_offsite = ?, category = ?, aadhaar_no = ? WHERE id = ?`,
+         upi_id = ?, bank_account = ?, bank_ifsc = ?, allow_offsite = ?, category = ?, aadhaar_no = ?, pan_no = ? WHERE id = ?`,
     ).run(v.code, v.name, v.phone, v.designation, v.branch_id, v.salary_type, v.salary_paise, v.shift_start, v.shift_end,
       v.weekly_offs, v.joined_on, v.active, v.is_manager, v.manager_scope, v.follow_branch_shift, v.upi_id, v.bank_account, v.bank_ifsc,
-      v.allow_offsite, v.category, v.aadhaar_no, empId);
+      v.allow_offsite, v.category, v.aadhaar_no, v.pan_no, empId);
     setExtraLocations(empId, v.extra_locations);
     if (!v.active) ctx.endAllSessions('employee', empId);
     const changed = Object.keys(v).filter((k) => k !== 'extra_locations' && String(before[k]) !== String(v[k]));
@@ -571,6 +572,30 @@ module.exports = function adminRoutes(ctx) {
     const ins = db.prepare('INSERT INTO employee_locations (employee_id, branch_id) VALUES (?, ?)');
     for (const b of branchIds) ins.run(empId, b);
   }
+
+  // Contact, ID and payment details typed in by the office (admins and payroll logins), for staff who
+  // can't or don't add them in the app. Only the fields sent are changed.
+  r.put('/employees/:id/details', (req, res) => {
+    const before = db.prepare('SELECT * FROM employees WHERE id = ?').get(id(req.params.id));
+    if (!before) throw notFound();
+    const b = req.body || {};
+    const v = {
+      aadhaar_no: b.aadhaar_no !== undefined ? maskAadhaar(b.aadhaar_no) : before.aadhaar_no,
+      pan_no: b.pan_no !== undefined ? normPan(b.pan_no) : before.pan_no,
+      ...paymentDetails({
+        phone: b.phone ?? before.phone ?? '',
+        upi_id: b.upi_id ?? before.upi_id ?? '',
+        bank_account: b.bank_account ?? before.bank_account ?? '',
+        bank_ifsc: b.bank_ifsc ?? before.bank_ifsc ?? '',
+      }),
+    };
+    db.prepare('UPDATE employees SET phone = ?, aadhaar_no = ?, pan_no = ?, upi_id = ?, bank_account = ?, bank_ifsc = ? WHERE id = ?')
+      .run(v.phone, v.aadhaar_no, v.pan_no, v.upi_id, v.bank_account, v.bank_ifsc, before.id);
+    const changed = Object.keys(v).filter((k) => String(before[k] ?? '') !== String(v[k] ?? ''));
+    ctx.audit(req, 'employee.details_entered', { employee: before.code, name: before.name, changed });
+    const after = db.prepare('SELECT * FROM employees WHERE id = ?').get(before.id);
+    res.json({ ok: true, changed, profile_missing: profileMissing(db, after) });
+  });
 
   // Change only the monthly salary / daily wage (what a salaries-only login may do).
   r.put('/employees/:id/salary', (req, res) => {
@@ -801,7 +826,8 @@ module.exports = function adminRoutes(ctx) {
     if (!String(label || '').trim()) throw bad('Label is required (e.g. PF)');
     const amount = toPaise(req.body.amount);
     if (!amount) throw bad('Amount must be more than zero');
-    const prorate = req.body.prorate === false || req.body.prorate === 0 ? 0 : 1;
+    // Professional Tax is always a fixed amount; everything else follows attendance unless unticked.
+    const prorate = PT_LABEL_RE.test(String(label).trim()) || req.body.prorate === false || req.body.prorate === 0 ? 0 : 1;
     const newId = db.prepare('INSERT INTO pay_items (employee_id, kind, label, amount_paise, prorate, created_at) VALUES (?, ?, ?, ?, ?, ?)')
       .run(empId, kind, String(label).trim().slice(0, 60), amount, prorate, ctx.now()).lastInsertRowid;
     ctx.audit(req, 'pay_item.created', { employee_id: empId, kind, label, amount: rupees(amount), prorate: !!prorate });
@@ -879,7 +905,7 @@ module.exports = function adminRoutes(ctx) {
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       const branchShift = db.prepare('SELECT shift_start, shift_end FROM branches WHERE id = ?');
-      const insItem = db.prepare('INSERT INTO pay_items (employee_id, kind, label, amount_paise, created_at) VALUES (?, ?, ?, ?, ?)');
+      const insItem = db.prepare('INSERT INTO pay_items (employee_id, kind, label, amount_paise, prorate, created_at) VALUES (?, ?, ?, ?, ?, ?)');
       return plan.rows.map(({ data: d, items }) => {
         const pin = d.pin || randomPin();
         // No shift in the file: follow the branch's office timings.
@@ -888,7 +914,7 @@ module.exports = function adminRoutes(ctx) {
         const empId = insEmp.run(d.code, d.name, d.phone, d.designation, bid, d.salary_type, d.salary_paise,
           shift.shift_start, shift.shift_end, d.weekly_offs, d.joined_on, d.shift_given ? 0 : 1, d.category, d.aadhaar_no,
           d.upi_id, d.bank_account, d.bank_ifsc, hashSecret(pin), ctx.now()).lastInsertRowid;
-        for (const it of items) insItem.run(empId, it.kind, it.label, it.amount_paise, ctx.now());
+        for (const it of items) insItem.run(empId, it.kind, it.label, it.amount_paise, PT_LABEL_RE.test(it.label) ? 0 : 1, ctx.now());
         return { code: d.code, name: d.name, branch: d.branch, pin };
       });
     });

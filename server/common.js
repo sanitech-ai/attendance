@@ -16,7 +16,7 @@ function profileMissing(db, emp) {
   if (!/\d{10}$/.test(String(emp.phone || '').replace(/\D/g, ''))) missing.push('phone');
   if (!docs.has('aadhaar') && !emp.aadhaar_no) missing.push('aadhaar');
   // Labour (entered by the office) don't need a PAN card.
-  if (!docs.has('pan') && emp.category !== 'labour') missing.push('pan');
+  if (!docs.has('pan') && !emp.pan_no && emp.category !== 'labour') missing.push('pan');
   if (!emp.upi_id && !(emp.bank_account && emp.bank_ifsc)) missing.push('payment');
   if (!(emp.salary_paise > 0)) missing.push('wage');
   return missing;
@@ -47,6 +47,15 @@ const UPI_APPS = { phonepe: 'PhonePe', paytm: 'Paytm', gpay: 'Google Pay', googl
 const UPI_PHONE_RE = /^(?:\+?91)?\s*([6-9]\d{9})\s*(?:[,(\-]?\s*(phone\s*pe|paytm|g\s*pay|google\s*pay|bhim)\s*\)?)?$/i;
 
 /** An Aadhaar number typed in by an admin: checked, then kept masked (XXXX XXXX 1234). */
+/** Professional Tax is a fixed slab amount, so it is never reduced for attendance. */
+const PT_LABEL_RE = /^(pt|p\.\s?t\.?|prof(essional)?\.?\s*tax)$/i;
+
+/** PAN typed in by the office (no card upload needed): '' or ABCDE1234F. */
+function normPan(raw) {
+  const v = String(raw ?? '').trim();
+  return v ? normalizeDocNumber('pan', v) : '';
+}
+
 function maskAadhaar(raw) {
   const v = String(raw ?? '').trim();
   if (!v || /^X{4} X{4} \d{4}$/.test(v)) return v;
@@ -244,7 +253,7 @@ function assertMonthOpen(db, month) {
 }
 
 module.exports = {
-  punchOutDeadline,
+  punchOutDeadline, normPan, PT_LABEL_RE,
   allowedBranchIds, measurePunch, profileMissing, profileBlock, profileDeadline, maskAadhaar, EMPLOYEE_CODE_RE, findEmployeeByCode, paymentDetails, publicEmployee, validPin, punchState, createDocument, normalizeDocNumber, sendStoredFile, notFound,
   assertMonthOpen, DOC_COLUMNS, DOC_TYPES,
 };

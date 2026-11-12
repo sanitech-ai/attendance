@@ -104,3 +104,36 @@ test('fixed monthly items are in proportion to attendance: ₹9,000 room rent fo
   assert.deepEqual(st.additions.map((x) => [x.label, x.amount_paise]), [['Room Rent', 900000]]);
   assert.deepEqual(lb.additions.map((x) => [x.label, x.amount_paise]), [['Room Rent (₹9,000 × 27/28 days)', 867857]]);
 });
+
+test('Professional Tax is always the full amount; existing PT items switched once', async (t) => {
+  const s = await startServer(ist('2026-11-01', '08:00'));
+  t.after(() => s.close());
+  const admin = s.client();
+  await admin('POST', '/api/admin/setup', { username: 'owner', password: 'password123', name: 'Owner' });
+  const b = (await admin('POST', '/api/admin/branches', { name: 'HQ', lat: 17.41, lng: 78.44, radius_m: 150, geofence_mode: 'flag' })).data.id;
+  const e = (await admin('POST', '/api/admin/employees', { code: 'S1', name: 'Staff', branch_id: b, salary: 30000, weekly_offs: [], joined_on: '', pin: '1234' })).data.id;
+  await admin('POST', `/api/admin/employees/${e}/pay-items`, { kind: 'deduction', label: 'Professional Tax', amount: 200, prorate: true });
+  await admin('POST', `/api/admin/employees/${e}/pay-items`, { kind: 'deduction', label: 'TDS', amount: 1000, prorate: true });
+  let items = (await admin('GET', `/api/admin/employees/${e}/pay-items`)).data;
+  assert.deepEqual(items.map((x) => [x.label, x.prorate]), [['Professional Tax', 0], ['TDS', 1]], 'PT fixed even if ticked; TDS by attendance');
+  await admin('POST', '/api/admin/attendance/bulk-override', { from: '2026-11-01', to: '2026-11-15', status: 'present' });
+  await admin('POST', '/api/admin/attendance/bulk-override', { from: '2026-11-16', to: '2026-11-30', status: 'absent' });
+  s.clock.now = ist('2026-12-01', '10:00');
+  await admin('POST', '/api/admin/login', { username: 'owner', password: 'password123' });
+  const row = (await admin('GET', '/api/admin/payroll?month=2026-11')).data.rows[0];
+  assert.deepEqual(row.deductions.map((x) => [x.label, x.amount_paise]), [['Professional Tax', 20000], ['TDS (₹1,000 × 15/30 days)', 50000]]);
+
+  // A database from before: PT items that follow attendance are switched to fixed once, on start-up
+  s.db.prepare("UPDATE pay_items SET prorate = 1 WHERE label = 'Professional Tax'").run();
+  s.db.prepare("DELETE FROM settings WHERE key = 'pt_fixed_done'").run();
+  const { openDb } = require('../server/db');
+  const path = require('node:path');
+  openDb(path.join(s.dataDir, 'attendance.db')).close();
+  items = (await admin('GET', `/api/admin/employees/${e}/pay-items`)).data;
+  assert.equal(items.find((x) => x.label === 'Professional Tax').prorate, 0);
+  // ...but only once: if the admin later ticks it, it stays ticked
+  s.db.prepare("UPDATE pay_items SET prorate = 1 WHERE label = 'Professional Tax'").run();
+  openDb(path.join(s.dataDir, 'attendance.db')).close();
+  items = (await admin('GET', `/api/admin/employees/${e}/pay-items`)).data;
+  assert.equal(items.find((x) => x.label === 'Professional Tax').prorate, 1);
+});

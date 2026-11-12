@@ -173,3 +173,33 @@ test('payroll access lent to an existing employee: own staff login, revoked in o
   s.db.prepare('UPDATE employees SET active = 0 WHERE id = ?').run(suresh);
   assert.equal((await staff('GET', '/api/admin/me')).status, 401);
 });
+
+test('admins and payroll logins type in staff details (mobile, Aadhaar, PAN, bank / UPI)', async (t) => {
+  const s = await startServer(ist('2026-11-12', '08:00'));
+  t.after(() => s.close());
+  const owner = s.client();
+  await owner('POST', '/api/admin/setup', { username: 'firefueled', password: 'password123', name: 'Owner' });
+  const b = (await owner('POST', '/api/admin/branches', { name: 'HO', lat: 17.41, lng: 78.44, radius_m: 150, geofence_mode: 'flag' })).data.id;
+  const emp = (await owner('POST', '/api/admin/employees', { code: 'E1', name: 'Ravi', branch_id: b, salary: 30000, weekly_offs: ['0'], joined_on: '', pin: '1234' })).data.id;
+  const missing = async () => (await owner('GET', '/api/admin/employees')).data[0].profile_missing;
+  assert.deepEqual(await missing(), ['phone', 'aadhaar', 'pan', 'payment']);
+
+  await owner('POST', '/api/admin/admins', { username: 'accounts', password: 'password123', name: 'Suresh', role: 'salary' });
+  const acc = s.client();
+  await acc('POST', '/api/admin/login', { username: 'accounts', password: 'password123' });
+  assert.equal((await acc('PUT', `/api/admin/employees/${emp}/details`, { pan_no: 'ABC123' })).status, 400, 'PAN format checked');
+  let r = await acc('PUT', `/api/admin/employees/${emp}/details`, { phone: '9876543210', aadhaar_no: '1234 5678 9012', pan_no: 'abcde1234f' });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  assert.deepEqual(r.data.profile_missing, ['payment']);
+  r = await acc('PUT', `/api/admin/employees/${emp}/details`, { bank_account: '50100461244161', bank_ifsc: 'hdfc0004277' });
+  assert.deepEqual(r.data.profile_missing, []);
+  const e = (await owner('GET', '/api/admin/employees')).data[0];
+  assert.deepEqual([e.phone, e.aadhaar_no, e.pan_no, e.bank_account, e.bank_ifsc], ['9876543210', 'XXXX XXXX 9012', 'ABCDE1234F', '50100461244161', 'HDFC0004277']);
+  // The staff member's app no longer asks for them
+  const staff = s.client(); await staff('POST', '/api/employee/login', { code: 'E1', pin: '1234' });
+  assert.deepEqual((await staff('GET', '/api/employee/me')).data.profile_missing, []);
+  // Admins can type the PAN on the employee form too
+  assert.equal((await owner('PUT', `/api/admin/employees/${emp}`, { ...e, weekly_offs: ['0'], salary: 30000, pan_no: 'PQRSX6789K' })).status, 200);
+  assert.equal((await owner('GET', '/api/admin/employees')).data[0].pan_no, 'PQRSX6789K');
+  assert.ok((await owner('GET', '/api/admin/audit')).data.some((l) => l.action === 'employee.details_entered' && l.actor_name === 'Suresh'));
+});

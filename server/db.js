@@ -312,10 +312,21 @@ function migrate(db) {
     // Fixed monthly items are reduced in proportion to attendance (1), or charged in full (0).
     db.exec('ALTER TABLE pay_items ADD COLUMN prorate INTEGER NOT NULL DEFAULT 1');
   }
+  // Once: Professional Tax items become a fixed amount (later changes by the admin are kept).
+  if (!db.prepare("SELECT 1 FROM settings WHERE key = 'pt_fixed_done'").get()) {
+    const { PT_LABEL_RE } = require('./common');
+    const upd = db.prepare('UPDATE pay_items SET prorate = 0 WHERE id = ?');
+    for (const it of db.prepare('SELECT id, label FROM pay_items').all()) if (PT_LABEL_RE.test(it.label.trim())) upd.run(it.id);
+    db.prepare("INSERT INTO settings (key, value) VALUES ('pt_fixed_done', '1')").run();
+  }
   // Payroll logins also correct attendance and decide leaves.
   db.exec("UPDATE admins SET can_edit_attendance = 1 WHERE role = 'salary' AND can_edit_attendance = 0");
 
   const empCols = db.prepare('PRAGMA table_info(employees)').all().map((c) => c.name);
+  if (!empCols.includes('pan_no')) {
+    // PAN number typed in by the office (a PAN card upload is no longer required for it).
+    db.exec("ALTER TABLE employees ADD COLUMN pan_no TEXT NOT NULL DEFAULT ''");
+  }
   if (!empCols.includes('upi_id')) {
     // Where staff want their salary paid (they can fill these in themselves).
     db.exec("ALTER TABLE employees ADD COLUMN upi_id TEXT NOT NULL DEFAULT ''");

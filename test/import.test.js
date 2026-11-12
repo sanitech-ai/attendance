@@ -113,8 +113,9 @@ test('import: preview, create branches + employees + fixed pay items, PINs, payr
   assert.ok(asifPay.paid_days > 0);
   const share = asifPay.paid_days / 31;
   const part = (paise) => Math.round(paise * share);
-  assert.deepEqual(asifPay.deductions.map((d) => d.label), [`PF (₹3,600 × ${asifPay.paid_days}/31 days)`, `ESIC (₹860 × ${asifPay.paid_days}/31 days)`, `Professional Tax (₹200 × ${asifPay.paid_days}/31 days)`]);
-  assert.equal(asifPay.net_paise, asifPay.base_paise + part(30000) - part(360000) - part(86000) - part(20000));
+  // ...except Professional Tax, which is always the full amount
+  assert.deepEqual(asifPay.deductions.map((d) => d.label), [`PF (₹3,600 × ${asifPay.paid_days}/31 days)`, `ESIC (₹860 × ${asifPay.paid_days}/31 days)`, 'Professional Tax']);
+  assert.equal(asifPay.net_paise, asifPay.base_paise + part(30000) - part(360000) - part(86000) - 20000);
   const sudhanshu = pay.rows.find((x) => x.code === 'SECPL0438');
   // Sundays are paid week-offs for monthly staff, so even with no punches there are paid days.
   assert.ok(sudhanshu.paid_days > 0);

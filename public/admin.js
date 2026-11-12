@@ -827,6 +827,8 @@ function employeeForm(e, defaultCategory = 'staff') {
     { name: 'joined_on', label: 'Joining date', type: 'date', value: e ? e.joined_on : todayIST(), hint: 'Leave blank if not known.' },
     { name: 'aadhaar_no', label: 'Aadhaar number (entered by office)', inputmode: 'numeric', value: e?.aadhaar_no || '', placeholder: '12 digits', maxlength: 14,
       hint: 'For staff who can’t upload their Aadhaar card. Only the last 4 digits are kept (XXXX XXXX 1234).' },
+    { name: 'pan_no', label: 'PAN number (entered by office)', value: e?.pan_no || '', placeholder: 'ABCDE1234F', maxlength: 10,
+      hint: 'Typing the PAN here counts as done — no PAN card upload needed.' },
     { type: 'heading', label: 'Salary payment (staff can also fill this in themselves)' },
     { name: 'upi_id', label: 'UPI ID', value: e?.upi_id, placeholder: 'e.g. 98xxxxxxxx@ybl' },
     { name: 'bank_account', label: 'Bank account number', inputmode: 'numeric', value: e?.bank_account },
@@ -948,7 +950,7 @@ async function payItems(e) {
           { name: 'kind', label: 'Type', type: 'select', options: [{ value: 'deduction', label: 'Deduction (PF, ESIC, PT, TDS…)' }, { value: 'addition', label: 'Earning (conveyance, room rent…)' }] },
           { name: 'label', label: 'Name', required: true, placeholder: 'e.g. PF' },
           { name: 'amount', label: 'Amount for a full month (₹)', type: 'number', step: '0.01', min: 1, required: true },
-          { name: 'prorate', label: 'In proportion to attendance (e.g. 25 of 30 days → 25/30 of the amount)', type: 'checkbox', value: true },
+          { name: 'prorate', label: 'In proportion to attendance (e.g. 25 of 30 days → 25/30 of the amount). Professional Tax is always the full amount.', type: 'checkbox', value: true },
         ],
         async onSubmit(v) {
           await api('POST', `/api/admin/employees/${e.id}/pay-items`, v);
@@ -1540,6 +1542,29 @@ async function pageSalaries(el, params) {
     && (!type || (e.category === 'labour') === (type === 'labour')));
   const list = h('div', {});
   const payTo = (e) => (e.upi_id ? `UPI ${e.upi_id}` : e.bank_account ? `A/c ${e.bank_account}${e.bank_ifsc ? ` · ${e.bank_ifsc}` : ''}` : '');
+  // Mobile, Aadhaar, PAN and bank / UPI typed in by the office for staff who can't add them in the app.
+  const editDetails = (e) => formDialog({
+    title: `Details · ${e.name} (${e.code})`,
+    fields: [
+      { name: 'phone', label: 'Mobile number', type: 'tel', value: e.phone || '', maxlength: 20 },
+      { name: 'aadhaar_no', label: 'Aadhaar number', inputmode: 'numeric', value: e.aadhaar_no || '', placeholder: '12 digits', maxlength: 14,
+        hint: 'Only the last 4 digits are kept (XXXX XXXX 1234).' },
+      e.category === 'labour' ? null : { name: 'pan_no', label: 'PAN number', value: e.pan_no || '', placeholder: 'ABCDE1234F', maxlength: 10 },
+      { type: 'heading', label: 'Salary paid to — UPI, or bank account + IFSC' },
+      { name: 'upi_id', label: 'UPI ID or UPI phone number', value: e.upi_id || '', placeholder: 'e.g. name@ybl or 9876543210 (PhonePe)' },
+      { name: 'bank_account', label: 'Bank account number', inputmode: 'numeric', value: e.bank_account || '' },
+      { name: 'bank_ifsc', label: 'IFSC code', value: e.bank_ifsc || '', placeholder: 'e.g. SBIN0001234' },
+    ].filter(Boolean),
+    submitLabel: 'Save details',
+    async onSubmit(v) {
+      const r = await api('PUT', `/api/admin/employees/${e.id}/details`, v);
+      toast(r.profile_missing.filter((m) => m !== 'wage').length
+        ? `${e.name}: saved. Still missing: ${r.profile_missing.filter((m) => m !== 'wage').map((m) => MISSING_LABEL[m].split(' (')[0]).join(', ')}`
+        : `${e.name}: all details complete ✓`);
+      route();
+      return true;
+    },
+  });
   const editSalary = (e) => formDialog({
     title: `${e.category === 'labour' ? 'Daily wage' : 'Monthly salary'} · ${e.name}`,
     fields: [{ name: 'salary', label: e.category === 'labour' ? 'Daily wage (₹ per day)' : 'Monthly salary (₹)', type: 'number', step: '0.01', min: 1, required: true,
@@ -1567,9 +1592,12 @@ async function pageSalaries(el, params) {
           { label: 'Pay', class: 'num', render: (e) => (e.salary_paise
             ? h('div', {}, h('strong', {}, money(e.salary_paise)), h('div', { class: 'small muted' }, e.category === 'labour' ? 'per day' : 'per month'))
             : h('span', { style: { color: 'var(--warn)' } }, 'not set')) },
-          { label: 'Paid to', render: (e) => payTo(e) || h('span', { class: 'small', style: { color: 'var(--warn)' } }, 'No bank / UPI yet') },
+          { label: 'Paid to', render: (e) => h('div', {}, payTo(e) || h('span', { class: 'small', style: { color: 'var(--warn)' } }, 'No bank / UPI yet'),
+            (e.profile_missing || []).filter((m) => m !== 'wage' && m !== 'payment').length
+              ? h('div', { class: 'small', style: { color: 'var(--warn)' } }, `Missing: ${e.profile_missing.filter((m) => m !== 'wage' && m !== 'payment').map((m) => MISSING_LABEL[m].split(' (')[0]).join(', ')}`) : '') },
           { label: '', render: (e) => h('div', { class: 'row' },
             h('button', { class: 'btn btn-sm btn-primary', onclick: () => editSalary(e) }, e.category === 'labour' ? 'Change wage' : 'Change salary'),
+            h('button', { class: 'btn btn-sm', onclick: () => editDetails(e) }, 'Edit details'),
             h('button', { class: 'btn btn-sm', onclick: () => payItems(e) }, 'PF / allowances')) },
         ], people))));
   };
