@@ -938,9 +938,27 @@ async function payItems(e) {
           toast(`${x.label}: ${want ? 'in proportion to attendance' : 'full amount every month'}`);
         } }), text);
       } },
-      { label: '', render: (x) => h('button', { class: 'btn btn-sm', onclick: async (ev) => {
-        if (await run(() => api('DELETE', `/api/admin/pay-items/${x.id}`), ev.currentTarget)) { dlg.close(); payItems(e); }
-      } }, 'Remove') },
+      { label: '', render: (x) => h('div', { class: 'row' },
+        h('button', { class: 'btn btn-sm', onclick: () => {
+          dlg.close();
+          formDialog({
+            title: `Edit ${x.label} · ${e.name}`,
+            fields: [
+              { name: 'kind', label: 'Type', type: 'select', value: x.kind, options: [{ value: 'deduction', label: 'Deduction (PF, ESIC, PT, TDS…)' }, { value: 'addition', label: 'Earning (conveyance, room rent…)' }] },
+              { name: 'label', label: 'Name', required: true, value: x.label },
+              { name: 'amount', label: 'Amount for a full month (₹)', type: 'number', step: '0.01', min: 1, required: true, value: x.amount_paise / 100 },
+              { name: 'prorate', label: 'In proportion to attendance. Professional Tax is always the full amount.', type: 'checkbox', value: x.prorate !== 0 },
+            ],
+            async onSubmit(v) {
+              await api('PUT', `/api/admin/pay-items/${x.id}`, v);
+              setTimeout(() => payItems(e), 0);
+              return true;
+            },
+          });
+        } }, 'Edit'),
+        h('button', { class: 'btn btn-sm', onclick: async (ev) => {
+          if (await run(() => api('DELETE', `/api/admin/pay-items/${x.id}`), ev.currentTarget)) { dlg.close(); payItems(e); }
+        } }, 'Remove')) },
     ], items, { empty: 'No fixed pay items.' }),
     h('div', { class: 'form-actions' }, h('button', { class: 'btn btn-primary', onclick: () => {
       dlg.close();
@@ -1413,7 +1431,7 @@ async function pagePayroll(el, params) {
   const isPast = month < thisMonth();
   const sum = (xs) => xs.reduce((t, x) => t + x.amount_paise, 0);
 
-  const finalizeBtn = isPayrollLogin() ? '' : p.finalized
+  const finalizeBtn = p.finalized
     ? h('button', { class: 'btn', onclick: async (e) => {
       if (!(await confirmDialog('Reopen payroll?', 'Reopening unlocks attendance edits for this month. Payslips disappear from the staff app until you finalize again.', 'Reopen'))) return;
       if (await run(() => api('DELETE', `/api/admin/payroll/${month}/finalize`), e.currentTarget)) route();
@@ -1483,7 +1501,22 @@ async function payrollAdvances(el, month, head) {
       { label: 'Given on', render: (a) => fmtDate(a.given_on) },
       { label: 'Amount', class: 'num', render: (a) => money(a.amount_paise) },
       { label: 'Note', render: (a) => a.note || '—' },
-      { label: '', render: (a) => h('button', { class: 'btn btn-sm', onclick: async (e) => { if (await run(() => api('DELETE', `/api/admin/advances/${a.id}`), e.currentTarget)) route(); } }, 'Delete') },
+      { label: '', render: (a) => h('div', { class: 'row' },
+        h('button', { class: 'btn btn-sm', onclick: () => formDialog({
+          title: `Edit advance · ${a.name}`,
+          fields: [
+            { name: 'amount', label: 'Amount (₹)', type: 'number', step: '0.01', min: 1, required: true, value: a.amount_paise / 100 },
+            { name: 'given_on', label: 'Given on', type: 'date', required: true, value: a.given_on },
+            { name: 'deduct_month', label: 'Deduct from salary of', type: 'month', required: true, value: a.deduct_month },
+            { name: 'note', label: 'Note', value: a.note || '' },
+          ],
+          async onSubmit(v) {
+            await api('PUT', `/api/admin/advances/${a.id}`, v);
+            go('payroll', { month: v.deduct_month, tab: 'advances' });
+            return true;
+          },
+        }) }, 'Edit'),
+        h('button', { class: 'btn btn-sm', onclick: async (e) => { if (await run(() => api('DELETE', `/api/admin/advances/${a.id}`), e.currentTarget)) route(); } }, 'Delete')) },
     ], rows, { empty: `No advances to deduct in ${fmtMonth(month)}.` }));
 }
 
@@ -1509,7 +1542,21 @@ async function payrollAdjustments(el, month, head) {
       { label: 'Type', render: (a) => (a.kind === 'addition' ? badge('addition', 'ok') : badge('deduction', 'bad')) },
       { label: 'Label', render: (a) => a.label },
       { label: 'Amount', class: 'num', render: (a) => money(a.amount_paise) },
-      { label: '', render: (a) => h('button', { class: 'btn btn-sm', onclick: async (e) => { if (await run(() => api('DELETE', `/api/admin/adjustments/${a.id}`), e.currentTarget)) route(); } }, 'Delete') },
+      { label: '', render: (a) => h('div', { class: 'row' },
+        h('button', { class: 'btn btn-sm', onclick: () => formDialog({
+          title: `Edit · ${a.name}`,
+          fields: [
+            { name: 'kind', label: 'Type', type: 'select', value: a.kind, options: [{ value: 'addition', label: 'Addition (bonus, incentive, allowance)' }, { value: 'deduction', label: 'Deduction (fine, PF, damage)' }] },
+            { name: 'label', label: 'Label', required: true, value: a.label },
+            { name: 'amount', label: 'Amount (₹)', type: 'number', step: '0.01', min: 1, required: true, value: a.amount_paise / 100 },
+          ],
+          async onSubmit(v) {
+            await api('PUT', `/api/admin/adjustments/${a.id}`, v);
+            route();
+            return true;
+          },
+        }) }, 'Edit'),
+        h('button', { class: 'btn btn-sm', onclick: async (e) => { if (await run(() => api('DELETE', `/api/admin/adjustments/${a.id}`), e.currentTarget)) route(); } }, 'Delete')) },
     ], rows, { empty: `No bonuses or deductions for ${fmtMonth(month)}.` }));
 }
 
@@ -1566,13 +1613,20 @@ async function pageSalaries(el, params) {
     },
   });
   const editSalary = (e) => formDialog({
-    title: `${e.category === 'labour' ? 'Daily wage' : 'Monthly salary'} · ${e.name}`,
-    fields: [{ name: 'salary', label: e.category === 'labour' ? 'Daily wage (₹ per day)' : 'Monthly salary (₹)', type: 'number', step: '0.01', min: 1, required: true,
-      value: e.salary_paise ? e.salary_paise / 100 : '', hint: e.category === 'labour' ? 'Paid for each day worked.' : 'Per-day pay = salary ÷ days in the month.' }],
+    title: `Salary details · ${e.name} (${e.code})`,
+    fields: [
+      { name: 'category', label: 'Paid as', type: 'select', value: e.category || 'staff', options: [
+        { value: 'staff', label: 'Staff — monthly salary (weekly offs and holidays paid)' },
+        { value: 'labour', label: 'Labour — daily wage (paid for days worked)' }] },
+      { name: 'salary', label: 'Monthly salary, or daily wage for labour (₹)', type: 'number', step: '0.01', min: 1, required: true,
+        value: e.salary_paise ? e.salary_paise / 100 : '', hint: 'Staff: per-day pay = salary ÷ days in the month. Labour: this amount for each day worked.' },
+      { name: 'joined_on', label: 'Joining date', type: 'date', value: e.joined_on || '', hint: 'Days before this are not paid.' },
+      { name: 'designation', label: 'Designation', value: e.designation || '' },
+    ],
     submitLabel: 'Save',
     async onSubmit(v) {
-      await api('PUT', `/api/admin/employees/${e.id}/salary`, { salary: Number(v.salary) });
-      toast(`${e.name}: ${e.category === 'labour' ? 'daily wage' : 'salary'} is now ${money(Math.round(Number(v.salary) * 100))}`);
+      await api('PUT', `/api/admin/employees/${e.id}/salary`, { ...v, salary: Number(v.salary) });
+      toast(`${e.name}: ${v.category === 'labour' ? 'daily wage' : 'salary'} ${money(Math.round(Number(v.salary) * 100))}${v.category === 'labour' ? ' / day' : ' / month'} saved`);
       route();
       return true;
     },
@@ -1596,7 +1650,7 @@ async function pageSalaries(el, params) {
             (e.profile_missing || []).filter((m) => m !== 'wage' && m !== 'payment').length
               ? h('div', { class: 'small', style: { color: 'var(--warn)' } }, `Missing: ${e.profile_missing.filter((m) => m !== 'wage' && m !== 'payment').map((m) => MISSING_LABEL[m].split(' (')[0]).join(', ')}`) : '') },
           { label: '', render: (e) => h('div', { class: 'row' },
-            h('button', { class: 'btn btn-sm btn-primary', onclick: () => editSalary(e) }, e.category === 'labour' ? 'Change wage' : 'Change salary'),
+            h('button', { class: 'btn btn-sm btn-primary', onclick: () => editSalary(e) }, 'Salary details'),
             h('button', { class: 'btn btn-sm', onclick: () => editDetails(e) }, 'Edit details'),
             h('button', { class: 'btn btn-sm', onclick: () => payItems(e) }, 'PF / allowances')) },
         ], people))));
@@ -1632,7 +1686,7 @@ async function pageSettings(el, params) {
             { name: 'password', label: 'Password (min 8 chars)', type: 'password', required: true, autocomplete: 'new-password' },
             { name: 'role', label: 'Access', type: 'select', value: 'full', options: [
               { value: 'full', label: 'Full admin — everything' },
-              { value: 'salary', label: 'Payroll — salaries, wages, PF, advances, bonus/deductions; correct attendance; approve leaves' }] },
+              { value: 'salary', label: 'Payroll — all salary details, PF, advances, bonus/deductions, finalize payroll; correct attendance; approve leaves' }] },
           ],
           async onSubmit(v) { await api('POST', '/api/admin/admins', v); route(); return true; },
         }) }, '+ Add admin'),
@@ -1642,7 +1696,7 @@ async function pageSettings(el, params) {
           formDialog({
             title: 'Give an employee payroll access',
             fields: [
-              { type: 'heading', label: 'They use their own staff login (Employee ID + PIN) — no new password. They can change salaries, wages, PF, advances and bonus/deductions, correct attendance and approve or reject leaves. Revoke it here when the work is done.' },
+              { type: 'heading', label: 'They use their own staff login (Employee ID + PIN) — no new password. They can change all salary details, PF, advances and bonus/deductions, finalize payroll, correct attendance and approve or reject leaves. Revoke it here when the work is done.' },
               { name: 'employee_id', label: 'Employee', type: 'select', required: true,
                 options: bySite(A.employees.filter((e) => e.active && !taken.has(e.id))).map((e) => ({ value: e.id, label: `${e.name} (${e.code}) — ${e.branch_name}` })) },
             ],

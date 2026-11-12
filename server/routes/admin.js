@@ -74,15 +74,17 @@ module.exports = function adminRoutes(ctx) {
 
   r.use(ctx.requireSession('admin'));
 
-  // "Payroll" logins (e.g. someone in accounts): pay, attendance corrections and leave decisions — no
-  // selfies, documents, employee details, settings or other logins, and they can't finalize payroll.
+  // "Payroll" logins (e.g. someone in accounts): everything about pay (including finalizing and
+  // reopening payroll), attendance corrections and leave decisions — no selfies, documents, other
+  // employee details, settings or other logins.
   const SALARY_ROUTES = [
     ['GET', /^\/me$/], ['POST', /^\/password$/], ['GET', /^\/branches$/], ['GET', /^\/employees$/],
     ['PUT', /^\/employees\/\d+\/salary$/], ['PUT', /^\/employees\/\d+\/details$/],
     ['GET', /^\/employees\/\d+\/pay-items$/], ['POST', /^\/employees\/\d+\/pay-items$/], ['PUT', /^\/pay-items\/\d+$/], ['DELETE', /^\/pay-items\/\d+$/],
-    ['GET', /^\/advances$/], ['POST', /^\/advances$/], ['DELETE', /^\/advances\/\d+$/],
-    ['GET', /^\/adjustments$/], ['POST', /^\/adjustments$/], ['DELETE', /^\/adjustments\/\d+$/],
+    ['GET', /^\/advances$/], ['POST', /^\/advances$/], ['PUT', /^\/advances\/\d+$/], ['DELETE', /^\/advances\/\d+$/],
+    ['GET', /^\/adjustments$/], ['POST', /^\/adjustments$/], ['PUT', /^\/adjustments\/\d+$/], ['DELETE', /^\/adjustments\/\d+$/],
     ['GET', /^\/payroll$/], ['GET', /^\/payroll\.csv$/],
+    ['POST', /^\/payroll\/\d{4}-\d{2}\/finalize$/], ['DELETE', /^\/payroll\/\d{4}-\d{2}\/finalize$/],
     // attendance: view and correct (register, half-day review, mark days, fix In / Out order)
     ['GET', /^\/attendance$/], ['GET', /^\/attendance\.csv$/], ['GET', /^\/attendance\/\d+$/],
     ['PUT', /^\/attendance\/override$/], ['POST', /^\/attendance\/bulk-override$/], ['POST', /^\/punches\/fix-order$/],
@@ -598,14 +600,28 @@ module.exports = function adminRoutes(ctx) {
   });
 
   // Change only the monthly salary / daily wage (what a salaries-only login may do).
+  // Salary details (what a payroll login may change): amount, staff (monthly) or labour (daily wage),
+  // joining date and designation. Only the fields sent are changed.
   r.put('/employees/:id/salary', (req, res) => {
-    const emp = db.prepare('SELECT id, code, name, salary_paise, salary_type FROM employees WHERE id = ?').get(id(req.params.id));
+    const emp = db.prepare('SELECT id, code, name, salary_paise, salary_type, category, joined_on, designation FROM employees WHERE id = ?').get(id(req.params.id));
     if (!emp) throw notFound();
-    const paise = toPaise(req.body?.salary, 'Salary');
-    if (paise <= 0) throw bad(emp.salary_type === 'daily' ? 'Enter the daily wage' : 'Enter the monthly salary');
+    const b = req.body || {};
+    const category = b.category === undefined ? emp.category : b.category === 'labour' ? 'labour' : 'staff';
+    const salaryType = category === 'labour' ? 'daily' : 'monthly';
+    const paise = b.salary === undefined ? emp.salary_paise : toPaise(b.salary, 'Salary');
+    if (paise <= 0) throw bad(salaryType === 'daily' ? 'Enter the daily wage' : 'Enter the monthly salary');
     if (paise > 100000000) throw bad('That amount looks too large');
-    db.prepare('UPDATE employees SET salary_paise = ? WHERE id = ?').run(paise, emp.id);
-    ctx.audit(req, 'employee.salary_changed', { employee: emp.code, name: emp.name, from: emp.salary_paise / 100, to: paise / 100 });
+    const joinedOn = b.joined_on === undefined ? emp.joined_on : String(b.joined_on || '').trim();
+    if (joinedOn && !isDate(joinedOn)) throw bad('Joining date must be a valid date');
+    const designation = b.designation === undefined ? emp.designation : String(b.designation || '').trim().slice(0, 60);
+    db.prepare('UPDATE employees SET salary_paise = ?, category = ?, salary_type = ?, joined_on = ?, designation = ? WHERE id = ?')
+      .run(paise, category, salaryType, joinedOn, designation, emp.id);
+    const changes = {};
+    if (paise !== emp.salary_paise) changes.salary = { from: emp.salary_paise / 100, to: paise / 100 };
+    if (category !== emp.category) changes.type = { from: emp.category, to: category };
+    if (joinedOn !== emp.joined_on) changes.joined_on = { from: emp.joined_on, to: joinedOn };
+    if (designation !== emp.designation) changes.designation = { from: emp.designation, to: designation };
+    ctx.audit(req, 'employee.salary_changed', { employee: emp.code, name: emp.name, ...changes });
     res.json({ ok: true, salary_paise: paise });
   });
 
@@ -838,9 +854,17 @@ module.exports = function adminRoutes(ctx) {
   r.put('/pay-items/:id', (req, res) => {
     const item = db.prepare('SELECT * FROM pay_items WHERE id = ?').get(id(req.params.id));
     if (!item) throw notFound();
-    const prorate = req.body?.prorate ? 1 : 0;
-    db.prepare('UPDATE pay_items SET prorate = ? WHERE id = ?').run(prorate, item.id);
-    ctx.audit(req, 'pay_item.updated', { employee_id: item.employee_id, label: item.label, prorate: !!prorate });
+    const b = req.body || {};
+    const kind = b.kind ?? item.kind;
+    if (!['addition', 'deduction'].includes(kind)) throw bad('Kind must be addition or deduction');
+    const label = b.label === undefined ? item.label : String(b.label).trim().slice(0, 60);
+    if (!label) throw bad('Name is required (e.g. PF)');
+    const amount = b.amount === undefined ? item.amount_paise : toPaise(b.amount);
+    if (!amount) throw bad('Amount must be more than zero');
+    // Professional Tax is always the full amount.
+    const prorate = PT_LABEL_RE.test(label) ? 0 : b.prorate === undefined ? item.prorate : (b.prorate ? 1 : 0);
+    db.prepare('UPDATE pay_items SET kind = ?, label = ?, amount_paise = ?, prorate = ? WHERE id = ?').run(kind, label, amount, prorate, item.id);
+    ctx.audit(req, 'pay_item.updated', { employee_id: item.employee_id, label, from: rupees(item.amount_paise), to: rupees(amount), prorate: !!prorate });
     res.json({ ok: true });
   });
 
@@ -1357,6 +1381,21 @@ module.exports = function adminRoutes(ctx) {
     res.json({ ok: true, id: Number(newId) });
   });
 
+  r.put('/advances/:id', (req, res) => {
+    const a = db.prepare('SELECT * FROM advances WHERE id = ?').get(id(req.params.id));
+    if (!a) throw notFound();
+    const b = req.body || {};
+    const deductMonth = b.deduct_month === undefined ? a.deduct_month : requireMonth(b.deduct_month);
+    const givenOn = b.given_on === undefined ? a.given_on : requireDate(b.given_on, 'given_on');
+    for (const m of new Set([a.deduct_month, deductMonth])) assertMonthOpen(db, m);
+    const amount = b.amount === undefined ? a.amount_paise : toPaise(b.amount);
+    if (!amount) throw bad('Amount must be more than zero');
+    const note = b.note === undefined ? a.note : String(b.note || '').slice(0, 200);
+    db.prepare('UPDATE advances SET amount_paise = ?, given_on = ?, deduct_month = ?, note = ? WHERE id = ?').run(amount, givenOn, deductMonth, note, a.id);
+    ctx.audit(req, 'advance.updated', { employee_id: a.employee_id, from: rupees(a.amount_paise), to: rupees(amount), deduct_month: deductMonth });
+    res.json({ ok: true });
+  });
+
   r.delete('/advances/:id', (req, res) => {
     const a = db.prepare('SELECT * FROM advances WHERE id = ?').get(id(req.params.id));
     if (!a) throw notFound();
@@ -1388,6 +1427,22 @@ module.exports = function adminRoutes(ctx) {
       .run(empId, b.month, b.kind, amount, label.slice(0, 80), ctx.now()).lastInsertRowid;
     ctx.audit(req, 'adjustment.created', { employee_id: empId, month: b.month, kind: b.kind, amount: rupees(amount), label });
     res.json({ ok: true, id: Number(newId) });
+  });
+
+  r.put('/adjustments/:id', (req, res) => {
+    const a = db.prepare('SELECT * FROM adjustments WHERE id = ?').get(id(req.params.id));
+    if (!a) throw notFound();
+    assertMonthOpen(db, a.month);
+    const b = req.body || {};
+    const kind = b.kind ?? a.kind;
+    if (!['addition', 'deduction'].includes(kind)) throw bad('Kind must be addition or deduction');
+    const label = b.label === undefined ? a.label : String(b.label).trim().slice(0, 80);
+    if (!label) throw bad('Label is required (e.g. Bonus, Fine)');
+    const amount = b.amount === undefined ? a.amount_paise : toPaise(b.amount);
+    if (!amount) throw bad('Amount must be more than zero');
+    db.prepare('UPDATE adjustments SET kind = ?, label = ?, amount_paise = ? WHERE id = ?').run(kind, label, amount, a.id);
+    ctx.audit(req, 'adjustment.updated', { employee_id: a.employee_id, month: a.month, label, from: rupees(a.amount_paise), to: rupees(amount) });
+    res.json({ ok: true });
   });
 
   r.delete('/adjustments/:id', (req, res) => {

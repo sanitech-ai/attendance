@@ -96,13 +96,35 @@ test('payroll login: changes pay, corrects attendance, decides leaves, nothing e
   const leave = (await ravi('POST', '/api/employee/leaves', { from_date: '2026-10-07', to_date: '2026-10-07', leave_type: 'paid', reason: 'family' })).data;
   assert.equal((await acc('POST', `/api/admin/leaves/${leave.id}/decision`, { status: 'approved' })).status, 200);
   assert.equal((await owner('GET', '/api/admin/leaves')).data[0].status, 'approved');
-  // Nothing else: other changes to employees, finalizing, selfies, documents, settings, admins
+  // Edit pay entries in place, change salary details, finalize and reopen payroll
+  const adj = (await acc('GET', '/api/admin/adjustments?month=2026-10')).data[0];
+  assert.equal((await acc('PUT', `/api/admin/adjustments/${adj.id}`, { amount: 750, label: 'Diwali bonus' })).status, 200);
+  assert.deepEqual((await acc('GET', '/api/admin/adjustments?month=2026-10')).data.map((x) => [x.label, x.amount_paise]), [['Diwali bonus', 75000]]);
+  const adv = (await acc('POST', '/api/admin/advances', { employee_id: emp, amount: 2000, given_on: '2026-10-03', deduct_month: '2026-10' })).data;
+  assert.equal((await acc('PUT', `/api/admin/advances/${adv.id}`, { amount: 1500, deduct_month: '2026-11' })).status, 200);
+  assert.deepEqual((await acc('GET', '/api/admin/advances?month=2026-11')).data.map((x) => x.amount_paise), [150000]);
+  const pf = (await acc('GET', `/api/admin/employees/${emp}/pay-items`)).data[0];
+  assert.equal((await acc('PUT', `/api/admin/pay-items/${pf.id}`, { amount: 2000 })).status, 200);
+  assert.equal((await acc('GET', `/api/admin/employees/${emp}/pay-items`)).data[0].amount_paise, 200000);
+  assert.equal((await acc('PUT', `/api/admin/employees/${emp}/salary`, { salary: 900, category: 'labour', joined_on: '2026-09-15', designation: 'Fitter' })).status, 200);
+  let e1 = (await owner('GET', '/api/admin/employees')).data[0];
+  assert.deepEqual([e1.salary_paise, e1.category, e1.salary_type, e1.joined_on, e1.designation], [90000, 'labour', 'daily', '2026-09-15', 'Fitter']);
+  assert.equal((await acc('PUT', `/api/admin/employees/${emp}/salary`, { salary: 32000, category: 'staff' })).status, 200);
+  e1 = (await owner('GET', '/api/admin/employees')).data[0];
+  assert.deepEqual([e1.salary_paise, e1.salary_type], [3200000, 'monthly']);
+  s.clock.now = ist('2026-11-02', '10:00');
+  await acc('POST', '/api/admin/login', { username: 'accounts', password: 'password123' });
+  await owner('POST', '/api/admin/login', { username: 'firefueled', password: 'password123' });
+  assert.equal((await acc('POST', '/api/admin/payroll/2026-10/finalize', {})).status, 200);
+  assert.equal((await acc('PUT', `/api/admin/adjustments/${adj.id}`, { amount: 1 })).status, 409, 'finalized month is locked');
+  assert.equal((await acc('DELETE', '/api/admin/payroll/2026-10/finalize')).status, 200);
+  assert.equal((await acc('PUT', `/api/admin/adjustments/${adj.id}`, { amount: 800 })).status, 200, 'reopened');
+  // Nothing else: other changes to employees, selfies, documents, settings, admins
   const denied = [
     ['PUT', `/api/admin/employees/${emp}`, { code: 'E1', name: 'Changed', branch_id: b, salary: 99999 }],
     ['POST', '/api/admin/employees', { code: 'E2', name: 'New', branch_id: b, salary: 1, pin: '1234' }],
     ['DELETE', `/api/admin/employees/${emp}`],
     ['POST', `/api/admin/employees/${emp}/reset-pin`, {}],
-    ['POST', '/api/admin/payroll/2026-09/finalize', {}],
     ['GET', '/api/admin/punches'], ['GET', '/api/admin/documents'], ['GET', '/api/admin/visits'], ['GET', '/api/admin/dashboard'],
     ['GET', '/api/admin/settings'], ['PUT', '/api/admin/settings', { company_name: 'X' }], ['GET', '/api/admin/admins'],
     ['POST', '/api/admin/admins', { username: 'sneaky', password: 'password123', name: 'S' }], ['GET', '/api/admin/audit'],
